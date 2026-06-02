@@ -17,7 +17,7 @@
 - Workflow ConfigはYAML既定値、実行時Config、実行時Overrideから解決する。
 - Step ConfigはYAML、Message、Workflow Config、またはそれらのmergeから解決する。
 - MessageおよびConfigのvalidationはエンジン側で行う。
-- csxの `#load`、`#r`、inline NuGet参照は、初期実装では `Dotnet.Script.Core` を `IScriptCompiler` の一実装として利用して対応する。
+- csxの `#load`、`#r`、行内 NuGet参照は、初期実装では `Dotnet.Script.Core` を `IScriptCompiler` の一実装として利用して対応する。
 - `dotnet script` CLIをStep実行ごとに外部プロセス起動する方式は通常実行経路では採用しない。
 - If、ForEach、Whileなどの制御処理はYAML予約構文ではなく、通常のStepとして表現する。
 - 初期実装のFlow実行モデルは単一路線とし、Stepの `next` は0または1件のみ許可する。
@@ -113,7 +113,7 @@ YAMLは以下を定義する。
 - Step間の接続
 - Step input binding
 - Step config binding
-- retry、timeout、trace、validation、limits
+- retry、timeout、trace、validation、制限
 
 YAMLはScript Stepの入出力型を原則として重複定義しない。ただし、デバッグまたは検証補助のため、`inputType`、`configType`、`outputType` を任意で明示できる。この場合、YAML明示型はC#から推論した型と一致しなければならない。
 
@@ -152,7 +152,7 @@ ExecutionTrace構築処理
 - `next` は0または1件のみ指定できる。
 - `next` 未指定は `end` への到達と同義とする。
 - 複数後続Stepへのfan-outは初期実装では扱わない。
-- 合流、join、parallel edge、edge conditionは初期実装では扱わない。
+- 合流、join、parallel edge、edge 条件は初期実装では扱わない。
 - 分岐は `IfStep` などのControl Stepが内部で子Flowを実行することで表現する。
 
 これにより、`end` 到達時のFlow Outputは「その実行パスで最後に実行されたStepのOutput」と一意に定まる。
@@ -186,7 +186,7 @@ workflow-root/
 
 `messages` と `configs` は物理ディレクトリとして分けてもよいが、どちらもC#型定義であるため、同一csxにまとめてもよい。
 
-`shared` は `#load` で読み込む共通csxを置く任意ディレクトリである。`lib` は `#r` で参照するローカルassemblyを置く任意ディレクトリである。`NuGet.Config` は inline NuGet参照を許可する場合のpackage source定義に使用できる。
+`shared` は `#load` で読み込む共通csxを置く任意ディレクトリである。`lib` は `#r` で参照するローカルassemblyを置く任意ディレクトリである。`NuGet.Config` は 行内 NuGet参照を許可する場合のpackage source定義に使用できる。
 
 相対パスの基準は、原則として `workflow.yaml` が存在するディレクトリとする。
 
@@ -264,7 +264,7 @@ public sealed record OrderCreated(
 );
 ```
 
-Message型は原則としてimmutableな `record` を推奨する。
+Message型は原則として不変な `record` を推奨する。
 
 ### 4.5 Config
 
@@ -296,7 +296,7 @@ public sealed record SendMailConfig(
 );
 ```
 
-Workflow ConfigはRun開始時に解決し、Run中は不変のsnapshotとして扱う。
+Workflow ConfigはRun 開始時に解決し、Run中は不変のスナップショットとして扱う。
 
 Step ConfigはStep実行直前に解決し、Stepの `TConfig` として渡す。
 
@@ -409,7 +409,7 @@ flows:
 | `schemaVersion` | 必須 | YAML schema version。初期値は `1` |
 | `version` | 必須 | Workflow定義バージョン |
 | `scripts` | 任意 | Message型、Config型、補助型のcsx一覧。未指定時は空配列 |
-| `scriptOptions` | 任意 | `#load`、`#r`、inline NuGet参照、compile cache、AssemblyLoadContextの方針 |
+| `scriptOptions` | 任意 | `#load`、`#r`、行内 NuGet参照、コンパイルキャッシュ、AssemblyLoadContextの方針 |
 | `entryFlow` | 必須 | 実行開始Flow ID |
 | `config` | 任意 | Workflow Configの型、既定値、実行時merge方針 |
 | `flows` | 必須 | Flow定義一覧 |
@@ -618,11 +618,11 @@ public sealed class StepContext
 }
 ```
 
-`WorkflowConfig` はRun開始時に解決済みのWorkflow Config snapshotである。
+`WorkflowConfig` はRun 開始時に解決済みのWorkflow Config スナップショットである。
 
 ユーザーStepは `GetWorkflowConfig<TWorkflowConfig>()` により、csxで定義したWorkflow Config型として取得できる。
 
-`Variables` はRun開始時に渡された読み取り専用値である。初期実装では、Stepから `Variables` を更新できない。
+`Variables` はRun 開始時に渡された読み取り専用値である。初期実装では、Stepから `Variables` を更新できない。
 
 ### 6.5 Flow呼び出しAPI
 
@@ -714,7 +714,7 @@ Message型は以下を推奨する。
 
 - `#nullable enable` を有効にする。
 - `record` を使う。
-- immutableにする。
+- 不変にする。
 - `System.ComponentModel.DataAnnotations` を使う。
 - 業務固有の複雑な検証が必要な場合は `IValidatableObject` を実装する。
 
@@ -842,7 +842,7 @@ public override async Task<SendMailResult> ExecuteAsync(
 }
 ```
 
-Step timeoutは協調キャンセルである。C#の任意Taskを安全に強制停止することはできないため、StepがCancellationTokenを無視した場合、実処理が継続する可能性がある。Step実装はidempotentに設計することを推奨する。
+Step timeoutは協調キャンセルである。C#の任意Taskを安全に強制停止することはできないため、StepがCancellationTokenを無視した場合、実処理が継続する可能性がある。Step実装は冪等に設計することを推奨する。
 
 ---
 
@@ -863,8 +863,8 @@ Binding式はC#コードではない。初期実装では、プロパティ参�
 | `flowInput` | 現在Flowの開始Input |
 | `previousOutput` | 直前StepのOutput。開始Stepでは未定義またはnull |
 | `current` | 現在Stepに渡されるInput。Step input binding解決後に使用可能 |
-| `workflowConfig` | Run開始時に解決済みのWorkflow Config snapshot |
-| `variables` | Run開始時に渡された読み取り専用Variables |
+| `workflowConfig` | Run 開始時に解決済みのWorkflow Config スナップショット |
+| `variables` | Run 開始時に渡された読み取り専用Variables |
 | `config` | 現在Stepに渡されるConfig。条件式評価時に使用可能 |
 
 `input` は曖昧さを避けるため、式root識別子として使用しない。
@@ -1093,12 +1093,12 @@ Step Config mergeは以下の規則で行う。
 
 | 項目 | 規則 |
 |---|---|
-| object | `strategy: deep` の場合、プロパティ単位で再帰mergeする |
-| scalar | 優先度の高い値で置換する |
-| array / list | 優先度の高い値で全体を置換する |
+| オブジェクト | `strategy: deep` の場合、プロパティ単位で再帰mergeする |
+| スカラー | 優先度の高い値で置換する |
+| 配列 / リスト | 優先度の高い値で全体を置換する |
 | null | `nullOverride: false` の場合は未指定扱いとする |
 | null | `nullOverride: true` の場合はnullで上書きする |
-| unknown key | `validation.strictUnknownProperties` がtrueの場合はエラー |
+| 未知 key | `validation.strictUnknownProperties` がtrueの場合はエラー |
 
 初期実装では `strategy: deep` のみ必須対応とする。`strategy: shallow` は将来拡張とする。
 
@@ -1143,7 +1143,7 @@ Workflow ConfigはStep間で受け渡す業務Messageではなく、Run単位の
 - 外部ツールのパス
 - 複数Stepで共有する共通パラメータ
 
-Workflow ConfigはWorkflow開始時に一度だけ解決し、Run中は不変のsnapshotとして扱う。
+Workflow ConfigはWorkflow開始時に一度だけ解決し、Run中は不変のスナップショットとして扱う。
 
 ### 12.2 Workflow Config型
 
@@ -1220,7 +1220,7 @@ Overrideは常に最優先とする。
 
 ### 12.6 Workflow Config merge規則
 
-Workflow Configは以下のlayerから構成する。
+Workflow Configは以下の層から構成する。
 
 ```text
 Layer 1: workflow.yaml の config.value
@@ -1257,7 +1257,7 @@ config:
 | `nullOverride` | `false` | nullは未指定扱いとする |
 | `nullOverride` | `true` | nullで上書きする |
 
-array / listは結合せず、優先度の高い値で全体を置換する。
+配列 / リストは結合せず、優先度の高い値で全体を置換する。
 
 ### 12.7 C# API
 
@@ -1326,13 +1326,13 @@ Workflow Config内のフォルダやファイルパスは通常のConfig値と�
 
 ## 13. Binding / Config bindの命名規則
 
-YAML keyとC# property / constructor parameterの対応は以下とする。
+YAML keyとC# プロパティ / コンストラクタ パラメータの対応は以下とする。
 
-- YAML keyはcamelCaseを推奨する。
-- C# property / constructor parameterはPascalCaseを推奨する。
-- Bindingはcase-insensitiveとする。
-- camelCaseとPascalCaseは同一名として扱う。
-- snake_case対応は初期実装では任意とする。
+- YAML keyはキャメルケースを推奨する。
+- C# プロパティ / コンストラクタ パラメータはパスカルケースを推奨する。
+- Bindingは大文字小文字を区別しないとする。
+- キャメルケースとパスカルケースは同一名として扱う。
+- スネークケース対応は初期実装では任意とする。
 - 不明なkeyは `validation.strictUnknownProperties` がtrueの場合にエラーとする。
 
 例:
@@ -1349,7 +1349,7 @@ public sealed record FileWorkflowConfig(
 );
 ```
 
-C# recordのprimary constructor parameterに対しても同じ規則を適用する。
+C# レコードの主 コンストラクタ パラメータに対しても同じ規則を適用する。
 
 ---
 
@@ -1386,7 +1386,7 @@ Control Stepの参照先Flow入出力
 | ネスト型 | 子Message/Configも再帰的に検証する |
 | コレクション要素 | `IEnumerable<T>` の各要素を検証する |
 | IValidatableObject | 独自検証を実行する |
-| unknown property | YAMLに未知のkeyが含まれていないか |
+| 未知プロパティ | YAMLに未知のkeyが含まれていないか |
 
 ### 14.4 nullable参照型validation
 
@@ -1786,7 +1786,7 @@ Control StepのようにYAML定義や参照先Flowから型が決まるStepは�
 Stepは以下の場合に失敗する。
 
 - csxコンパイルに失敗した。
-- Step class探索に失敗した。
+- Step クラス探索に失敗した。
 - Stepインスタンス作成に失敗した。
 - input bindingに失敗した。
 - input validationに失敗した。
@@ -1823,19 +1823,19 @@ retry対象は以下とする。
 
 retry対象外は以下とする。
 
-- YAML parse error
-- Workflow schema error
-- csx compile error
-- Step class not found
-- Type mismatch
-- Input binding error
-- Config binding error
-- Input validation error
-- Config validation error
-- Output validation error
-- Flow not found
-- Step not found
-- Condition syntax error
+- YAML 解析エラー
+- Workflow schema エラー
+- csx コンパイルエラー
+- Step クラス未検出
+- Type 不一致
+- Input binding エラー
+- Config binding エラー
+- Input validation エラー
+- Config validation エラー
+- Output validation エラー
+- Flow 未検出
+- Step 未検出
+- Condition 構文エラー
 
 ### 19.3 timeout
 
@@ -1945,7 +1945,7 @@ logger.LogInformation(
 logger.LogInformation($"Step started. WorkflowId={workflowId}");
 ```
 
-### 20.4 Log Scope
+### 20.4 Log スコープ
 
 Workflow / Flow / Step の文脈は `BeginScope` で付与する。
 
@@ -2019,9 +2019,9 @@ public sealed class WorkflowEngineOptions
 | Log | 実行中の観測、障害調査 |
 | ExecutionTrace | 実行結果として保存・表示可能な構造化履歴 |
 
-### 21.1 Trace capture policy
+### 21.1 Trace 取得方針
 
-Input / Output / ConfigをTraceに保存するかどうかは明示的なpolicyで制御する。
+Input / Output / ConfigをTraceに保存するかどうかは明示的な方針で制御する。
 
 ```yaml
 trace:
@@ -2195,7 +2195,7 @@ Provider例:
 
 初期実装では、Script Stepは実行ごとに新規インスタンスを生成する。
 
-Script Stepのconstructorは原則としてpublic parameterless constructorを要求する。
+Script Stepのコンストラクタは原則として公開 引数なし コンストラクタを要求する。
 
 DI利用は `StepContext.Services` 経由を基本とする。
 
@@ -2258,7 +2258,7 @@ public sealed class CompiledScriptAssembly
 
 ### 23.1 実装方針
 
-初期実装では、csxの依存解決、`#load`、`#r`、inline NuGet参照、コンパイルキャッシュを簡略化するため、`Dotnet.Script.Core` を利用する。
+初期実装では、csxの依存解決、`#load`、`#r`、行内 NuGet参照、コンパイルキャッシュを簡略化するため、`Dotnet.Script.Core` を利用する。
 
 ただし、エンジンの公開仕様および内部実行モデルは `dotnet-script` 固有APIに直接依存しない。エンジン内部では `IScriptCompiler` を定義し、`DotnetScriptCompiler` はその一実装として扱う。
 
@@ -2318,12 +2318,12 @@ scriptOptions:
 | `load.allowOutsideWorkflowRoot` | `workflow-root` 外のcsx読み込みを許可するか。初期実装の推奨値は `false` |
 | `load.allowNuGetScriptPackages` | `#load "nuget: ..."` を許可するか。初期実装の推奨値は `false` |
 | `references.allowedAssemblies` | assembly名による `#r` の許可リスト |
-| `references.allowedPaths` | file pathによる `#r` の許可ディレクトリ |
-| `nuget.requireExactVersion` | inline NuGet参照に正確なversion指定を要求するか。推奨値は `true` |
-| `nuget.allowedPackages` | `#r "nuget: ..."` で参照可能なpackage IDとversion |
-| `nuget.packageSources` | restoreに利用できるpackage source |
-| `nuget.restoreLockedMode` | lock file前提の復元に限定するか |
-| `cache.enabled` | dependency cacheおよびcompile cacheを利用するか |
+| `references.allowedPaths` | ファイルパスによる `#r` の許可ディレクトリ |
+| `nuget.requireExactVersion` | 行内 NuGet参照に正確なversion 指定を要求するか。推奨値は `true` |
+| `nuget.allowedPackages` | `#r "nuget: ..."` で参照可能なパッケージ IDとversion |
+| `nuget.packageSources` | 復元に利用できるpackage source |
+| `nuget.restoreLockedMode` | ロックファイル前提の復元に限定するか |
+| `cache.enabled` | 依存キャッシュおよびコンパイルキャッシュを利用するか |
 | `assemblyLoadContext.isolation` | `workflow`、`cache`、`none` のいずれか |
 | `assemblyLoadContext.shareAbstractions` | `Workflow.Abstractions` をホスト側assemblyとして共有するか |
 
@@ -2376,9 +2376,9 @@ Step csxは、`WorkflowStep<...>` を継承したStepクラスを含む。
   class: ValidateOrderStep
 ```
 
-Step csxには型定義、using、namespace、補助メソッド、Stepクラスを記述できる。
+Step csxには型定義、using、名前空間、補助メソッド、Stepクラスを記述できる。
 
-Step csxでは、コンパイル時またはロード時に副作用を起こすtop-level statementを避ける。初期実装では、Step csxのtop-level executable statementをvalidate時に警告またはエラーとして扱ってよい。
+Step csxでは、コンパイル時またはロード時に副作用を起こすトップレベル statementを避ける。初期実装では、Step csxのトップレベルの実行可能 statementをvalidate時に警告またはエラーとして扱ってよい。
 
 推奨:
 
@@ -2411,7 +2411,7 @@ File.Delete("some-file.txt");
 
 ### 23.5 `#load` 対応
 
-初期実装では、local fileの `#load` を対応する。
+初期実装では、ローカルファイルの `#load` を対応する。
 
 ```csharp
 #load "../shared/common.csx"
@@ -2423,17 +2423,17 @@ File.Delete("some-file.txt");
 | 項目 | 規則 |
 |---|---|
 | 相対パス基準 | `#load` を書いたcsxファイルのディレクトリ |
-| path正規化 | `..`、symbolic linkを解決してcanonical path化する |
-| root制限 | `load.allowOutsideWorkflowRoot: false` の場合、canonical pathが `workflow-root` 配下でなければならない |
-| 循環load | 検出して `SCRIPT_LOAD_CYCLE_DETECTED` とする |
-| 重複load | 同一canonical pathは1回だけ読み込む |
-| 変更検知 | cache keyに読み込まれた全csxのcontent hashを含める |
+| パス正規化 | `..`、記号的 リンクを解決して正規 path化する |
+| root制限 | `load.allowOutsideWorkflowRoot: false` の場合、正規 pathが `workflow-root` 配下でなければならない |
+| 循環読み込み | 検出して `SCRIPT_LOAD_CYCLE_DETECTED` とする |
+| 重複読み込み | 同一正規 pathは1回だけ読み込む |
+| 変更検知 | キャッシュ keyに読み込まれた全csxの内容ハッシュを含める |
 
-`#load "nuget: ..."` は `Dotnet.Script.Core` で扱えるが、初期実装の推奨デフォルトでは無効にする。有効化する場合は、`load.allowNuGetScriptPackages: true` とし、`nuget.allowedPackages` にpackage IDとversionを明示する。
+`#load "nuget: ..."` は `Dotnet.Script.Core` で扱えるが、初期実装の推奨デフォルトでは無効にする。有効化する場合は、`load.allowNuGetScriptPackages: true` とし、`nuget.allowedPackages` にパッケージ IDとversionを明示する。
 
 ### 23.6 `#r` assembly参照
 
-初期実装では、assembly名またはfile pathによる `#r` を対応する。
+初期実装では、assembly名またはファイルパスによる `#r` を対応する。
 
 ```csharp
 #r "System.Text.Json"
@@ -2445,7 +2445,7 @@ File.Delete("some-file.txt");
 | 項目 | 規則 |
 |---|---|
 | assembly名参照 | `references.allowedAssemblies` に含まれる場合のみ許可する |
-| file path参照 | canonical pathが `references.allowedPaths` のいずれかの配下にある場合のみ許可する |
+| ファイルパス参照 | 正規 pathが `references.allowedPaths` のいずれかの配下にある場合のみ許可する |
 | workflow-root外参照 | 明示許可がない限り禁止する |
 | `Workflow.Abstractions` | ホスト側の同一assemblyを共有する |
 | 不許可参照 | `SCRIPT_REFERENCE_NOT_ALLOWED` とする |
@@ -2454,7 +2454,7 @@ File.Delete("some-file.txt");
 
 ### 23.7 `#r "nuget: ..."` 対応
 
-初期実装では、`scriptOptions.allowNuGetReferences: true` の場合に限り、inline NuGet参照を対応する。
+初期実装では、`scriptOptions.allowNuGetReferences: true` の場合に限り、行内 NuGet参照を対応する。
 
 ```csharp
 #r "nuget: CsvHelper, 33.0.1"
@@ -2464,15 +2464,15 @@ NuGet参照の規則は以下とする。
 
 | 項目 | 規則 |
 |---|---|
-| package ID | `nuget.allowedPackages` に含まれる必要がある |
-| version | `nuget.requireExactVersion: true` の場合、正確なversion指定を必須とする |
-| floating version | 初期実装では禁止する |
-| prerelease | `allowedPackages.versions` に明示された場合のみ許可する |
+| パッケージ ID | `nuget.allowedPackages` に含まれる必要がある |
+| version | `nuget.requireExactVersion: true` の場合、正確なversion 指定を必須とする |
+| 浮動 version | 初期実装では禁止する |
+| プレリリース | `allowedPackages.versions` に明示された場合のみ許可する |
 | package source | `scriptOptions.nuget.packageSources` または `workflow-root/NuGet.Config` を使う |
-| lock file | `restoreLockedMode: true` の場合、lock fileに存在しない復元を禁止する |
-| restore cache | `Dotnet.Script.Core` のdependency restore機構を利用してよい |
+| ロックファイル | `restoreLockedMode: true` の場合、ロックファイルに存在しない復元を禁止する |
+| 復元キャッシュ | `Dotnet.Script.Core` の依存 復元機構を利用してよい |
 
-`#r "nuget: ..."` は実装を大幅に簡略化できる一方で、未信頼コードの攻撃面を広げる。初期実装では信頼済みWorkflowのみを対象とし、package ID、version、sourceを明示制御する。
+`#r "nuget: ..."` は実装を大幅に簡略化できる一方で、未信頼コードの攻撃面を広げる。初期実装では信頼済みWorkflowのみを対象とし、パッケージ ID、version、sourceを明示制御する。
 
 ### 23.8 コンパイル順序
 
@@ -2493,11 +2493,11 @@ NuGet参照の規則は以下とする。
 12. YAML明示型がある場合は一致検証する
 ```
 
-`Dotnet.Script.Core` の利用範囲は、依存解決、script loading、NuGet restore、Roslyn compilation、cache利用に限定する。Step実行、型検証、Config binding、validation、retry、timeout、ExecutionTraceはエンジン側で制御する。
+`Dotnet.Script.Core` の利用範囲は、依存解決、script 読み込み、NuGet 復元、Roslyn コンパイル、キャッシュ利用に限定する。Step実行、型検証、Config binding、validation、retry、timeout、ExecutionTraceはエンジン側で制御する。
 
 ### 23.9 AssemblyLoadContext方針
 
-初期実装では、Workflow単位またはcache単位でAssemblyLoadContextを分離してよい。
+初期実装では、Workflow単位またはキャッシュ単位でAssemblyLoadContextを分離してよい。
 
 ただし、以下のassemblyはホスト側と共有する。
 
@@ -2519,9 +2519,9 @@ SCRIPT_ABSTRACTIONS_IDENTITY_MISMATCH
 
 ### 23.10 コンパイルキャッシュ
 
-エンジンは `Dotnet.Script.Core` のdependency cacheおよびexecution / compilation cacheを利用してよい。
+エンジンは `Dotnet.Script.Core` の依存キャッシュおよび実行キャッシュ / コンパイルキャッシュを利用してよい。
 
-エンジン独自のcache keyは以下を含む。
+エンジン独自のキャッシュ keyは以下を含む。
 
 ```text
 workflow.yaml path
@@ -2538,7 +2538,7 @@ engine version
 schemaVersion
 ```
 
-ファイル更新、参照更新、package version変更、`scriptOptions` 変更が検知された場合、該当cacheは無効化する。
+ファイル更新、参照更新、package version変更、`scriptOptions` 変更が検知された場合、該当キャッシュは無効化する。
 
 ### 23.11 csx信頼境界
 
@@ -2555,11 +2555,11 @@ schemaVersion
 - ファイルI/O制限
 - NuGet利用制限の完全強制
 - 署名検証
-- secretsアクセス制限
+- シークレットアクセス制限
 
 csxは任意のC#コードであり、ファイルI/O、ネットワークアクセス、環境変数参照、プロセス起動、リフレクション、秘密情報アクセスを行える可能性がある。
 
-`Dotnet.Script.Core` により `#load` と `#r` の対応は簡略化されるが、セキュリティ境界は提供されない。エンジンはdirective scanとallowlistで参照方針を検証するが、未信頼コード実行を安全化するものではない。
+`Dotnet.Script.Core` により `#load` と `#r` の対応は簡略化されるが、セキュリティ境界は提供されない。エンジンはdirective 走査と許可一覧で参照方針を検証するが、未信頼コード実行を安全化するものではない。
 
 ### 23.12 csx参照方針まとめ
 
@@ -2567,13 +2567,13 @@ csxは任意のC#コードであり、ファイルI/O、ネットワークアク
 |---|---|
 | `#load "relative.csx"` | 対応。workflow-root配下のみ許可 |
 | `#load "nuget: ..."` | デフォルト無効。明示許可時のみ対応 |
-| `#r "AssemblyName"` | allowlistされたassemblyのみ許可 |
-| `#r "path/to.dll"` | allowlistされたpath配下のみ許可 |
-| `#r "nuget: Package, Version"` | 明示allowlist、正確なversion指定、許可sourceの場合のみ対応 |
-| NuGet restore | `Dotnet.Script.Core` の仕組みを利用 |
+| `#r "AssemblyName"` | 許可一覧に登録されたassemblyのみ許可 |
+| `#r "path/to.dll"` | 許可一覧に登録されたpath配下のみ許可 |
+| `#r "nuget: Package, Version"` | 明示許可一覧、正確なversion 指定、許可sourceの場合のみ対応 |
+| NuGet 復元 | `Dotnet.Script.Core` の仕組みを利用 |
 | workflow-root外ファイル参照 | 原則禁止 |
-| AssemblyLoadContext | Workflow単位またはcache単位で分離し、Abstractionsは共有 |
-| unload | 可能な範囲でAssemblyLoadContext unloadを行う |
+| AssemblyLoadContext | Workflow単位またはキャッシュ単位で分離し、Abstractionsは共有 |
+| アンロード | 可能な範囲でAssemblyLoadContext アンロードを行う |
 
 ---
 
@@ -2603,12 +2603,12 @@ workflow validate workflow.yaml --config run-config.yaml
 - `end` 予約ID違反
 - 重複Flow ID
 - 重複Step ID
-- csx directive scan
+- csx directive 走査
 - `#load` 参照解決
 - `#r` assembly参照解決
 - `#r "nuget: ..."` 参照解決
 - csxコンパイル
-- Step class探索
+- Step クラス探索
 - 型整合性
 - Built-in Step型推論
 - Control Step参照先Flow整合性
@@ -2617,7 +2617,7 @@ workflow validate workflow.yaml --config run-config.yaml
 - Message validation可能性
 - Workflow Config validation可能性
 - retry / timeout形式
-- trace / validation / limits設定形式
+- trace / validation / 制限設定形式
 - scriptOptions設定形式
 
 ### 24.3 Flow一覧
@@ -2663,9 +2663,9 @@ MVPで対応する範囲は以下とする。
 - Script Step
 - Flow Call Step
 - `Dotnet.Script.Core` を使ったcsxコンパイル
-- local file `#load`
-- allowlistされたassembly / file path `#r`
-- allowlistされた `#r "nuget: Package, Version"`
+- ローカルファイル `#load`
+- 許可一覧に登録されたassembly / ファイルパス `#r`
+- 許可一覧に登録された `#r "nuget: Package, Version"`
 - Message型csx定義
 - Config型csx定義
 - `WorkflowStep<TInput, TOutput>`
@@ -2694,12 +2694,12 @@ MVPで対応する範囲は以下とする。
 - YAML / Message / Workflow Config merge
 - retry
 - ExecutionTrace
-- trace redaction
-- `#load "nuget: ..."` script package対応
-- NuGet lock file / locked restore強制
-- CLI flows
-- CLI steps
-- CLI types
+- trace 秘匿化
+- `#load "nuget: ..."` script パッケージ対応
+- NuGet ロックファイル / ロック済み復元強制
+- CLI Flow 一覧
+- CLI Step 一覧
+- CLI 型一覧
 
 ### 25.3 将来拡張
 
@@ -2712,7 +2712,7 @@ MVPで対応する範囲は以下とする。
 - WhileStep
 - DAG実行
 - 複数next
-- edge condition
+- edge 条件
 - fan-out / join
 - 分散実行
 - 永続化されたWorkflow再開
@@ -2722,7 +2722,7 @@ MVPで対応する範囲は以下とする。
 - message型の自動生成
 - 高度なサンドボックス
 - 署名検証
-- unrestricted NuGet package restore
+- 無制限の NuGet パッケージ復元
 
 ---
 
@@ -2732,14 +2732,14 @@ MVPで対応する範囲は以下とする。
 |---|---|
 | YAML読み込み | `YamlDotNet` |
 | csxコンパイル | `Dotnet.Script.Core`（標準実装） / `Microsoft.CodeAnalysis.CSharp.Scripting` / Roslyn（代替実装） |
-| csx依存解決 / NuGet restore | `Dotnet.Script.DependencyModel` / `Dotnet.Script.DependencyModel.NuGet` |
+| csx依存解決 / NuGet 復元 | `Dotnet.Script.DependencyModel` / `Dotnet.Script.DependencyModel.NuGet` |
 | Logging抽象化 | `Microsoft.Extensions.Logging` |
 | Logging実装 | Serilog / NLog / log4net / OpenTelemetry |
 | DI | `Microsoft.Extensions.DependencyInjection` |
 | Options | `Microsoft.Extensions.Options` |
 | Validation | `System.ComponentModel.DataAnnotations` |
-| Nullable metadata | `System.Reflection.NullabilityInfoContext` |
-| Trace serialization | `System.Text.Json` |
+| Nullable メタデータ | `System.Reflection.NullabilityInfoContext` |
+| Trace シリアライズ | `System.Text.Json` |
 
 ---
 
@@ -2953,7 +2953,7 @@ public sealed class ValidateOrderStep
 }
 ```
 
-### 27.4 steps/accepted.csx
+### 27.4 Step 一覧/accepted.csx
 
 ```csharp
 #nullable enable
@@ -2974,7 +2974,7 @@ public sealed class AcceptedStep
 }
 ```
 
-### 27.5 steps/rejected.csx
+### 27.5 Step 一覧/rejected.csx
 
 ```csharp
 #nullable enable

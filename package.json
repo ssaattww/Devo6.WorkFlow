@@ -10,7 +10,8 @@
     "lint:md:spell": "node tools/lint/run-skill-script.js review-enforcer/scripts/list-markdown-targets.js --print0 | xargs -0 -r node tools/lint/run-skill-script.js review-enforcer/scripts/run-cspell-markdown.js",
     "lint:md:whitelist": "node tools/lint/run-skill-script.js review-enforcer/scripts/check-markdown-whitelist.js",
     "lint:md:whitelist:changed": "npm run lint:md:whitelist -- --changed",
-    "lint:md:vocab": "python3 tools/lint/run-skill-script.py review-enforcer/scripts/extract-markdown-vocabulary-sudachi.py"
+    "lint:md:vocab": "python3 tools/lint/run-skill-script.py review-enforcer/scripts/extract-markdown-vocabulary-sudachi.py",
+    "lint:md:terms": ".venv/bin/python tools/lint/check-sudachi-term-variants.py"
   },
   "devDependencies": {
     "cspell": "^9.2.1",

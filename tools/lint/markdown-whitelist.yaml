@@ -58,6 +58,8 @@ entries:
   - term: Dotnet.Script.Core
     description: csx の依存解決と compile に使う部品名。
   - term: compile
+    aliases:
+      - ・コンパイル
     description: script などを実行できる形に変換する処理名。
   - term: NuGet
     description: .NET の package 管理に関する名称。
@@ -227,6 +229,16 @@ entries:
     description: 例示用 csx ファイル名。
   - term: Flow.InputType
     description: Flow の型情報を参照する API 名。
+  - term: bind
+    description: 設定値や入力値を型へ結び付ける処理名。
+  - term: directive
+    description: csx 内で読み込みや参照を指示する記述。
+  - term: end
+    description: Flow の終端を表す予約 Step ID。
+  - term: messages
+    description: Message 型定義を置く標準ディレクトリ名。
+  - term: steps
+    description: Step 定義を置く標準ディレクトリ名。
   - term: Abstractions
     description: 公開抽象化 assembly の名前に含まれる語。
   - term: CapturedValue
@@ -241,6 +253,36 @@ entries:
     description: csx コンパイル抽象を表す設計語。
   - term: ScriptCompiler抽象
     description: csx コンパイル抽象の章題で使う設計語。
+  - term: body
+    description: ForEachStep で子 Flow を指定する YAML key。
+  - term: bool
+    description: 真偽値を表す C# および YAML の型名。
+  - term: Layer
+    description: 設定値の優先段階を表す設計語。
+  - term: Log
+    description: 実行中の観測と障害調査に使う記録。
+  - term: Logging
+    description: 記録出力の仕組みを表す名前空間の一部。
+  - term: MVP
+    description: 初期公開に必要な最小範囲を表す略語。
+  - term: object
+    description: 構造を持つ値を表す C# および YAML の型名。
+  - term: Options
+    description: 設定値を保持する型名に使う語。
+  - term: sequential
+    description: ForEachStep で逐次実行を指定する YAML 値。
+  - term: statement
+    description: C# script の実行文を表す語。
+  - term: Stream
+    description: 連続した入出力を扱う型名。
+  - term: Type
+    description: C# の型情報を表す型名。
+  - term: using
+    description: C# の名前空間参照を表す予約語。
+  - term: validate
+    description: CLI で検証処理を実行する命令名。
+  - term: Variables
+    description: Run 開始時に渡す読み取り専用値の集合。
   - term: エンジン
     description: Workflow 定義を読み込み実行する中核機構。
   - term: コンパイル
@@ -293,3 +335,125 @@ entries:
     description: 語を下線で区切る命名形式。
   - term: アンロード
     description: 読み込んだ assembly などを解放する処理。
+  - term: アクセス
+    description: 情報や資源を参照または利用する行為。
+  - term: アップロード
+    description: 外部の保存先へ送る処理。
+  - term: インスタンス
+    description: 型から生成された実体。
+  - term: オブジェクト
+    description: 構造を持つ値。
+  - term: オプション
+    description: 実行や設定を変える選択値。
+  - term: キャンセル
+    description: 実行中の処理を中止する要求。
+  - term: キュー
+    description: 順番に処理するための待ち行列。
+  - term: コピー
+    description: 同じ内容を別の場所へ作る処理。
+  - term: コレクション
+    description: 複数の値をまとめた集合。
+  - term: コンテナ
+    description: 値や処理をまとめて保持する入れ物。
+  - term: コンパイルエラー
+    description: コンパイル時に検出された失敗。
+  - term: コンパイルキャッシュ
+    description: コンパイル結果を再利用するための保存情報。
+  - term: サンドボックス
+    description: 実行できる範囲を制限した環境。
+  - term: サンプル
+    description: 例として示す定義や入力。
+  - term: シークレットアクセス
+    description: 秘匿値を参照または利用する行為。
+  - term: ジェネリック
+    description: 型を引数として受け取る C# の仕組み。
+  - term: シリアライズ
+    description: 値を保存または転送できる形へ変換する処理。
+  - term: スケジューラ
+    description: 実行順序や実行時点を決める仕組み。
+  - term: スコープ
+    description: 名前や設定が有効な範囲。
+  - term: セキュリティ
+    description: 安全性や保護に関する性質。
+  - term: タイミング
+    description: 処理を行う時点。
+  - term: チェック
+    description: 条件や状態を確認する処理。
+  - term: ツール
+    description: 作業や検証に使う補助機能。
+  - term: ツールパス
+    description: 補助機能の場所を示す値。
+  - term: データ
+    description: 処理や保存の対象になる値。
+  - term: デバッグ
+    description: 問題の原因を調べる作業。
+  - term: デフォルト
+    description: 明示指定がない場合に使う既定値。
+  - term: トップレベル
+    description: 入れ子の外側にある最上位。
+  - term: トレース
+    description: 実行中の状態を追跡して残す記録。
+  - term: ネスト
+    description: 構造の中に別の構造を含める形。
+  - term: ネットワーク
+    description: 外部との通信経路。
+  - term: ネットワークアクセス
+    description: 外部通信経路を利用する行為。
+  - term: バージョン
+    description: 定義や部品の版。
+  - term: パラメータ
+    description: 処理や型へ渡す名前付きの値。
+  - term: ファイルパス
+    description: ファイルの場所を示す値。
+  - term: ファイルハンドル
+    description: 開いたファイルを扱うための値。
+  - term: フェーズ
+    description: 複数の作業をまとめる進行段階。
+  - term: フォーマット
+    description: 値や文書の形式。
+  - term: プロジェクト
+    description: 関連するファイルや設定をまとめた作業単位。
+  - term: ホスト
+    description: 実行や読み込みの基準になる側。
+  - term: メソッド
+    description: 型に属する処理。
+  - term: メタ
+    description: 対象そのものではなく対象を説明する情報。
+  - term: メタデータ
+    description: 対象を説明する付随情報。
+  - term: メモリ
+    description: 実行中の値を保持する領域。
+  - term: モデル
+    description: 構造や振る舞いを表す抽象。
+  - term: ユーザー
+    description: Workflow や API を利用する人。
+  - term: ライブラリ
+    description: 再利用できる部品の集合。
+  - term: ラップ
+    description: 内部処理を外側の処理で包むこと。
+  - term: リスト
+    description: 複数の値を順番に並べた集合。
+  - term: リソース
+    description: 実行時に利用する外部または内部の資源。
+  - term: リテラル
+    description: 記述中に直接書かれた値。
+  - term: リフレクション
+    description: 型や値の情報を実行時に調べる仕組み。
+  - term: リンク
+    description: 別の場所や対象を指す参照。
+  - term: ローカル
+    description: 現在の環境や近い場所に属する状態。
+  - term: ローカルファイル
+    description: 現在の環境に存在するファイル。
+  - term: ロード
+    description: 外部の定義や部品を読み込む処理。
+  - term: ログイベント
+    description: 記録出力で使う出来事の分類。
+  - term: ロック
+    description: 状態や復元対象を固定すること。
+  - term: ロックファイル
+    description: 復元対象の版を固定するファイル。
+  - term: ワークフロー
+    description: 実行手順をまとめた定義。
+  - term: ワークフローエンジン
+    description: Workflow 定義を読み込み実行する中核機構。

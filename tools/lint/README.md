@@ -27,6 +27,12 @@ npm run lint:md:targets
 .venv/bin/python tools/lint/extract-sudachi-vocabulary-chunked.py --files doc/workflow_engine_spec.md
 ```
 
+SudachiPy の正規形を使って表記揺れ候補を確認する場合は次を実行する。
+
+```bash
+npm run lint:md:terms
+```
+
 この repo 固有の許可語は `tools/lint/markdown-whitelist.yaml` に置く。表記揺れの修正規則は `tools/lint/prh.yml` に置く。
 
 許可語や表記規則を追加、変更、削除する場合は、具体的な差分を確認してから反映する。
