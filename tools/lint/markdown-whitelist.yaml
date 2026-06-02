@@ -11,11 +11,7 @@ entries:
   - term: リポジトリ
     description: 作業一式を管理する保存場所。
   - term: skill
-    description: Codex が作業手順として参照する能力単位。
-  - term: Codex
-    description: 作業支援を行う実行環境名。
-  - term: CodexSkill
-    description: 共有 skill と関連処理を置く作業一式名。
+    description: 作業手順として参照する能力単位。
   - term: SudachiPy
     description: 日本語の語彙を分類するために使う解析器名。
   - term: task
@@ -29,16 +25,12 @@ entries:
       - workflow
       - engine
     description: 実行手順を定義して処理する仕組みの設計名。
-  - term: Devo6.WorkFlow
-    description: この repo の名前。
   - term: YAML
     description: 設定構造を記述する形式名。
   - term: C#
     description: 実装言語名。
   - term: csx
     description: C# script の拡張子名。
-  - term: C# script
-    description: C# で書く script 形式名。
   - term: script
     description: 実行または読み込みの対象になる手順記述。
   - term: Workflow
@@ -56,13 +48,9 @@ entries:
   - term: Output
     description: step または flow から返す出力を表す設計語。
   - term: Dotnet.Script.Core
-    description: csx の依存解決と compile に使う部品名。
-  - term: compile
-    description: script などを実行できる形に変換する処理名。
+    description: csx の依存解決とコンパイルに使う部品名。
   - term: NuGet
-    description: .NET の package 管理に関する名称。
-  - term: package
-    description: 依存する部品をまとめて扱う単位。
+    description: .NET のパッケージ管理に関する名称。
   - term: .NET
     description: C# 実行基盤の名称。
   - term: retry
@@ -79,8 +67,6 @@ entries:
     description: 命令行で実行する入口を表す略語。
   - term: fan-out
     description: 複数の後続処理へ広がる接続形態。
-  - term: edge condition
-    description: 接続線に条件を持たせる設計語。
   - term: ID
     description: 仕様上の識別子を表す略語。
   - term: Built-in
@@ -223,18 +209,6 @@ entries:
     description: 例示用 csx ファイル名。
   - term: Flow.InputType
     description: Flow の型情報を参照する API 名。
-  - term: bind
-    description: 設定値や入力値を型へ結び付ける処理名。
-  - term: directive
-    description: csx 内で読み込みや参照を指示する記述。
-  - term: end
-    description: Flow の終端を表す予約 Step ID。
-  - term: messages
-    description: Message 型定義を置く標準ディレクトリ名。
-  - term: steps
-    description: Step 定義を置く標準ディレクトリ名。
-  - term: Abstractions
-    description: 公開抽象化 assembly の名前に含まれる語。
   - term: CapturedValue
     description: trace に保存する値を表す型名。
   - term: Condition
@@ -247,36 +221,8 @@ entries:
     description: csx コンパイル抽象を表す設計語。
   - term: ScriptCompiler抽象
     description: csx コンパイル抽象の章題で使う設計語。
-  - term: body
-    description: ForEachStep で子 Flow を指定する YAML key。
-  - term: bool
-    description: 真偽値を表す C# および YAML の型名。
   - term: Layer
     description: 設定値の優先段階を表す設計語。
-  - term: Log
-    description: 実行中の観測と障害調査に使う記録。
-  - term: Logging
-    description: 記録出力の仕組みを表す名前空間の一部。
-  - term: MVP
-    description: 初期公開に必要な最小範囲を表す略語。
-  - term: object
-    description: 構造を持つ値を表す C# および YAML の型名。
-  - term: Options
-    description: 設定値を保持する型名に使う語。
-  - term: sequential
-    description: ForEachStep で逐次実行を指定する YAML 値。
-  - term: statement
-    description: C# script の実行文を表す語。
-  - term: Stream
-    description: 連続した入出力を扱う型名。
-  - term: Type
-    description: C# の型情報を表す型名。
-  - term: using
-    description: C# の名前空間参照を表す予約語。
-  - term: validate
-    description: CLI で検証処理を実行する命令名。
-  - term: Variables
-    description: Run 開始時に渡す読み取り専用値の集合。
   - term: エンジン
     description: Workflow 定義を読み込み実行する中核機構。
   - term: コンパイル
@@ -318,7 +264,7 @@ entries:
   - term: パッケージ
     description: 依存する部品や配布物をまとめた単位。
   - term: パッケージソース
-    description: NuGet package を取得する参照元。
+    description: NuGet パッケージを取得する参照元。
   - term: パスカルケース
     description: 各語の先頭を大文字にする命名形式。
   - term: プレリリース
@@ -380,7 +326,7 @@ entries:
   - term: スコープ
     description: 名前や設定が有効な範囲。
   - term: スクリプトパッケージ
-    description: script から読み込む package。
+    description: script から読み込むパッケージ。
   - term: ステートメント
     description: C# script の実行文。
   - term: セキュリティ

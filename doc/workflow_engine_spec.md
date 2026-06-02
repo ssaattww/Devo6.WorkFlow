@@ -864,7 +864,7 @@ Binding式はC#コードではない。初期実装では、プロパティ参�
 | `previousOutput` | 直前StepのOutput。開始Stepでは未定義またはnull |
 | `current` | 現在Stepに渡されるInput。Step input binding解決後に使用可能 |
 | `workflowConfig` | Run 開始時に解決済みのWorkflow Config スナップショット |
-| `variables` | Run 開始時に渡された読み取り専用Variables |
+| `variables` | Run 開始時に渡された読み取り専用値 |
 | `config` | 現在Stepに渡されるConfig。条件式評価時に使用可能 |
 
 `input` は曖昧さを避けるため、式root識別子として使用しない。
@@ -964,7 +964,7 @@ config.Property
 ()
 ```
 
-文字列、数値、bool、nullリテラルを扱う。
+文字列、数値、真偽値、nullリテラルを扱う。
 
 例:
 
@@ -1251,7 +1251,7 @@ config:
 
 | 項目 | 値 | 説明 |
 |---|---|---|
-| `merge` | `deep` | objectを再帰mergeする |
+| `merge` | `deep` | オブジェクトを再帰mergeする |
 | `precedence` | `runtime` | 実行時ConfigをYAML既定値より優先する |
 | `precedence` | `yaml` | YAML既定値を実行時Configより優先する |
 | `nullOverride` | `false` | nullは未指定扱いとする |
@@ -1261,7 +1261,7 @@ config:
 
 ### 12.7 C# API
 
-Workflow実行時にWorkflow Configを渡すため、Run単位のOptionsを持つ。
+Workflow実行時にWorkflow Configを渡すため、Run単位の設定型を持つ。
 
 ```csharp
 public sealed class WorkflowRunOptions
@@ -1324,7 +1324,7 @@ Workflow Config内のフォルダやファイルパスは通常のConfig値と�
 
 ---
 
-## 13. Binding / Config bindの命名規則
+## 13. Binding / Config結び付けの命名規則
 
 YAML keyとC# プロパティ / コンストラクタ パラメータの対応は以下とする。
 
@@ -1341,7 +1341,7 @@ YAML keyとC# プロパティ / コンストラクタ パラメータの対応�
 outputDirectory: ./output
 ```
 
-は以下にbindできる。
+は以下に結び付けられる。
 
 ```csharp
 public sealed record FileWorkflowConfig(
@@ -1475,12 +1475,12 @@ Step Output検証
   ↓
 next解決
   ↓
-次Step実行またはend到達
+次Step実行または終端到達
   ↓
 Flow Output検証
 ```
 
-### 15.2 end
+### 15.2 `end`
 
 `end` は仮想Stepである。
 
@@ -1667,7 +1667,7 @@ public sealed record ForEachStepConfig(
 );
 ```
 
-body Flow例:
+`body` に指定するFlow例:
 
 ```yaml
 - id: process-item-flow
@@ -1827,7 +1827,7 @@ retry対象外は以下とする。
 - Workflow schema エラー
 - csx コンパイルエラー
 - Step クラス未検出
-- Type 不一致
+- 型不一致
 - Input binding エラー
 - Config binding エラー
 - Input検証エラー
@@ -1945,7 +1945,7 @@ logger.LogInformation(
 logger.LogInformation($"Step started. WorkflowId={workflowId}");
 ```
 
-### 20.4 Log スコープ
+### 20.4 ログのスコープ
 
 Workflow / Flow / Step の文脈は `BeginScope` で付与する。
 
@@ -2016,7 +2016,7 @@ public sealed class WorkflowEngineOptions
 
 | 要素 | 役割 |
 |---|---|
-| Log | 実行中の観測、障害調査 |
+| ログ | 実行中の観測、障害調査 |
 | ExecutionTrace | 実行結果として保存・表示可能な構造化履歴 |
 
 ### 21.1 Trace 取得方針
@@ -2050,7 +2050,7 @@ captureConfigs = false
 - 個人情報や秘密情報がTraceに残る可能性がある。
 - 巨大オブジェクトによりメモリを圧迫する可能性がある。
 - 循環参照によりシリアライズできない可能性がある。
-- Stream、ファイルハンドル、外部リソース参照が混ざる可能性がある。
+- 連続入出力、ファイルハンドル、外部リソース参照が混ざる可能性がある。
 
 ### 21.2 WorkflowResult
 
@@ -2376,7 +2376,7 @@ Step csxは、`WorkflowStep<...>` を継承したStepクラスを含む。
   class: ValidateOrderStep
 ```
 
-Step csxには型定義、using、名前空間、補助メソッド、Stepクラスを記述できる。
+Step csxには型定義、`using`、名前空間、補助メソッド、Stepクラスを記述できる。
 
 Step csxでは、コンパイル時またはロード時に副作用を起こすトップレベルステートメントを避ける。初期実装では、Step csxのトップレベルの実行可能ステートメントを検証時に警告またはエラーとして扱ってよい。
 
@@ -2538,7 +2538,7 @@ engine version
 schemaVersion
 ```
 
-ファイル更新、参照更新、package version変更、`scriptOptions` 変更が検知された場合、該当キャッシュは無効化する。
+ファイル更新、参照更新、パッケージのバージョン変更、`scriptOptions` 変更が検知された場合、該当キャッシュは無効化する。
 
 ### 23.11 csx信頼境界
 
@@ -2572,7 +2572,7 @@ csxは任意のC#コードであり、ファイルI/O、ネットワークアク
 | `#r "nuget: Package, Version"` | 明示許可一覧、正確なバージョン指定、許可済み参照元の場合のみ対応 |
 | NuGet 復元 | `Dotnet.Script.Core` の仕組みを利用 |
 | workflow-root外ファイル参照 | 原則禁止 |
-| AssemblyLoadContext | Workflow単位またはキャッシュ単位で分離し、Abstractionsは共有 |
+| AssemblyLoadContext | Workflow単位またはキャッシュ単位で分離し、`Workflow.Abstractions` は共有 |
 | アンロード | 可能な範囲でAssemblyLoadContextのアンロードを行う |
 
 ---
@@ -2612,8 +2612,8 @@ workflow validate workflow.yaml --config run-config.yaml
 - 型整合性
 - Built-in Step型推論
 - Control Step参照先Flow整合性
-- Step Config bind可能性
-- Workflow Config bind可能性
+- Step Config結び付け可能性
+- Workflow Config結び付け可能性
 - Message検証可能性
 - Workflow Config検証可能性
 - retry / timeout形式
@@ -2650,9 +2650,9 @@ workflow types workflow.yaml --flow main
 
 ## 25. 実装範囲
 
-### 25.1 MVP範囲
+### 25.1 最小実装範囲
 
-MVPで対応する範囲は以下とする。
+最小実装で対応する範囲は以下とする。
 
 - workflow.yaml読み込み
 - schemaVersion 1
@@ -2690,7 +2690,7 @@ MVPで対応する範囲は以下とする。
 次フェーズで対応する範囲は以下とする。
 
 - Built-in IfStep
-- Built-in ForEachStep sequential
+- Built-in ForEachStepの逐次実行
 - YAML / Message / Workflow Config merge
 - retry
 - ExecutionTrace
@@ -2733,10 +2733,10 @@ MVPで対応する範囲は以下とする。
 | YAML読み込み | `YamlDotNet` |
 | csxコンパイル | `Dotnet.Script.Core`（標準実装） / `Microsoft.CodeAnalysis.CSharp.Scripting` / Roslyn（代替実装） |
 | csx依存解決 / NuGet 復元 | `Dotnet.Script.DependencyModel` / `Dotnet.Script.DependencyModel.NuGet` |
-| Logging抽象化 | `Microsoft.Extensions.Logging` |
-| Logging実装 | Serilog / NLog / log4net / OpenTelemetry |
+| ログ抽象化 | `Microsoft.Extensions.Logging` |
+| ログ実装 | Serilog / NLog / log4net / OpenTelemetry |
 | DI | `Microsoft.Extensions.DependencyInjection` |
-| Options | `Microsoft.Extensions.Options` |
+| 設定 | `Microsoft.Extensions.Options` |
 | Validation | `System.ComponentModel.DataAnnotations` |
 | Nullable メタデータ | `System.Reflection.NullabilityInfoContext` |
 | Trace シリアライズ | `System.Text.Json` |
@@ -2861,7 +2861,7 @@ flows:
           to: end
 ```
 
-### 27.2 messages/order-messages.csx
+### 27.2 `messages/order-messages.csx`
 
 ```csharp
 #nullable enable
@@ -2913,7 +2913,7 @@ public sealed record OrderProcessResult(
 );
 ```
 
-### 27.3 steps/validate-order.csx
+### 27.3 `steps/validate-order.csx`
 
 ```csharp
 #nullable enable
@@ -2953,7 +2953,7 @@ public sealed class ValidateOrderStep
 }
 ```
 
-### 27.4 steps/accepted.csx
+### 27.4 `steps/accepted.csx`
 
 ```csharp
 #nullable enable
@@ -2974,7 +2974,7 @@ public sealed class AcceptedStep
 }
 ```
 
-### 27.5 steps/rejected.csx
+### 27.5 `steps/rejected.csx`
 
 ```csharp
 #nullable enable
