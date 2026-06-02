@@ -9,7 +9,7 @@ entries:
   - term: repo
     description: この作業一式を管理する保存場所を短く示す語。
   - term: リポジトリ
-    description: repo と同じ意味で使う日本語表記。
+    description: 作業一式を管理する保存場所。
   - term: skill
     description: Codex が作業手順として参照する能力単位。
   - term: Codex
@@ -227,29 +227,69 @@ entries:
     description: 例示用 csx ファイル名。
   - term: Flow.InputType
     description: Flow の型情報を参照する API 名。
+  - term: Abstractions
+    description: 公開抽象化 assembly の名前に含まれる語。
+  - term: CapturedValue
+    description: trace に保存する値を表す型名。
+  - term: Condition
+    description: 条件式を保持する型や設定名。
+  - term: ExecutionNode
+    description: trace に含まれる実行単位を表す型名。
+  - term: FlowExecutionResult
+    description: Flow の実行結果を表す型名。
+  - term: ScriptCompiler
+    description: csx コンパイル抽象を表す設計語。
+  - term: ScriptCompiler抽象
+    description: csx コンパイル抽象の章題で使う設計語。
   - term: エンジン
-    description: workflow engine の日本語表記。
+    description: Workflow 定義を読み込み実行する中核機構。
   - term: コンパイル
-    description: compile 処理の日本語表記。
+    description: script などを実行可能な形へ変換する処理。
   - term: ログ
-    description: 記録出力を表す日本語表記。
+    description: 実行中の状態や障害調査に使う記録出力。
   - term: ディレクトリ
-    description: ファイルをまとめる場所の日本語表記。
+    description: ファイルをまとめて置く場所。
   - term: フォルダ
-    description: ディレクトリと同じ意味で使う日本語表記。
+    description: ファイルをまとめて置く場所。
   - term: パス
-    description: 参照先の場所を表す日本語表記。
+    description: ファイルやディレクトリの参照位置。
   - term: コード
-    description: 実装内容を表す日本語表記。
+    description: 処理内容を記述した断片または実装内容。
   - term: プロパティ
-    description: 型や設定の属性を表す日本語表記。
+    description: 型や設定に属する名前付き属性。
   - term: エラー
-    description: 失敗や誤りを表す日本語表記。
+    description: 処理の失敗や入力の誤り。
   - term: エラーコード
-    description: 失敗や誤りを識別する値の日本語表記。
+    description: 失敗や誤りの種類を識別する値。
   - term: クラス
-    description: C# の型分類を表す日本語表記。
+    description: C# で参照型を定義する型分類。
   - term: サポート
-    description: 対応していることを表す日本語表記。
+    description: 機能や形式に対応している状態。
   - term: プロセス
-    description: 実行中の処理単位を表す日本語表記。
+    description: 実行中の処理単位。
+  - term: キャッシュ
+    description: 再利用のために保存する情報。
+  - term: キャメルケース
+    description: 先頭語を小文字で始め、後続語の先頭を大文字にする命名形式。
+  - term: コンストラクタ
+    description: C# で型の初期化を行う特殊な構成要素。
+  - term: ハッシュ
+    description: 内容識別や変更検知に使う要約値。
+  - term: パッケージ
+    description: 依存する部品や配布物をまとめた単位。
+  - term: パスカルケース
+    description: 各語の先頭を大文字にする命名形式。
+  - term: プレリリース
+    description: 正式公開前の版。
+  - term: レコード
+    description: C# で値の構造を中心に扱う型分類。
+  - term: スカラー
+    description: 配列や構造値ではない単一値。
+  - term: シークレット
+    description: 認証情報など秘匿すべき値。
+  - term: スナップショット
+    description: 特定時点の状態を固定して残した記録。
+  - term: スネークケース
+    description: 語を下線で区切る命名形式。
+  - term: アンロード
+    description: 読み込んだ assembly などを解放する処理。
