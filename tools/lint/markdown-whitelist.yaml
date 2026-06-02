@@ -58,8 +58,6 @@ entries:
   - term: Dotnet.Script.Core
     description: csx の依存解決と compile に使う部品名。
   - term: compile
-    aliases:
-      - ・コンパイル
     description: script などを実行できる形に変換する処理名。
   - term: NuGet
     description: .NET の package 管理に関する名称。
@@ -81,10 +79,6 @@ entries:
     description: 命令行で実行する入口を表す略語。
   - term: fan-out
     description: 複数の後続処理へ広がる接続形態。
-  - term: join
-    description: 複数の流れを合流させる接続形態。
-  - term: parallel
-    description: 複数の処理を並べて進める接続形態。
   - term: edge condition
     description: 接続線に条件を持たせる設計語。
   - term: ID
@@ -311,14 +305,20 @@ entries:
     description: 実行中の処理単位。
   - term: キャッシュ
     description: 再利用のために保存する情報。
+  - term: キャッシュキー
+    description: 保存情報内の項目を識別する値。
   - term: キャメルケース
     description: 先頭語を小文字で始め、後続語の先頭を大文字にする命名形式。
   - term: コンストラクタ
     description: C# で型の初期化を行う特殊な構成要素。
+  - term: プライマリコンストラクタ
+    description: C# レコードなどで型定義と一体化した初期化要素。
   - term: ハッシュ
     description: 内容識別や変更検知に使う要約値。
   - term: パッケージ
     description: 依存する部品や配布物をまとめた単位。
+  - term: パッケージソース
+    description: NuGet package を取得する参照元。
   - term: パスカルケース
     description: 各語の先頭を大文字にする命名形式。
   - term: プレリリース
@@ -335,12 +335,16 @@ entries:
     description: 語を下線で区切る命名形式。
   - term: アンロード
     description: 読み込んだ assembly などを解放する処理。
+  - term: アセンブリ
+    description: .NET の実行単位。
   - term: アクセス
     description: 情報や資源を参照または利用する行為。
   - term: アップロード
     description: 外部の保存先へ送る処理。
   - term: インスタンス
     description: 型から生成された実体。
+  - term: インライン
+    description: NuGet 参照などを定義内へ直接書く指定形式。
   - term: オブジェクト
     description: 構造を持つ値。
   - term: オプション
@@ -349,6 +353,8 @@ entries:
     description: 実行中の処理を中止する要求。
   - term: キュー
     description: 順番に処理するための待ち行列。
+  - term: コマンド
+    description: CLI で実行する命令。
   - term: コピー
     description: 同じ内容を別の場所へ作る処理。
   - term: コレクション
@@ -373,6 +379,10 @@ entries:
     description: 実行順序や実行時点を決める仕組み。
   - term: スコープ
     description: 名前や設定が有効な範囲。
+  - term: スクリプトパッケージ
+    description: script から読み込む package。
+  - term: ステートメント
+    description: C# script の実行文。
   - term: セキュリティ
     description: 安全性や保護に関する性質。
   - term: タイミング
@@ -391,6 +401,8 @@ entries:
     description: 明示指定がない場合に使う既定値。
   - term: トップレベル
     description: 入れ子の外側にある最上位。
+  - term: トップレベルステートメント
+    description: C# script の最上位に直接書かれた実行文。
   - term: トレース
     description: 実行中の状態を追跡して残す記録。
   - term: ネスト
@@ -441,6 +453,8 @@ entries:
     description: 型や値の情報を実行時に調べる仕組み。
   - term: リンク
     description: 別の場所や対象を指す参照。
+  - term: シンボリックリンク
+    description: 別のパスを指す参照。
   - term: ローカル
     description: 現在の環境や近い場所に属する状態。
   - term: ローカルファイル
@@ -457,3 +471,7 @@ entries:
     description: 実行手順をまとめた定義。
   - term: ワークフローエンジン
     description: Workflow 定義を読み込み実行する中核機構。
+  - term: ディレクティブ
+    description: csx 内で読み込みや参照を指示する記述。
+  - term: エッジ
+    description: Flow 内の Step 接続。
