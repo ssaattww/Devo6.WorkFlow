@@ -1,0 +1,21 @@
+{
+  "name": "devo6-workflow-doc-tooling",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Repository-local Markdown lint tooling for Devo6.WorkFlow.",
+  "scripts": {
+    "lint:md": "npm run lint:md:text && npm run lint:md:spell && npm run lint:md:whitelist",
+    "lint:md:targets": "node tools/lint/run-skill-script.js review-enforcer/scripts/list-markdown-targets.js",
+    "lint:md:text": "node tools/lint/run-skill-script.js review-enforcer/scripts/list-markdown-targets.js --print0 | xargs -0 -r textlint --config .textlintrc.json --rulesdir \"$(node tools/lint/run-skill-script.js --print-path review-enforcer/scripts/textlint-rules)\"",
+    "lint:md:spell": "node tools/lint/run-skill-script.js review-enforcer/scripts/list-markdown-targets.js --print0 | xargs -0 -r node tools/lint/run-skill-script.js review-enforcer/scripts/run-cspell-markdown.js",
+    "lint:md:whitelist": "node tools/lint/run-skill-script.js review-enforcer/scripts/check-markdown-whitelist.js",
+    "lint:md:whitelist:changed": "npm run lint:md:whitelist -- --changed",
+    "lint:md:vocab": "python3 tools/lint/run-skill-script.py review-enforcer/scripts/extract-markdown-vocabulary-sudachi.py"
+  },
+  "devDependencies": {
+    "cspell": "^9.2.1",
+    "textlint": "^15.7.0",
+    "textlint-rule-prh": "^6.1.0",
+    "yaml": "^2.9.0"
+  }
+}

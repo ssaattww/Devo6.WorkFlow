@@ -1,0 +1,16 @@
+{
+  "ignoreDirectories": [
+    ".agents",
+    ".codex",
+    ".git",
+    ".serena",
+    ".venv",
+    "bin",
+    "node_modules",
+    "obj",
+    "reports"
+  ],
+  "ignoredPrefixes": [
+    "tools/lint/excluded/"
+  ]
+}

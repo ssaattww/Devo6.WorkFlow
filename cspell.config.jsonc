@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+  "version": "0.2",
+  "language": "en,ja",
+  "useGitignore": false,
+  "globRoot": ".",
+  "files": [
+    "**/*.md"
+  ],
+  "ignorePaths": [
+    ".codex/**",
+    ".agents/**",
+    ".git/**",
+    ".serena/**",
+    ".venv/**",
+    "node_modules/**",
+    "bin/**",
+    "obj/**",
+    "reports/**",
+    "doc/workflow_engine_spec.md",
+    "tools/lint/excluded/**"
+  ],
+  "patterns": [
+    {
+      "name": "markdown-fenced-code",
+      "pattern": "/^```[\\s\\S]*?^```/gm"
+    },
+    {
+      "name": "markdown-inline-code",
+      "pattern": "/`[^`\\n]+`/g"
+    },
+    {
+      "name": "markdown-footnote-definition",
+      "pattern": "/^\\[\\^[^\\]]+\\]:.*$/gm"
+    },
+    {
+      "name": "mixed-japanese-token",
+      "pattern": "/[A-Za-z0-9_-]*[\\u3040-\\u30ff\\u3400-\\u9fff]+[A-Za-z0-9_\\-\\u3040-\\u30ff\\u3400-\\u9fff]*/g"
+    }
+  ],
+  "ignoreRegExpList": [
+    "Urls",
+    "Email",
+    "CommitHash",
+    "markdown-fenced-code",
+    "markdown-inline-code",
+    "markdown-footnote-definition",
+    "mixed-japanese-token"
+  ]
+}

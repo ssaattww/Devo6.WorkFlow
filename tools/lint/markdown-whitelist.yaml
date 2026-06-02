@@ -1,0 +1,255 @@
+version: "0.1"
+entries:
+  - term: Markdown
+    description: 文書の構造を表す軽量な記法名。
+  - term: lint
+    description: 文書や設定の問題を機械的に検出する検査名。
+  - term: whitelist
+    description: 文書検査で許可語を管理する設定名。
+  - term: repo
+    description: この作業一式を管理する保存場所を短く示す語。
+  - term: リポジトリ
+    description: repo と同じ意味で使う日本語表記。
+  - term: skill
+    description: Codex が作業手順として参照する能力単位。
+  - term: Codex
+    description: 作業支援を行う実行環境名。
+  - term: CodexSkill
+    description: 共有 skill と関連処理を置く作業一式名。
+  - term: SudachiPy
+    description: 日本語の語彙を分類するために使う解析器名。
+  - term: task
+    description: 作業を管理しやすい単位に分けた項目。
+  - term: phase
+    description: 複数の task をまとめる進行段階。
+  - term: ファイル
+    description: 文書や設定を保存する単位。
+  - term: workflow engine
+    aliases:
+      - workflow
+      - engine
+    description: 実行手順を定義して処理する仕組みの設計名。
+  - term: Devo6.WorkFlow
+    description: この repo の名前。
+  - term: YAML
+    description: 設定構造を記述する形式名。
+  - term: C#
+    description: 実装言語名。
+  - term: csx
+    description: C# script の拡張子名。
+  - term: C# script
+    description: C# で書く script 形式名。
+  - term: script
+    description: 実行または読み込みの対象になる手順記述。
+  - term: Workflow
+    description: 全体の実行定義を表す設計語。
+  - term: Flow
+    description: step の集合を表す設計語。
+  - term: Step
+    description: workflow 内の処理単位を表す設計語。
+  - term: Message
+    description: 入出力の値を表す設計語。
+  - term: Config
+    description: 実行時の設定値を表す設計語。
+  - term: Input
+    description: step または flow へ渡す入力を表す設計語。
+  - term: Output
+    description: step または flow から返す出力を表す設計語。
+  - term: Dotnet.Script.Core
+    description: csx の依存解決と compile に使う部品名。
+  - term: compile
+    description: script などを実行できる形に変換する処理名。
+  - term: NuGet
+    description: .NET の package 管理に関する名称。
+  - term: package
+    description: 依存する部品をまとめて扱う単位。
+  - term: .NET
+    description: C# 実行基盤の名称。
+  - term: retry
+    description: 失敗した処理を再実行する設定名。
+  - term: timeout
+    description: 実行時間の上限を表す設定名。
+  - term: ExecutionTrace
+    description: 実行履歴を構造化して残す設計語。
+  - term: logger provider
+    description: 記録出力先を受け持つ部品の設計語。
+  - term: API
+    description: 利用者に公開する呼び出し口を表す略語。
+  - term: CLI
+    description: 命令行で実行する入口を表す略語。
+  - term: fan-out
+    description: 複数の後続処理へ広がる接続形態。
+  - term: join
+    description: 複数の流れを合流させる接続形態。
+  - term: parallel
+    description: 複数の処理を並べて進める接続形態。
+  - term: edge condition
+    description: 接続線に条件を持たせる設計語。
+  - term: ID
+    description: 仕様上の識別子を表す略語。
+  - term: Built-in
+    description: 事前登録された Step 分類を表す設計語。
+  - term: Script
+    description: script で定義される Step 分類を表す設計語。
+  - term: Control
+    description: 制御用 Step の分類を表す設計語。
+  - term: Override
+    description: 実行時に設定を上書きする仕組みを表す設計語。
+  - term: Descriptor
+    description: 定義内容を記述する型を表す設計語。
+  - term: Entry
+    description: 実行開始位置を表す設計語。
+  - term: StepContext
+    description: Step 実行時に渡す公開 API 型名。
+  - term: StepContext.Logger
+    description: Step 実行時の記録出力を扱う公開 API 名。
+  - term: StepProvider
+    description: Step の供給元を表す型名。
+  - term: WorkflowResult
+    description: Workflow の実行結果を表す型名。
+  - term: WorkflowStepException
+    description: Step 実行時の例外を表す型名。
+  - term: Unit
+    description: 値を持たない入出力を表す型名。
+  - term: IfStep
+    description: 条件分岐を行う制御 Step 名。
+  - term: ForEachStep
+    description: 要素ごとの繰り返しを行う制御 Step 名。
+  - term: WhileStep
+    description: 条件付き繰り返しを行う制御 Step 名。
+  - term: ParallelStep
+    description: 並行実行を扱う制御 Step 名。
+  - term: SwitchStep
+    description: 分岐選択を行う制御 Step 名。
+  - term: TryCatchStep
+    description: 例外処理を扱う制御 Step 名。
+  - term: If
+    description: 条件分岐機能を表す設計語。
+  - term: ForEach
+    description: 要素ごとの繰り返し機能を表す設計語。
+  - term: While
+    description: 条件付き繰り返し機能を表す設計語。
+  - term: Switch
+    description: 分岐選択機能を表す設計語。
+  - term: Call
+    description: Flow 呼び出し機能を表す設計語。
+  - term: Run
+    description: 実行単位や実行時情報を表す設計語。
+  - term: Start
+    description: 開始位置や開始状態を表す設計語。
+  - term: validation
+    description: 検証設定を表す YAML 設定名。
+  - term: binding
+    description: 入力や設定の結び付けを表す設計語。
+  - term: merge
+    description: 設定値の統合処理を表す設計語。
+  - term: version
+    description: 定義の版を表す YAML key。
+  - term: path
+    description: 参照先を表す YAML key。
+  - term: "null"
+    description: YAML や型検証で使う空値を表す語。
+  - term: trace
+    description: 実行履歴の取得設定を表す設計語。
+  - term: key
+    description: binding や設定値を識別する設計語。
+  - term: provider
+    description: 値の供給元を表す設計語。
+  - term: source
+    description: 入力元や参照元を表す設計語。
+  - term: root
+    description: 基準位置や基準設定を表す設計語。
+  - term: edge
+    description: Flow 内の接続を表す設計語。
+  - term: next
+    description: 後続 Step を表す YAML key。
+  - term: schema
+    description: 定義構造の検証規則を表す設計語。
+  - term: schemaVersion
+    description: schema の版を表す YAML key。
+  - term: scriptOptions
+    description: script 実行設定を表す YAML key。
+  - term: non-nullable
+    description: null を許さない型検証を表す設計語。
+  - term: nullable
+    description: null を許す型検証を表す設計語。
+  - term: "true"
+    description: YAML の真値を表す語。
+  - term: "false"
+    description: YAML の偽値を表す語。
+  - term: key-value
+    description: key と値の組で表す設定形式名。
+  - term: nullability
+    description: null 許容性を表す設計語。
+  - term: assembly
+    description: .NET の実行単位を表す実装語。
+  - term: AssemblyLoadContext
+    description: .NET の assembly 読み込み単位を表す型名。
+  - term: DI
+    description: 依存注入を表す略語。
+  - term: CancellationToken
+    description: .NET の中断通知型名。
+  - term: DAG
+    description: 有向非巡回構造を表す略語。
+  - term: NLog
+    description: logger provider の製品名。
+  - term: Roslyn
+    description: C# のコンパイル技術名。
+  - term: Serilog
+    description: logger provider の製品名。
+  - term: CLR
+    description: .NET 実行基盤を表す略語。
+  - term: DataAnnotations
+    description: .NET の検証属性機能名。
+  - term: IValidatableObject
+    description: .NET の検証契約名。
+  - term: OpenTelemetry
+    description: 計測情報を扱う技術名。
+  - term: OS
+    description: 実行環境を表す略語。
+  - term: SMTP
+    description: 送信通信規約名。
+  - term: UI
+    description: 表示や操作面を表す略語。
+  - term: Web
+    description: 実行対象や出力先の分類名。
+  - term: workflow-root
+    description: 例示用の標準ディレクトリ名。
+  - term: workflow.yaml
+    description: Workflow 定義の標準ファイル名。
+  - term: accepted.csx
+    description: 例示用 csx ファイル名。
+  - term: order-messages.csx
+    description: 例示用 csx ファイル名。
+  - term: rejected.csx
+    description: 例示用 csx ファイル名。
+  - term: validate-order.csx
+    description: 例示用 csx ファイル名。
+  - term: Flow.InputType
+    description: Flow の型情報を参照する API 名。
+  - term: エンジン
+    description: workflow engine の日本語表記。
+  - term: コンパイル
+    description: compile 処理の日本語表記。
+  - term: ログ
+    description: 記録出力を表す日本語表記。
+  - term: ディレクトリ
+    description: ファイルをまとめる場所の日本語表記。
+  - term: フォルダ
+    description: ディレクトリと同じ意味で使う日本語表記。
+  - term: パス
+    description: 参照先の場所を表す日本語表記。
+  - term: コード
+    description: 実装内容を表す日本語表記。
+  - term: プロパティ
+    description: 型や設定の属性を表す日本語表記。
+  - term: エラー
+    description: 失敗や誤りを表す日本語表記。
+  - term: エラーコード
+    description: 失敗や誤りを識別する値の日本語表記。
+  - term: クラス
+    description: C# の型分類を表す日本語表記。
+  - term: サポート
+    description: 対応していることを表す日本語表記。
+  - term: プロセス
+    description: 実行中の処理単位を表す日本語表記。
