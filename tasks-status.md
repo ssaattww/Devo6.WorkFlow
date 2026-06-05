@@ -10,3 +10,4 @@
 | T5 | 完了 | `doc/workflow_engine_spec.md` を Markdown lint に通す。 | 設計書が通常の `npm run lint:md` 対象に含まれ、全文 lint が通る。 | `doc/workflow_engine_spec.md`、`tools/lint/markdown-whitelist.yaml`、`npm run lint:md` |
 | T6 | 完了 | SudachiPy で使用用語の揺れ候補を検知する入口を追加する。 | `npm run lint:md:terms` で正規形ごとの表層揺れ候補を確認できる。 | `tools/lint/check-sudachi-term-variants.py`、`npm run lint:md:terms` |
 | T7 | 未着手 | `doc/workflow_engine_spec.md` から実装 task を分解する。 | 具体的な実装 task と順序がこのファイルに記録される。 |  |
+| T8 | 完了 | 課題 #1 添付設計を参照し、設計書を csx 完結型に更新する。 | YAML ワークフロー定義中心の設計が削除され、`CompositeStep`、`StepInput`、`StepContext` を中心にした設計へ置換され、Markdown lint と点検が通る。 | `doc/workflow_engine_spec.md`、`tools/lint/markdown-whitelist.yaml`、`reports/issue-1-full-csx-design-update-20260605130833.md`、`reports/issue-1-full-csx-design-review-20260605130833.md`、`npm run lint:md`、`npm run lint:md:terms` |

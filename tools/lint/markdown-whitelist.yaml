@@ -81,10 +81,28 @@ entries:
     description: 定義内容を記述する型を表す設計語。
   - term: Entry
     description: 実行開始位置を表す設計語。
+  - term: StepInput
+    description: Step へ渡す唯一の入力集合を表す公開 API 型名。
   - term: StepContext
     description: Step 実行時に渡す公開 API 型名。
   - term: StepContext.Logger
     description: Step 実行時の記録出力を扱う公開 API 名。
+  - term: CompositeStep
+    description: 複数の Step を順番に実行する Step 型名。
+  - term: IStep
+    description: Step の実行契約を表す公開 API 型名。
+  - term: ConfigStore
+    description: 実行時 Config を保持する補助型名。
+  - term: EngineArguments
+    description: エンジン起動時の引数を保持する補助型名。
+  - term: Produce
+    description: Step の戻り値から下流入力を生成する API 名。
+  - term: StoreAs
+    description: Step の戻り値をそのまま入力集合へ登録する API 名。
+  - term: Discard
+    description: Step の戻り値を入力集合へ登録しない API 名。
+  - term: FailurePolicy
+    description: Step 失敗時の挙動候補を表す列挙型名。
   - term: StepProvider
     description: Step の供給元を表す型名。
   - term: WorkflowResult

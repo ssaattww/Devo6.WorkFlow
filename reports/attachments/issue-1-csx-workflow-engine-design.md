@@ -1,19 +1,18 @@
-# csx 完結型ワークフローエンジン設計資料
+# csx ワークフローエンジン 設計資料
 
 ## 1. 目的
 
-本設計資料は、C# Script（`.csx`）上で定義できるワークフローエンジンのライブラリ要件および基本設計をまとめる。
+本設計資料は、C# Script（`.csx`）上で定義できるワークフローエンジンライブラリの要件および基本設計をまとめる。
 
-本ライブラリは、処理定義を C# で組み立てられる書き心地を参考にしつつ、実体としては以下を目的とする。
+本ライブラリは、Cake のような書き心地を一部参考にしつつ、実体としては以下を目的とする。
 
 - `.csx` で Step を組み合わせたワークフローを定義できること
 - Step と Flow を別概念にせず、すべて Step として扱うこと
 - 上流 Step の結果を下流 Step へ明示的に渡せること
 - Step の入力を可変長に扱えること
-- Config、StepContext、上流出力を統一的に扱えること
-- ワークフロー定義に YAML を使わず、名前付きの `CompositeStep` を `.csx` で定義すること
-- Config は実行時入力として `StepContext` に保持できること
-- `.csx` の解決、NuGet 解決、外部 `.csx` 解決には `Dotnet.Script.Core` を利用すること
+- Config、Context、上流出力を統一的に扱えること
+- Config は YAML から読み込み、Context に保持できること
+- `.csx` の解決、NuGet 解決、外部スクリプト解決には dotnet-script の core ライブラリを利用すること
 
 ---
 
@@ -72,8 +71,8 @@ Step("Main")
 
 - 並列実行
 - 分岐実行
-- 統合実行
-- 複雑な依存関係解決
+- マージ実行
+- グラフ型依存解決
 - Step の自動依存解決
 
 ### 3.2 自動推論しない
@@ -112,7 +111,7 @@ public interface IStep<TOut>
 
 - 上流 Step の出力全体
 - 上流 Step の出力の一部
-- 上流 Step の出力から生成した下流用の型
+- 上流 Step の出力から生成した下流用 DTO
 - Config から作成された値
 - 固定値
 - エンジン引数
@@ -157,7 +156,7 @@ public sealed class StepInput
 
 ## 5. StepContext
 
-### 5.1 StepContext は StepInput に自動で含める
+### 5.1 Context は StepInput に自動で含める
 
 `StepContext` は、エンジンが自動で生成し、`StepInput` に含める。
 
@@ -175,7 +174,7 @@ StepContext context = input.Get<StepContext>();
 
 ただし、API としては `input.Context` を用意する方が明確である。
 
-### 5.2 StepContext の責務
+### 5.2 Context の責務
 
 `StepContext` は、実行全体で共有される値を保持する。
 
@@ -184,7 +183,7 @@ StepContext context = input.Get<StepContext>();
 - Config
 - ConfigStore
 - EngineArguments
-- 記録出力
+- Logger
 - CancellationToken
 - 実行全体で共有したい値
 
@@ -249,42 +248,35 @@ public sealed class ConvertStep : IStep<ConvertResult>
 }
 ```
 
-### 6.2 Config 入力形式
+### 6.2 Config ファイル形式
 
-ワークフロー定義には YAML を使わない。
-
-Config は `.csx` 内で生成する値、エンジン引数、環境変数、または任意の設定ファイルから生成した値として扱う。
-
-設定ファイルを使う場合でも、ファイル形式はワークフロー定義の形式とは分離する。
+Config ファイルは YAML とする。
 
 例:
 
-```json
-{
-  "load": {
-    "path": "./input.txt"
-  },
-  "convert": {
-    "toUpper": true
-  },
-  "save": {
-    "path": "./output.txt"
-  }
-}
+```yaml
+load:
+  path: ./input.txt
+
+convert:
+  toUpper: true
+
+save:
+  path: ./output.txt
 ```
 
 ### 6.3 Config 読み込み
 
 Config 読み込みは以下のどちらも許可する。
 
-1. エンジンが初期処理として読み込み、`StepContext` に格納する
-2. Config 読み込み用 Step をユーザーが明示的に定義し、`StepContext` に格納する
+1. エンジンが初期処理として読み込み、Context に格納する
+2. Config 読み込み用 Step をユーザーが明示的に定義し、Context に格納する
 
 ただし、Step ごとに Config 読み込み Step を挟む設計は避ける。
 
 Config 読み込み Step を使用する場合は、ワークフローの先頭またはまとまりの先頭で一度だけ行うことを想定する。
 
-### 6.4 Config を StepContext に格納する例
+### 6.4 Config を Context に格納する例
 
 ```csharp
 public sealed class LoadConfigStep : IStep<Unit>
@@ -293,7 +285,7 @@ public sealed class LoadConfigStep : IStep<Unit>
     {
         EngineArguments args = input.Context.Get<EngineArguments>();
 
-        AppConfig config = ConfigLoader.Load<AppConfig>(args.ConfigPath);
+        AppConfig config = YamlConfig.Load<AppConfig>(args.ConfigPath);
 
         input.Context.Set(config);
 
@@ -307,7 +299,7 @@ public sealed class LoadConfigStep : IStep<Unit>
 エンジン起動時に Config ファイルを指定できる。
 
 ```bash
-engine run main.csx --config appsettings.json
+engine run main.csx --config config.yaml
 ```
 
 ### 6.6 CLI による Config 上書き
@@ -317,14 +309,14 @@ CLI 引数で Config の一部を上書きできることを要件とする。
 例:
 
 ```bash
-engine run main.csx --config appsettings.json --set convert.toUpper=false
+engine run main.csx --config config.yaml --set convert.toUpper=false
 ```
 
 上書き仕様の詳細は未確定だが、最低限以下を検討対象とする。
 
 - 単純キーの上書き
-- 入れ子キーの上書き
-- 真偽値、整数、文字列などの型変換
+- ネストキーの上書き
+- bool / int / string などの型変換
 - 複数 `--set` 指定
 
 ---
@@ -416,7 +408,7 @@ Step("Main")
 
 ### 8.1 通常 Step はクラスで定義する
 
-Step はメソッドの連続呼び出しで定義せず、通常の C# クラスとして定義する。
+Step はメソッドチェーンで定義せず、通常の C# クラスとして定義する。
 
 ```csharp
 public sealed class LoadStep : IStep<LoadResult>
@@ -489,22 +481,22 @@ MainStep
 
 CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 
-`#load` による外部 `.csx` 解決を想定する。
+`#load` による外部スクリプト解決を想定する。
 
 ```csharp
 #load "./build.csx"
 #load "./test.csx"
 ```
 
-`.csx` の実行、NuGet 解決、外部 `.csx` 解決には `Dotnet.Script.Core` を利用する。
+`.csx` の実行、NuGet 解決、外部スクリプト解決には dotnet-script の core ライブラリを利用する。
 
 ---
 
-## 10. Dotnet.Script.Core 利用
+## 10. dotnet-script core 利用
 
 ### 10.1 必須要件
 
-エンジンは `Dotnet.Script.Core` を利用する。
+エンジンは dotnet-script の core ライブラリを利用する。
 
 目的:
 
@@ -521,7 +513,7 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 2. 初期 `StepContext` を生成する
 3. 初期 `StepInput` を生成する
 4. `StepInput` に `StepContext` を含める
-5. `.csx` を `Dotnet.Script.Core` 経由でロードする
+5. `.csx` を dotnet-script core 経由でロードする
 6. `.csx` 上の CompositeStep 定義を取得する
 7. 指定された Step を実行する
 
@@ -557,7 +549,7 @@ public enum FailurePolicy
 - `StepInput.Get<T>()` で値が存在しない
 - `StepInput.Get<T>(name)` で値が存在しない
 - Config が存在しない
-- Config の結び付け失敗
+- Config のバインド失敗
 - Step 実行時例外
 - `.csx` のロード失敗
 - NuGet 解決失敗
@@ -602,7 +594,7 @@ public interface IStep<TOut>
 
 ---
 
-## 13. 定義 API 案
+## 13. DSL 案
 
 ### 13.1 基本形
 
@@ -658,7 +650,7 @@ public sealed class MergeStep : IStep<Article>
 }
 ```
 
-### 13.3 Config を StepContext に置く例
+### 13.3 Config を Context に置く例
 
 ```csharp
 Step("Main")
@@ -680,7 +672,7 @@ Step("Main")
 
 ---
 
-## 14. 主要公開 API 案
+## 14. 主要インターフェース案
 
 ### 14.1 IStep
 
@@ -753,14 +745,14 @@ public readonly struct Unit
 
 ```text
 ・Flow という独立概念を作ること
-・Flow(...) という専用記法を作ること
+・Flow(...) という専用 DSL を作ること
 ・Step に Config 専用引数を追加すること
-・Step に StepContext 専用引数を追加すること
+・Step に Context 専用引数を追加すること
 ・Step 間の入出力を自動推論すること
 ・上流出力を自動的に下流入力へ変換すること
 ・Config を Step ごとに自動注入すること
 ・並列実行すること
-・分岐、統合を初期版に含めること
+・分岐、マージを初期版に含めること
 ```
 
 ---
@@ -781,14 +773,14 @@ public readonly struct Unit
 - Config 読み込み Step を標準部品として提供するか
 - 両方を許可するか
 
-現時点では、Config は `StepContext` に置く方針で合意済み。
+現時点では、Config は Context に置く方針で合意済み。
 
 ### 16.3 CLI override の仕様
 
-- 入れ子キーの書式
+- ネストキーの書式
 - 配列の上書き
 - 型変換仕様
-- 複数 Config ファイル指定時の統合規則
+- 複数 Config ファイル指定時のマージルール
 
 ### 16.4 Step 登録名
 
@@ -815,8 +807,8 @@ Step が唯一の実行単位。
 Flow は独立概念ではなく CompositeStep として扱う。
 Step は StepInput のみを受け取る。
 StepInput は可変長の型付き・名前付き入力集合である。
-StepContext は StepInput に自動で含まれる。
-Config は StepContext に置く。
+Context は StepInput に自動で含まれる。
+Config は Context に置く。
 上流 Step の結果を下流に渡す場合は Produce で明示する。
 エンジンは Step 間の接続を自動推論しない。
 ```
@@ -828,4 +820,4 @@ Config は StepContext に置く。
 - 上流出力の一部だけを下流へ渡す明示性
 - Flow/Step 概念の一本化
 - `.csx` での実用的な書き心地
-- `Dotnet.Script.Core` による NuGet / 外部 `.csx` 解決
+- dotnet-script core による NuGet / 外部スクリプト解決
