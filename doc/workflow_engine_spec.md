@@ -129,6 +129,10 @@ Type + name
 
 同じ型の値を複数扱う場合は、名前付き登録を使用する。
 
+同じ型と名前の組み合わせを複数登録してはならない。
+
+`Produce` により既存キーへ再登録しようとした場合、エンジンは実行時エラーとして扱う。
+
 例:
 
 ```csharp
@@ -185,7 +189,6 @@ StepContext context = input.Get<StepContext>();
 - ConfigStore
 - EngineArguments
 - 記録出力
-- CancellationToken
 - 実行全体で共有したい値
 
 ### 5.3 StepInput と StepContext の使い分け
@@ -205,6 +208,8 @@ Config は `StepContext` に置く方針とする。
 ```csharp
 public sealed class StepContext
 {
+    public ILogger Logger { get; }
+
     public T Get<T>();
 
     public T Get<T>(string name);
@@ -218,6 +223,10 @@ public sealed class StepContext
     public bool TryGet<T>(string name, out T value);
 }
 ```
+
+`StepContext.Set<T>()` と `StepContext.Set<T>(name, value)` は、同じ型と名前の組み合わせが既に存在する場合、明示的な上書きとして扱う。
+
+`StepInput` は Step 間の入力集合であり、`StepContext` は実行全体の共有値であるため、重複登録の扱いを分ける。
 
 ---
 
@@ -256,6 +265,8 @@ public sealed class ConvertStep : IStep<ConvertResult>
 Config は `.csx` 内で生成する値、エンジン引数、環境変数、または任意の設定ファイルから生成した値として扱う。
 
 設定ファイルを使う場合でも、ファイル形式はワークフロー定義の形式とは分離する。
+
+Config ファイルの相対パスは、Entry `.csx` の存在するディレクトリを基準に解決する。
 
 例:
 
@@ -310,6 +321,10 @@ public sealed class LoadConfigStep : IStep<Unit>
 engine run main.csx --config appsettings.json
 ```
 
+初期版では、`--config` は Config ファイルパスとして `EngineArguments` に保持する。
+
+エンジンは任意形式の Config ファイルを標準では型変換しない。
+
 ### 6.6 CLI による Config 上書き
 
 CLI 引数で Config の一部を上書きできることを要件とする。
@@ -326,6 +341,10 @@ engine run main.csx --config appsettings.json --set convert.toUpper=false
 - 入れ子キーの上書き
 - 真偽値、整数、文字列などの型変換
 - 複数 `--set` 指定
+
+初期版では、`--set` は文字列の上書き指定として `EngineArguments` に保持する。
+
+型変換と統合は、Config 読み込み Step または将来の標準 Config 読み込み機能で行う。
 
 ---
 
@@ -563,6 +582,18 @@ public enum FailurePolicy
 - NuGet 解決失敗
 - `#load` 解決失敗
 
+### 11.4 retry と timeout
+
+初期版では retry を実装しない。
+
+retry を追加する場合、対象は Step 実行中の一時的な例外に限定する。
+
+入力取得失敗、Config 検証失敗、`.csx` コンパイル失敗、参照解決失敗は retry 対象外とする。
+
+timeout は非同期 API と `CancellationToken` の扱いを決めた後に追加する。
+
+timeout を追加する場合も、強制停止ではなく協調キャンセルとして扱う。
+
 ---
 
 ## 12. 非同期対応
@@ -713,6 +744,8 @@ public sealed class StepInput
 ```csharp
 public sealed class StepContext
 {
+    public ILogger Logger { get; }
+
     public T Get<T>();
 
     public T Get<T>(string name);
@@ -745,9 +778,409 @@ public readonly struct Unit
 }
 ```
 
+### 14.6 型定義方針
+
+Step の入力、出力、Config は C# 型として `.csx` に定義する。
+
+Step 間で受け渡す値は `Message` として特別な基底型を要求しない。
+
+ただし、設計上は以下を推奨する。
+
+- `#nullable enable` を有効にする
+- 入出力値は `record` などの不変な型で定義する
+- 入出力値と Config は `DataAnnotations` による検証対象にできるようにする
+- 業務固有の複雑な検証が必要な場合は `IValidatableObject` を利用できるようにする
+
+Config は `StepContext` に登録した後、Run 中は読み取り専用のスナップショットとして扱う。
+
+Config を差し替える場合は、別名の値として登録するか、明示的な上書き規則を持つ Config 読み込み Step で行う。
+
 ---
 
-## 15. 明確に禁止すること
+## 15. 実行入口とファイル構成
+
+### 15.1 Entry
+
+ワークフローの実行入口は、名前付きの `CompositeStep` とする。
+
+CLI で実行入口を明示しない場合、エンジンは `Main` を既定の Entry 名として扱う。
+
+```bash
+engine run main.csx
+engine run main.csx --entry Build
+```
+
+`.csx` 上では以下のように名前付き Step を定義する。
+
+```csharp
+Step("Main")
+    .Run<LoadStep, LoadResult>()
+        .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
+    .Run<ConvertStep, ConvertResult>()
+        .StoreAs<ConvertResult>();
+```
+
+エンジンはロード済み `.csx` から、指定名に一致する `CompositeStep` を取得して実行する。
+
+指定された Entry が存在しない場合は検証エラーとする。
+
+### 15.2 Step 名の一意性
+
+ロード済み `.csx` 全体で、実行対象として公開される Step 名は一意でなければならない。
+
+同名の `CompositeStep` が複数見つかった場合、エンジンは実行前の検証で失敗する。
+
+外部 `.csx` を `#load` した場合も、読み込み後の全体で同じ規則を適用する。
+
+### 15.3 ファイル構成
+
+標準的な構成は以下とする。
+
+```text
+workflow-root/
+├── main.csx
+├── build.csx
+├── test.csx
+├── steps/
+│   ├── load-step.csx
+│   └── save-step.csx
+├── shared/
+│   └── common.csx
+├── config/
+│   └── appsettings.json
+└── lib/
+    └── custom-helper.dll
+```
+
+`main.csx` はワークフロー定義の入口であり、必要な外部 `.csx` を `#load` する。
+
+相対パスの基準は、原則として実行対象に指定した Entry `.csx` の存在するディレクトリとする。
+
+`#load` 内の相対パスは、`#load` を書いた `.csx` の存在するディレクトリを基準とする。
+
+### 15.4 トップレベルステートメント
+
+Entry `.csx` と外部 `.csx` のトップレベルステートメントは、Step 定義、型定義、`using`、`#load`、`#r` に限定することを推奨する。
+
+検証時にも `.csx` のロードや評価が必要になるため、トップレベルでファイル削除、外部通信、環境変更などの副作用を起こしてはならない。
+
+初期版では、副作用のあるトップレベルステートメントを完全には検出しない。
+
+利用者は、実処理を `IStep<TOut>.Execute` 内に置く。
+
+---
+
+## 16. csx 解決と参照方針
+
+### 16.1 Dotnet.Script.Core の利用範囲
+
+`Dotnet.Script.Core` は、`.csx` のロード、`#load` 解決、`#r` 解決、NuGet 復元、Roslyn コンパイルに使う。
+
+Step 実行、`StepInput` 構築、Config 保持、検証、ログ、実行結果の生成はエンジン側で制御する。
+
+通常実行経路では、Step ごとに外部プロセスとして `dotnet script` CLI を起動しない。
+
+### 16.2 `#load` 解決
+
+初期版では、ローカルファイルの `#load` に対応する。
+
+```csharp
+#load "./build.csx"
+#load "./steps/load-step.csx"
+```
+
+解決規則は以下とする。
+
+| 項目 | 規則 |
+| --- | --- |
+| 相対パス基準 | `#load` を書いた `.csx` のディレクトリ |
+| パス正規化 | `..` とシンボリックリンクを解決した正規パス |
+| root 制限 | 初期版では `workflow-root` 配下のみ許可 |
+| 循環読み込み | 検出して検証エラー |
+| 重複読み込み | 同一正規パスは 1 回だけ読み込む |
+
+`#load "nuget: ..."` は初期版では対象外とする。
+
+### 16.3 `#r` と NuGet 参照
+
+初期版では、以下を明示許可された場合に限り対応する。
+
+```csharp
+#r "System.Text.Json"
+#r "./lib/custom-helper.dll"
+#r "nuget: CsvHelper, 33.0.1"
+```
+
+参照規則は以下とする。
+
+| 項目 | 規則 |
+| --- | --- |
+| assembly 名参照 | 許可一覧に登録された名前のみ許可 |
+| ファイル参照 | 許可一覧に登録されたディレクトリ配下のみ許可 |
+| NuGet 参照 | 許可一覧に登録されたパッケージ ID とバージョンのみ許可 |
+| 浮動バージョン | 初期版では禁止 |
+| パッケージ参照元 | 既定の参照元または明示許可された参照元のみ許可 |
+
+NuGet 復元は `Dotnet.Script.Core` の仕組みを利用してよい。
+
+ただし、NuGet 参照は実行できるコードを増やすため、信頼済みワークフローでのみ使う。
+
+### 16.4 AssemblyLoadContext
+
+初期版では、ワークフロー単位で `AssemblyLoadContext` を分離してよい。
+
+エンジンが公開する API の assembly はホスト側と共有する。
+
+Script 側で公開 API assembly の別コピーが読み込まれた場合、型名が同じでも CLR 上は別型になる。
+
+その場合、`IStep<TOut>`、`StepInput`、`StepContext` の受け渡しが壊れるため、検証エラーとする。
+
+### 16.5 キャッシュ
+
+コンパイルキャッシュを使う場合、最低限以下をキャッシュキーに含める。
+
+- Entry `.csx` の正規パスと内容ハッシュ
+- `#load` された全 `.csx` の正規パスと内容ハッシュ
+- `#r` の参照一覧
+- NuGet パッケージ ID、バージョン、参照元
+- エンジンのバージョン
+
+いずれかが変わった場合、該当キャッシュは無効化する。
+
+### 16.6 信頼境界
+
+初期版では、`.csx` は信頼済みワークフローのみを実行対象とする。
+
+未信頼ユーザーがアップロードした `.csx` を、このエンジンで直接実行してはならない。
+
+初期版では以下を提供しない。
+
+- 完全なサンドボックス
+- プロセス分離
+- OS 権限制御
+- ネットワーク制限
+- ファイル入出力制限
+- NuGet 利用制限の完全強制
+- 署名検証
+- シークレットアクセス制限
+
+`.csx` は任意の C# コードであり、ファイル入出力、ネットワークアクセス、環境変数参照、プロセス起動、リフレクション、シークレットアクセスを行える可能性がある。
+
+参照許可一覧は誤用を減らすための検証規則であり、未信頼コード実行を安全化する境界ではない。
+
+`Dotnet.Script.Core` は依存解決とコンパイルを簡略化するが、セキュリティ境界ではない。
+
+---
+
+## 17. 検証
+
+### 17.1 検証コマンド
+
+CLI は実行前検証のために `validate` を提供する。
+
+```bash
+engine validate main.csx
+engine validate main.csx --entry Build
+engine validate main.csx --config appsettings.json
+```
+
+### 17.2 検証対象
+
+初期版の検証対象は以下とする。
+
+- Entry `.csx` の存在
+- 指定 Entry 名の存在
+- 公開 Step 名の重複
+- `#load` の参照解決
+- `#load` の循環
+- `#r` の許可判定
+- NuGet 参照の許可判定
+- `.csx` のコンパイル
+- `IStep<TOut>` 実装の確認
+- `StepInput` と `StepContext` の API 互換
+- Config ファイル指定時の存在確認
+
+実行時の `StepInput` 内容に依存する型検証は、実行時に行う。
+
+### 17.3 StepInput 検証
+
+`StepInput.Get<T>()` と `StepInput.Get<T>(name)` は、値が存在しない場合や型が一致しない場合に失敗する。
+
+失敗時は Step を実行せず、エンジンの実行結果を失敗にする。
+
+`TryGet` は失敗を戻り値で返し、エンジンの失敗にはしない。
+
+### 17.4 Config 検証
+
+初期版では、エンジンは任意形式の Config ファイルを自動で型へ結び付けない。
+
+`--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
+
+型付き Config への変換と検証は、ユーザーが定義した Config 読み込み Step で行う。
+
+将来的に標準 Config 読み込みを提供する場合も、Config は Step 専用引数ではなく `StepContext` に登録する。
+
+Config 読み込み Step が型付き Config を生成した場合、その Step 内で `DataAnnotations` と `IValidatableObject` を検証する。
+
+検証に失敗した Config は `StepContext` に登録してはならない。
+
+### 17.5 Step 出力検証
+
+Step の戻り値が `null` であり、`TOut` が null を許さない型である場合、エンジンは Step 失敗として扱う。
+
+Step 出力に `DataAnnotations` または `IValidatableObject` が使われている場合、エンジンは検証対象にできる。
+
+初期版では、Step 出力検証を標準で有効にするかは実装時に選択できる。
+
+ただし、検証を無効にした場合でも、`Produce` の選択関数が失敗した場合は Step 失敗として扱う。
+
+### 17.6 検証エラー形式
+
+検証エラーは最低限以下を持つ。
+
+```csharp
+public sealed class ValidationError
+{
+    public string Path { get; init; } = "";
+    public string Code { get; init; } = "";
+    public string Message { get; init; } = "";
+}
+```
+
+`Path` には、`StepInput` の型名、名前付きキー、Config のプロパティのパス、Step 名など、利用者が原因を特定できる情報を入れる。
+
+---
+
+## 18. 実行結果、ログ、トレース
+
+### 18.1 実行結果
+
+エンジンは実行後に `WorkflowResult` を返す。
+
+`WorkflowResult` は最低限以下を持つ。
+
+```csharp
+public sealed class WorkflowResult
+{
+    public string EntryName { get; init; } = "";
+    public bool Succeeded { get; init; }
+    public string? ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+    public ExecutionTrace? Trace { get; init; }
+}
+```
+
+CLI 実行では、成功時は終了コード 0、失敗時は 0 以外を返す。
+
+### 18.2 エラーコード
+
+代表的なエラーコードは以下とする。
+
+```text
+ENTRY_SCRIPT_NOT_FOUND
+ENTRY_STEP_NOT_FOUND
+DUPLICATE_STEP_NAME
+SCRIPT_COMPILE_FAILED
+SCRIPT_LOAD_FAILED
+SCRIPT_LOAD_CYCLE_DETECTED
+SCRIPT_REFERENCE_NOT_ALLOWED
+SCRIPT_NUGET_RESTORE_FAILED
+SCRIPT_API_IDENTITY_MISMATCH
+STEP_INPUT_NOT_FOUND
+STEP_INPUT_TYPE_MISMATCH
+CONFIG_NOT_FOUND
+CONFIG_LOAD_FAILED
+STEP_EXECUTION_FAILED
+STEP_TIMEOUT
+TRACE_SERIALIZATION_FAILED
+```
+
+### 18.3 ログ
+
+ログはエンジンで独自実装せず、`Microsoft.Extensions.Logging` を利用する。
+
+エンジンは `ILoggerFactory` を外部から受け取り、具体的な logger provider には直接依存しない。
+
+ユーザー Step は `StepContext.Logger` から記録出力を取得する。
+
+ログには、Entry 名、Step 名、実行状態、失敗時のエラーコードを含める。
+
+ログ出力では文字列連結ではなく、構造化ログを使う。
+
+エンジンは Entry 名、Step 名、試行回数をログのスコープへ含める。
+
+Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した logger provider に委譲する。
+
+### 18.4 トレース
+
+ログと `ExecutionTrace` は分離する。
+
+| 要素 | 役割 |
+| --- | --- |
+| ログ | 実行中の観測と障害調査 |
+| ExecutionTrace | 実行結果として保存できる構造化履歴 |
+
+初期版では、`StepInput`、Config、Step 出力の値そのものは既定では保存しない。
+
+値を保存する場合は、明示設定と秘匿化の規則を必要とする。
+
+---
+
+## 19. 初期実装範囲
+
+### 19.1 初期版で扱う範囲
+
+初期版では以下を扱う。
+
+- `.csx` での名前付き `CompositeStep` 定義
+- 既定 Entry 名 `Main`
+- CLI の `run` と検証コマンド
+- 逐次実行
+- `IStep<TOut>.Execute(StepInput input)`
+- `StepInput` の型付き、名前付き取得
+- `StepContext` の共有値保持
+- Config ファイルパスと `--set` の `EngineArguments` 格納
+- ローカルファイル `#load`
+- 明示許可された `#r`
+- 明示許可された NuGet 参照
+- `Dotnet.Script.Core` によるロードとコンパイル
+- `Microsoft.Extensions.Logging` 統合
+- `WorkflowResult` と基本エラーコード
+
+### 19.2 初期版で扱わない範囲
+
+初期版では以下を扱わない。
+
+- 独立した Flow 概念
+- YAML ワークフロー定義
+- Step 専用 Config 引数
+- Step 間の自動依存解決
+- 並列実行
+- 分岐実行
+- 統合実行
+- `#load "nuget: ..."`
+- 未信頼 `.csx` の安全な実行
+- Config ファイルの標準型変換
+- retry
+- 値を含む `ExecutionTrace`
+- 非同期 Step API
+
+### 19.3 次フェーズ候補
+
+次フェーズ候補は以下とする。
+
+- 非同期 Step API
+- timeout と協調キャンセル
+- 標準 Config 読み込み
+- retry
+- 値を含む `ExecutionTrace`
+- NuGet ロックファイル
+- `#load "nuget: ..."`
+- Step 名の名前空間化
+
+---
+
+## 20. 明確に禁止すること
 
 初期設計では以下を禁止する。
 
@@ -765,48 +1198,54 @@ public readonly struct Unit
 
 ---
 
-## 16. 未確定事項
+## 21. 未確定事項
 
 以下は今後決める必要がある。
 
-### 16.1 非同期 API
+### 21.1 非同期 API
 
-- 同期 API を基本にするか
-- 初期から `Task<T>` に統一するか
-- 同期・非同期の両方を許可するか
+初期版では同期 API を基本にする。
 
-### 16.2 Config 読み込み責務
+今後、以下を決める必要がある。
 
-- エンジンが標準で Config を読み込むか
+- `IAsyncStep<TOut>` を追加するか
+- `IStep<TOut>` を `Task<TOut>` に統一するか
+- timeout と `CancellationToken` をどの API で扱うか
+
+### 21.2 Config 読み込み責務
+
+初期版では、`--config` と `--set` を `EngineArguments` に格納し、型付き Config への変換はユーザー Step が行う。
+
+今後、以下を決める必要がある。
+
+- エンジン標準の Config 読み込みを提供するか
 - Config 読み込み Step を標準部品として提供するか
-- 両方を許可するか
+- 複数 Config ファイルをどう統合するか
 
 現時点では、Config は `StepContext` に置く方針で合意済み。
 
-### 16.3 CLI override の仕様
+### 21.3 CLI override の仕様
 
 - 入れ子キーの書式
 - 配列の上書き
 - 型変換仕様
 - 複数 Config ファイル指定時の統合規則
 
-### 16.4 Step 登録名
-
-CompositeStep を名前で参照する場合、以下を決める必要がある。
-
-- Step 名の一意性
-- 同名定義時の扱い
-- 外部 `.csx` から読み込んだ Step 名の衝突時の扱い
-
-### 16.5 Produce 後の値の寿命
+### 21.4 Produce 後の値の寿命
 
 `StepInput` に追加された値を、最後まで保持するか、スコープ管理するかは未確定。
 
 初期版では、CompositeStep の実行中は保持し続ける設計が単純である。
 
+### 21.5 トレース値の保存
+
+`ExecutionTrace` に `StepInput`、Config、Step 出力の値を保存するかは未確定。
+
+初期版では、値そのものは保存せず、Step 名、状態、所要時間、エラーコードを優先する。
+
 ---
 
-## 17. 最終整理
+## 22. 最終整理
 
 本設計の中核は以下である。
 
