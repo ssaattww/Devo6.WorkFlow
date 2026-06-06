@@ -22,6 +22,11 @@ public sealed class CliRunValidateTests
 
             public sealed class MainStep : IStep<string>
             {
+                /// <summary>
+                /// 固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>固定文字列。</returns>
                 public string Execute(StepInput input) => "main";
             }
 
@@ -199,6 +204,36 @@ public sealed class CliRunValidateTests
 
         AssertSuccess(result);
         Assert.Equal("convert.toUpper=false|save.path=out.txt", File.ReadAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "settings.txt")));
+    }
+
+    /// <summary>
+    /// Config 型を見ない --set 無効書式が command error になることを検査します。
+    /// </summary>
+    /// <param name="setArgument">CLI 解析で拒否される --set 引数。</param>
+    [Theory(DisplayName = "Config 型を見ない --set 無効書式は exit code 2 になる")]
+    [InlineData("=value")]
+    [InlineData("key")]
+    public async Task InvalidSetSyntaxFailsWithCommandErrorExitCode2(string setArgument)
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--set", setArgument);
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains("--set", result.StandardError);
     }
 
     /// <summary>

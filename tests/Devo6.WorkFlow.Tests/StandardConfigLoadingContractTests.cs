@@ -224,10 +224,10 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
-    /// T23 では --set が標準 Config に反映されず EngineArguments.Settings には保持されることを検査します。
+    /// CLI run の --set が標準 Config を上書きし、raw 設定も保持することを検査します。
     /// </summary>
-    [Fact(DisplayName = "T23 では --set は標準 Config に反映されず EngineArguments.Settings に保持される")]
-    public async Task SetArgumentsAreNotAppliedToStandardConfigDuringT23()
+    [Fact(DisplayName = "CLI run の --set は YAML 値を上書きし EngineArguments.Settings も保持する")]
+    public async Task CliRunSetOverridesStandardConfigAndPreservesRawSettings()
     {
         string scriptPath = CreateScript(
             """
@@ -237,17 +237,46 @@ public sealed class StandardConfigLoadingContractTests
 
             public sealed class AppConfig
             {
-                public string Title { get; set; } = "";
+                /// <summary>
+                /// 変換設定を取得または設定します。
+                /// </summary>
+                public ConvertConfig Convert { get; set; } = new();
+
+                /// <summary>
+                /// 保存設定を取得または設定します。
+                /// </summary>
+                public SaveConfig Save { get; set; } = new();
+            }
+
+            public sealed class ConvertConfig
+            {
+                /// <summary>
+                /// 大文字変換を有効にするかどうかを取得または設定します。
+                /// </summary>
+                public bool ToUpper { get; set; }
+            }
+
+            public sealed class SaveConfig
+            {
+                /// <summary>
+                /// 保存 path を取得または設定します。
+                /// </summary>
+                public string Path { get; set; } = "";
             }
 
             public sealed class MainStep : IStep<string>
             {
+                /// <summary>
+                /// Config と raw 設定を marker file に書き込みます。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>確認用文字列。</returns>
                 public string Execute(StepInput input)
                 {
                     EngineArguments arguments = input.Context.Get<EngineArguments>();
                     AppConfig config = input.Context.Get<AppConfig>();
-                    string text = $"{config.Title}|{arguments.Settings["Title"]}";
-                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "set-boundary-marker.txt"), text);
+                    string text = $"{config.Convert.ToUpper}|{config.Save.Path}|{arguments.Settings["Convert.ToUpper"]}|{arguments.Settings["Save.Path"]}";
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "override-marker.txt"), text);
 
                     return text;
                 }
@@ -258,12 +287,412 @@ public sealed class StandardConfigLoadingContractTests
                     .StoreAs()
                 .WithConfig<AppConfig>();
             """);
-        File.WriteAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "appsettings.yaml"), "Title: yaml-value" + Environment.NewLine);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(
+            Path.Combine(directory, "appsettings.yaml"),
+            """
+            Convert:
+              ToUpper: true
+            Save:
+              Path: yaml.txt
+            """);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml", "--set", "Title=cli-value");
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--config",
+            "appsettings.yaml",
+            "--set",
+            "Convert.ToUpper=false",
+            "--set",
+            "Save.Path=cli.txt");
 
         AssertSuccess(result);
-        Assert.Equal("yaml-value|cli-value", File.ReadAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "set-boundary-marker.txt")));
+        Assert.Equal("False|cli.txt|false|cli.txt", File.ReadAllText(Path.Combine(directory, "override-marker.txt")));
+    }
+
+    /// <summary>
+    /// 同一 key の --set は後の値を Config と raw 設定に反映することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "同一 key の --set は後勝ちで Config と EngineArguments.Settings に反映される")]
+    public async Task RepeatedSetUsesLastValueForConfigAndRawSettings()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            public sealed class AppConfig
+            {
+                /// <summary>
+                /// タイトルを取得または設定します。
+                /// </summary>
+                public string Title { get; set; } = "";
+            }
+
+            public sealed class MainStep : IStep<string>
+            {
+                /// <summary>
+                /// Config と raw 設定を marker file に書き込みます。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>確認用文字列。</returns>
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    AppConfig config = input.Context.Get<AppConfig>();
+                    string text = $"{config.Title}|{arguments.Settings["Title"]}";
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "last-wins-marker.txt"), text);
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs()
+                .WithConfig<AppConfig>();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "Title: yaml-value" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--config",
+            "appsettings.yaml",
+            "--set",
+            "Title=first",
+            "--set",
+            "Title=second");
+
+        AssertSuccess(result);
+        Assert.Equal("second|second", File.ReadAllText(Path.Combine(directory, "last-wins-marker.txt")));
+    }
+
+    /// <summary>
+    /// 入れ子 property の途中が null の場合に --set が中間 Config を自動生成することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "入れ子 property の --set は null 中間 Config を自動生成する")]
+    public async Task SetCreatesMissingNestedConfigObjects()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            public sealed class AppConfig
+            {
+                /// <summary>
+                /// 変換設定を取得または設定します。
+                /// </summary>
+                public ConvertConfig? Convert { get; set; }
+            }
+
+            public sealed class ConvertConfig
+            {
+                /// <summary>
+                /// 大文字変換を有効にするかどうかを取得または設定します。
+                /// </summary>
+                public bool ToUpper { get; set; }
+            }
+
+            public sealed class MainStep : IStep<string>
+            {
+                /// <summary>
+                /// 中間 Config の生成結果を marker file に書き込みます。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>確認用文字列。</returns>
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    AppConfig config = input.Context.Get<AppConfig>();
+                    string text = config.Convert is null ? "missing" : config.Convert.ToUpper.ToString();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "nested-marker.txt"), text);
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs()
+                .WithConfig<AppConfig>();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml", "--set", "Convert.ToUpper=true");
+
+        AssertSuccess(result);
+        Assert.Equal("True", File.ReadAllText(Path.Combine(directory, "nested-marker.txt")));
+    }
+
+    /// <summary>
+    /// --set が bool、int、enum、nullable primitive を対象型へ変換することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "--set は bool int enum nullable primitive を Config 型へ変換する")]
+    public async Task SetConvertsPrimitiveEnumAndNullableValues()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            public enum RunMode
+            {
+                Slow,
+                Fast
+            }
+
+            public sealed class AppConfig
+            {
+                /// <summary>
+                /// 有効状態を取得または設定します。
+                /// </summary>
+                public bool Enabled { get; set; }
+
+                /// <summary>
+                /// ポート番号を取得または設定します。
+                /// </summary>
+                public int Port { get; set; }
+
+                /// <summary>
+                /// 実行 mode を取得または設定します。
+                /// </summary>
+                public RunMode Mode { get; set; }
+
+                /// <summary>
+                /// 任意の上限値を取得または設定します。
+                /// </summary>
+                public int? OptionalLimit { get; set; }
+            }
+
+            public sealed class MainStep : IStep<string>
+            {
+                /// <summary>
+                /// 型変換後の Config 値を marker file に書き込みます。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>確認用文字列。</returns>
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    AppConfig config = input.Context.Get<AppConfig>();
+                    string text = $"{config.Enabled}|{config.Port}|{config.Mode}|{config.OptionalLimit}";
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "typed-marker.txt"), text);
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs()
+                .WithConfig<AppConfig>();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(
+            Path.Combine(directory, "appsettings.yaml"),
+            """
+            Enabled: false
+            Port: 1
+            Mode: Slow
+            OptionalLimit:
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--config",
+            "appsettings.yaml",
+            "--set",
+            "Enabled=true",
+            "--set",
+            "Port=8080",
+            "--set",
+            "Mode=Fast",
+            "--set",
+            "OptionalLimit=42");
+
+        AssertSuccess(result);
+        Assert.Equal("True|8080|Fast|42", File.ReadAllText(Path.Combine(directory, "typed-marker.txt")));
+    }
+
+    /// <summary>
+    /// --set が list と array の既存要素 property を上書きすることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "--set は list と array の既存要素 property を上書きする")]
+    public async Task SetOverridesExistingListAndArrayElements()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.Collections.Generic;
+            using System.IO;
+
+            public sealed class AppConfig
+            {
+                /// <summary>
+                /// list の item 設定を取得または設定します。
+                /// </summary>
+                public List<ItemConfig> Items { get; set; } = new();
+
+                /// <summary>
+                /// array の item 設定を取得または設定します。
+                /// </summary>
+                public ItemConfig[] ArrayItems { get; set; } = [];
+            }
+
+            public sealed class ItemConfig
+            {
+                /// <summary>
+                /// item 名を取得または設定します。
+                /// </summary>
+                public string Name { get; set; } = "";
+            }
+
+            public sealed class MainStep : IStep<string>
+            {
+                /// <summary>
+                /// collection の Config 値を marker file に書き込みます。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>確認用文字列。</returns>
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    AppConfig config = input.Context.Get<AppConfig>();
+                    string text = $"{config.Items[0].Name}|{config.ArrayItems[0].Name}";
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "collection-marker.txt"), text);
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs()
+                .WithConfig<AppConfig>();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(
+            Path.Combine(directory, "appsettings.yaml"),
+            """
+            Items:
+              - Name: yaml-list
+            ArrayItems:
+              - Name: yaml-array
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--config",
+            "appsettings.yaml",
+            "--set",
+            "Items[0].Name=cli-list",
+            "--set",
+            "ArrayItems[0].Name=cli-array");
+
+        AssertSuccess(result);
+        Assert.Equal("cli-list|cli-array", File.ReadAllText(Path.Combine(directory, "collection-marker.txt")));
+    }
+
+    /// <summary>
+    /// Config 型への --set 適用失敗が Step 実行前に CONFIG_LOAD_FAILED になることを検査します。
+    /// </summary>
+    /// <param name="setArgument">失敗させる --set 引数。</param>
+    [Theory(DisplayName = "Config 型への --set 適用失敗は CONFIG_LOAD_FAILED で Step を実行しない")]
+    [InlineData("Missing.Name=value")]
+    [InlineData("Port=not-a-number")]
+    [InlineData("Items[1].Name=value")]
+    [InlineData("Items[-1].Name=value")]
+    [InlineData("Items[abc].Name=value")]
+    public async Task InvalidSetApplicationFailsBeforeStepExecutionWithConfigLoadFailed(string setArgument)
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.Collections.Generic;
+            using System.IO;
+
+            public sealed class AppConfig
+            {
+                /// <summary>
+                /// ポート番号を取得または設定します。
+                /// </summary>
+                public int Port { get; set; }
+
+                /// <summary>
+                /// item 設定を取得または設定します。
+                /// </summary>
+                public List<ItemConfig> Items { get; set; } = new();
+            }
+
+            public sealed class ItemConfig
+            {
+                /// <summary>
+                /// item 名を取得または設定します。
+                /// </summary>
+                public string Name { get; set; } = "";
+            }
+
+            public sealed class MainStep : IStep<string>
+            {
+                /// <summary>
+                /// 実行されたことを marker file に書き込みます。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>固定文字列。</returns>
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "invalid-set-marker.txt"), "ran");
+
+                    return "ran";
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs()
+                .WithConfig<AppConfig>();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(
+            Path.Combine(directory, "appsettings.yaml"),
+            """
+            Port: 5071
+            Items:
+              - Name: yaml
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml", "--set", setArgument);
+
+        AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
+        Assert.False(File.Exists(Path.Combine(directory, "invalid-set-marker.txt")));
+    }
+
+    /// <summary>
+    /// validate は T24 で --set の型検証を行わず Config path 存在確認までで成功することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "validate は T24 で --set の型検証を行わない")]
+    public async Task ValidateDoesNotTypeCheckSetOverridesDuringT24()
+    {
+        string scriptPath = CreateConfigReadingScript("validate-set-marker.txt");
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "appsettings.yaml"), "Title: configured" + Environment.NewLine + "Port: 5071" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync("validate", scriptPath, "--config", "appsettings.yaml", "--set", "Port=not-a-number");
+
+        AssertSuccess(result);
+        Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(scriptPath)!, "validate-set-marker.txt")));
     }
 
     /// <summary>

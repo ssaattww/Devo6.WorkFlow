@@ -410,7 +410,7 @@ public sealed class CsxEntryLoader
 
         try
         {
-            object standardConfig = StandardConfigLoader.Load(configPath, configType);
+            object standardConfig = StandardConfigLoader.Load(configPath, configType, options?.EngineArguments?.Settings);
 
             return (options ?? new WorkflowExecutionOptions()).WithStandardConfig(standardConfig);
         }

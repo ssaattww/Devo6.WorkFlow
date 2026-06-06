@@ -349,21 +349,26 @@ CLI 引数で Config の一部を上書きできることを要件とする。
 例:
 
 ```bash
-engine run main.csx --config appsettings.yaml --set convert.toUpper=false
+engine run main.csx --config appsettings.yaml --set Convert.ToUpper=false
 ```
 
-上書き仕様の詳細は未確定だが、最低限以下を検討対象とする。
+`--set` は、標準 Config に対するプロパティ path override として扱う。
 
-- 単純キーの上書き
-- 入れ子キーの上書き
-- 真偽値、整数、文字列などの型変換
-- 複数 `--set` 指定
+書式は `--set key=value` とする。CLI 解析層は最初の `=` より前を key、最初の `=` 以降を値として保持する。値の中の `=` は許可する。
 
-初期版では、`--set` は文字列の上書き指定として `EngineArguments` に保持する。
+CLI 解析層で `--set` に値がない場合、`key=value` になっていない場合、または key が空の場合は、Config 型を見ない CLI 解析エラーとして終了コード 2 で失敗する。
 
-T23 では、`--set` は標準 Config に反映しない。既存どおり `EngineArguments.Settings` に保持するだけとする。
+key は C# の公開プロパティ名を `.` でたどる。プロパティ名は大小文字を区別する完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
 
-型変換、Config への統合、複数 `--set` の優先順位は T24 で扱う。
+入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
+
+配列またはリストは、`Items[0].Name=value` のように既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は初期範囲外とする。添字が範囲外、負数、または数値でない場合は `CONFIG_LOAD_FAILED` とする。
+
+型変換は override 対象プロパティの型に対して行う。初期範囲では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。型変換に失敗した場合は `CONFIG_LOAD_FAILED` とする。
+
+複数 override は、同一 key について最後の指定を有効にする。これは `EngineArguments.Settings` の既存 `Dictionary` 契約と合わせる。
+
+`EngineArguments.Settings` は、override 適用後も CLI から受け取った元の文字列を保持する。Step は標準 Config の検証済み値と、CLI 指定そのものの両方を参照できる。
 
 ---
 
@@ -564,8 +569,11 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 5. `.csx` を `Dotnet.Script.Core` 経由でロードする
 6. `.csx` 上の CompositeStep 定義を取得する
 7. Entry の Config 型メタ情報を確認する
-8. 必要な場合は `--config` の YAML を型付き Config に変換し、`StepContext` に登録する
-9. 指定された Step を実行する
+8. 必要な場合は `--config` の YAML を型付き Config に変換する
+9. `--set` のプロパティ path override を型付き Config に適用する
+10. `DataAnnotations` と `IValidatableObject` で Config を検証する
+11. 検証済み Config を `StepContext` に登録する
+12. 指定された Step を実行する
 
 ---
 
@@ -601,6 +609,7 @@ public enum FailurePolicy
 - Entry が標準 Config 型を要求しているが `--config` が未指定
 - 指定された Config ファイルが存在しない
 - Config ファイルの読み込み、YAML 構文、型変換、または検証の失敗
+- `--set` の存在しないプロパティ、型変換失敗、または配列またはリストの添字不正
 - Step 実行時例外
 - `.csx` のロード失敗
 - NuGet 解決失敗
@@ -608,7 +617,7 @@ public enum FailurePolicy
 
 Entry が標準 Config 型を要求している場合の `--config` 未指定と、存在しない Config ファイルは `CONFIG_NOT_FOUND` とする。
 
-読み込み不能、YAML 構文エラー、型変換失敗、`DataAnnotations` または `IValidatableObject` の失敗は `CONFIG_LOAD_FAILED` とする。
+読み込み不能、YAML 構文エラー、型変換失敗、`--set` の Config 適用失敗、`DataAnnotations` または `IValidatableObject` の失敗は `CONFIG_LOAD_FAILED` とする。
 
 ### 11.4 retry と timeout
 
@@ -965,7 +974,9 @@ T22 では `Retry` を CLI オプションまたは Config から直接指定し
 
 標準 Config 型は `WorkflowExecutionOptions` ではなく、Entry の `CompositeStep` メタ情報から取得する。
 
-CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `ConfigType` と `EngineArguments.ConfigPath` を使って標準 Config を読み込む。
+CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `ConfigType`、`EngineArguments.ConfigPath`、`EngineArguments.Settings` を使って標準 Config を読み込む。
+
+`EngineArguments.Settings` は元の文字列を保持する。標準 Config に適用された後も、Step は CLI 指定値そのものを参照できる。
 
 YAML 解析器は実装時に .NET 依存を追加してよい。候補として `YamlDotNet` を利用できるが、設計は特定ライブラリに強く依存しない。
 
@@ -1225,7 +1236,7 @@ CLI `run` では、Entry が `WithConfig<TConfig>()` を使う場合に標準 Co
 
 `--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
 
-`--config` の YAML は `TConfig` に型変換し、`DataAnnotations` と `IValidatableObject` を検証する。
+`--config` の YAML は `TConfig` に型変換する。その後、`--set` を標準 Config に適用し、`DataAnnotations` と `IValidatableObject` を検証する。
 
 検証に成功した Config は、Step 専用引数ではなく `StepContext` に登録する。
 
@@ -1454,12 +1465,14 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 - timeout と外部キャンセルの失敗結果化
 - retry 試行ごとのログと trace
 - T23 の標準 Config 読み込み
+- T24 の CLI override による標準 Config 上書き
 - Entry の `WithConfig<TConfig>()` による単一 Config 型メタ情報
 - CLI `run` の `--config` YAML 型変換と `StepContext` 登録
+- CLI `run` の `--set` プロパティ path override と Config 検証前適用
 
 ### 19.2 初期版で扱わない範囲
 
-初期版および T23 では以下を扱わない。
+初期版、T23、および T24 では以下を扱わない。
 
 - 独立した Flow 概念
 - YAML ワークフロー定義
@@ -1473,7 +1486,9 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 - 複数 Config
 - 名前付き Config
 - Config 型自動推論
-- `--set` の標準 Config 反映
+- `--set` による配列全体またはリスト全体の置換
+- `--set` による配列またはリストの自動拡張
+- `engine validate` での override 型検証
 - 値を含む `ExecutionTrace`
 - CLI の timeout オプション
 - CLI の retry オプション
@@ -1497,7 +1512,6 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 - retry の例外型による絞り込み
 - workflow 全体 timeout
 - timeout またはキャンセル専用の trace 状態
-- `--set` の標準 Config 反映
 - 値を含む `ExecutionTrace`
 - NuGet ロックファイル
 - `#load "nuget: ..."`
@@ -1598,12 +1612,30 @@ CLI `run` は `.csx` ロード後、Entry の Config 型メタ情報と `--confi
 
 ### 21.3 CLI override の仕様
 
-T24 で以下を決める。
+T24 では、`--set` を標準 Config に対するプロパティ path override として扱う。
 
-- 入れ子キーの書式
-- 配列の上書き
-- 型変換仕様
-- 複数 Config ファイル指定時の統合規則
+適用順は以下とする。
+
+1. `--config` の YAML を `TConfig` に変換する
+2. `--set` を Config に適用する
+3. `DataAnnotations` と `IValidatableObject` を検証する
+4. 検証済み Config を `StepContext` に登録する
+
+プロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名の照合は実行環境の言語設定に依存しない `StringComparison.Ordinal` 相当の完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
+
+入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
+
+配列またはリストは、`Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は扱わない。
+
+型変換は override 対象プロパティの型に対して行う。初期範囲では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。
+
+同一 key の複数 override は後勝ちとする。
+
+無効書式、存在しないプロパティ、型変換失敗、配列またはリストの添字不正は `CONFIG_LOAD_FAILED` とする。ただし、CLI 解析層で `--set` の値がない、`key=value` になっていない、または key が空の場合は CLI 解析エラーとして終了コード 2 で失敗する。
+
+`engine validate` は T24 では Config path の存在確認までを維持し、override の型検証は `engine run` で行う。
+
+複数 Config ファイル指定時の統合規則は T24 では扱わない。
 
 ### 21.4 Produce 後の値の寿命
 
