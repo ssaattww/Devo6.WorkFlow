@@ -45,7 +45,7 @@ Step
 例:
 
 ```csharp
-Step("Main")
+var Main = CompositeStep.Define("Main")
     .Run<LoadStep, LoadResult>()
         .Produce<ConvertInput>(x => new ConvertInput
         {
@@ -368,7 +368,7 @@ engine run main.csx --config appsettings.yaml --set convert.toUpper=false
 例:
 
 ```csharp
-Step("Main")
+var Main = CompositeStep.Define("Main")
     .Run<LoadStep, LoadResult>()
         .Produce<ConvertInput>(x => new ConvertInput
         {
@@ -639,7 +639,7 @@ public interface IStep<TOut>
 ### 13.1 基本形
 
 ```csharp
-Step("Main")
+var Main = CompositeStep.Define("Main")
     .Run<LoadStep, LoadResult>()
         .Produce<ConvertInput>(x => new ConvertInput
         {
@@ -662,7 +662,7 @@ Step("Main")
 ### 13.2 名前付き Produce
 
 ```csharp
-Step("Main")
+var Main = CompositeStep.Define("Main")
     .Run<ReadTitleStep, string>()
         .Produce<string>("title", x => x)
     .Run<ReadBodyStep, string>()
@@ -693,7 +693,7 @@ public sealed class MergeStep : IStep<Article>
 ### 13.3 Config を StepContext に置く例
 
 ```csharp
-Step("Main")
+var Main = CompositeStep.Define("Main")
     .Run<LoadConfigStep, Unit>()
         .Discard()
     .Run<LoadStep, LoadResult>()
@@ -814,7 +814,7 @@ engine run main.csx --entry Build
 `.csx` 上では以下のように名前付き Step を定義する。
 
 ```csharp
-Step("Main")
+var Main = CompositeStep.Define("Main")
     .Run<LoadStep, LoadResult>()
         .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
     .Run<ConvertStep, ConvertResult>()
