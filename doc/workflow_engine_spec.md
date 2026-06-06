@@ -285,31 +285,45 @@ save:
 
 ### 6.3 Config 読み込み
 
-Config 読み込みは以下のどちらも許可する。
+標準 Config 読み込みは、エンジンの実行前処理として行う。
 
-1. エンジンが初期処理として読み込み、`StepContext` に格納する
-2. Config 読み込み用 Step をユーザーが明示的に定義し、`StepContext` に格納する
+Entry 側は、標準 Config 型を `CompositeStep.Define("Main").WithConfig<AppConfig>()` で明示する。
 
-ただし、Step ごとに Config 読み込み Step を挟む設計は避ける。
+`WithConfig<TConfig>()` は Entry のメタ情報として Config 型を保持する。Step 専用引数は増やさない。
+
+CLI `run` は Entry `.csx` をロードした後、Entry の Config 型メタ情報と `--config` の path を使って YAML を型付き Config に変換する。
+
+変換に成功した Config は、最初の Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。
+
+T23 では単一 Config 型のみを扱う。複数 Config、名前付き Config、Config 型自動推論は対象外とする。
+
+Config 読み込み用 Step をユーザーが明示的に定義する方式も、標準外の拡張として許可する。
 
 Config 読み込み Step を使用する場合は、ワークフローの先頭またはまとまりの先頭で一度だけ行うことを想定する。
 
 ### 6.4 Config を StepContext に格納する例
 
 ```csharp
-public sealed class LoadConfigStep : IStep<Unit>
+public sealed class ConvertStep : IStep<ConvertResult>
 {
-    public Unit Execute(StepInput input)
+    public ConvertResult Execute(StepInput input)
     {
-        EngineArguments args = input.Context.Get<EngineArguments>();
+        AppConfig config = input.Context.Get<AppConfig>();
 
-        AppConfig config = ConfigLoader.Load<AppConfig>(args.ConfigPath);
-
-        input.Context.Set(config);
-
-        return Unit.Value;
+        return new ConvertResult
+        {
+            Mode = config.Convert.Mode
+        };
     }
 }
+```
+
+Entry 側の宣言例:
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .WithConfig<AppConfig>()
+    .Run<ConvertStep, ConvertResult>();
 ```
 
 ### 6.5 CLI による Config 指定
@@ -320,9 +334,13 @@ public sealed class LoadConfigStep : IStep<Unit>
 engine run main.csx --config appsettings.yaml
 ```
 
-初期版では、`--config` は Config ファイルパスとして `EngineArguments` に保持する。
+`--config` は Config ファイルパスとして `EngineArguments` に保持する。
 
-初期版では、エンジンは Config YAML を標準では型変換しない。
+Entry が `WithConfig<TConfig>()` を使っている場合、CLI `run` は `--config` の YAML を `TConfig` に変換し、Step 実行前に `StepContext` に登録する。
+
+`--config` 未指定で、Entry が `WithConfig<TConfig>()` を使っていない場合は既存どおり成功する。
+
+`--config` 未指定で、Entry が `WithConfig<TConfig>()` を使っている場合は、Step 実行前に `CONFIG_NOT_FOUND` で失敗する。利用者へ早く原因を返すためである。
 
 ### 6.6 CLI による Config 上書き
 
@@ -343,7 +361,9 @@ engine run main.csx --config appsettings.yaml --set convert.toUpper=false
 
 初期版では、`--set` は文字列の上書き指定として `EngineArguments` に保持する。
 
-型変換と統合は、Config 読み込み Step または将来の標準 Config 読み込み機能で行う。
+T23 では、`--set` は標準 Config に反映しない。既存どおり `EngineArguments.Settings` に保持するだけとする。
+
+型変換、Config への統合、複数 `--set` の優先順位は T24 で扱う。
 
 ---
 
@@ -543,7 +563,9 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 4. `StepInput` に `StepContext` を含める
 5. `.csx` を `Dotnet.Script.Core` 経由でロードする
 6. `.csx` 上の CompositeStep 定義を取得する
-7. 指定された Step を実行する
+7. Entry の Config 型メタ情報を確認する
+8. 必要な場合は `--config` の YAML を型付き Config に変換し、`StepContext` に登録する
+9. 指定された Step を実行する
 
 ---
 
@@ -576,12 +598,17 @@ public enum FailurePolicy
 - 存在しない Step 名の実行
 - `StepInput.Get<T>()` で値が存在しない
 - `StepInput.Get<T>(name)` で値が存在しない
-- Config が存在しない
-- Config の結び付け失敗
+- Entry が標準 Config 型を要求しているが `--config` が未指定
+- 指定された Config ファイルが存在しない
+- Config ファイルの読み込み、YAML 構文、型変換、または検証の失敗
 - Step 実行時例外
 - `.csx` のロード失敗
 - NuGet 解決失敗
 - `#load` 解決失敗
+
+Entry が標準 Config 型を要求している場合の `--config` 未指定と、存在しない Config ファイルは `CONFIG_NOT_FOUND` とする。
+
+読み込み不能、YAML 構文エラー、型変換失敗、`DataAnnotations` または `IValidatableObject` の失敗は `CONFIG_LOAD_FAILED` とする。
 
 ### 11.4 retry と timeout
 
@@ -863,6 +890,8 @@ public sealed class StepContext
 ```csharp
 public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 {
+    public CompositeStep<TOut> WithConfig<TConfig>();
+
     public CompositeStep<TStepOut> Run<TStep, TStepOut>()
         where TStep : IStep<TStepOut>, new();
 
@@ -878,8 +907,12 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     public Task<WorkflowResult> ExecuteWorkflowAsync(
         WorkflowExecutionOptions? options = null,
         CancellationToken cancellationToken = default);
+
+    public Type? ConfigType { get; }
 }
 ```
+
+`WithConfig<TConfig>()` は Entry に標準 Config 型メタ情報を設定する。T23 では 1 つの Entry に設定できる Config 型は 1 つだけとする。
 
 ### 14.5 `WorkflowExecutionOptions`
 
@@ -930,6 +963,12 @@ public sealed class RetryOptions
 
 T22 では `Retry` を CLI オプションまたは Config から直接指定しない。
 
+標準 Config 型は `WorkflowExecutionOptions` ではなく、Entry の `CompositeStep` メタ情報から取得する。
+
+CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `ConfigType` と `EngineArguments.ConfigPath` を使って標準 Config を読み込む。
+
+YAML 解析器は実装時に .NET 依存を追加してよい。候補として `YamlDotNet` を利用できるが、設計は特定ライブラリに強く依存しない。
+
 ### 14.6 Unit
 
 ```csharp
@@ -975,6 +1014,7 @@ engine run main.csx --entry Build
 
 ```csharp
 var Main = CompositeStep.Define("Main")
+    .WithConfig<AppConfig>()
     .Run<LoadStep, LoadResult>()
         .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
     .Run<ConvertStep, ConvertResult>()
@@ -1153,7 +1193,7 @@ engine validate main.csx --config appsettings.yaml
 
 ### 17.2 検証対象
 
-初期版の検証対象は以下とする。
+検証対象は以下とする。
 
 - Entry `.csx` の存在
 - 指定 Entry 名の存在
@@ -1169,6 +1209,8 @@ engine validate main.csx --config appsettings.yaml
 
 実行時の `StepInput` 内容に依存する型検証は、実行時に行う。
 
+T23 の `validate` は Config path の存在確認までを必須とする。Config 型変換と Config 値検証は `validate` の必須対象外であり、後続で扱う。
+
 ### 17.3 StepInput 検証
 
 `StepInput.Get<T>()` と `StepInput.Get<T>(name)` は、値が存在しない場合や型が一致しない場合に失敗する。
@@ -1179,17 +1221,19 @@ engine validate main.csx --config appsettings.yaml
 
 ### 17.4 Config 検証
 
-初期版では、エンジンは Config YAML を自動で型へ結び付けない。
+CLI `run` では、Entry が `WithConfig<TConfig>()` を使う場合に標準 Config 読み込みを行う。
 
 `--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
 
-型付き Config への変換と検証は、ユーザーが定義した Config 読み込み Step で行う。
+`--config` の YAML は `TConfig` に型変換し、`DataAnnotations` と `IValidatableObject` を検証する。
 
-将来的に標準 Config 読み込みを提供する場合も、Config は Step 専用引数ではなく `StepContext` に登録する。
-
-Config 読み込み Step が型付き Config を生成した場合、その Step 内で `DataAnnotations` と `IValidatableObject` を検証する。
+検証に成功した Config は、Step 専用引数ではなく `StepContext` に登録する。
 
 検証に失敗した Config は `StepContext` に登録してはならない。
+
+空 Config は Config 型を生成でき、検証に通れば成功とする。検証に失敗した場合は `CONFIG_LOAD_FAILED` とする。
+
+ユーザーが定義した Config 読み込み Step を使う場合は、その Step 内で型変換と検証を行う。
 
 ### 17.5 Step 出力検証
 
@@ -1409,10 +1453,13 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 - `ExecuteWorkflowAsync` の外部 `CancellationToken` と timeout 用の `CancellationToken` の合成
 - timeout と外部キャンセルの失敗結果化
 - retry 試行ごとのログと trace
+- T23 の標準 Config 読み込み
+- Entry の `WithConfig<TConfig>()` による単一 Config 型メタ情報
+- CLI `run` の `--config` YAML 型変換と `StepContext` 登録
 
 ### 19.2 初期版で扱わない範囲
 
-初期版では以下を扱わない。
+初期版および T23 では以下を扱わない。
 
 - 独立した Flow 概念
 - YAML ワークフロー定義
@@ -1423,7 +1470,10 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 - 統合実行
 - `#load "nuget: ..."`
 - 未信頼 `.csx` の安全な実行
-- Config YAML の標準型変換
+- 複数 Config
+- 名前付き Config
+- Config 型自動推論
+- `--set` の標準 Config 反映
 - 値を含む `ExecutionTrace`
 - CLI の timeout オプション
 - CLI の retry オプション
@@ -1447,7 +1497,7 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 - retry の例外型による絞り込み
 - workflow 全体 timeout
 - timeout またはキャンセル専用の trace 状態
-- 標準 Config 読み込み
+- `--set` の標準 Config 反映
 - 値を含む `ExecutionTrace`
 - NuGet ロックファイル
 - `#load "nuget: ..."`
@@ -1536,17 +1586,19 @@ T22 では以下を扱わない。
 
 ### 21.2 Config 読み込み責務
 
-初期版では、`--config` と `--set` を `EngineArguments` に格納し、型付き Config への変換はユーザー Step が行う。
+T23 では、標準 Config 読み込みをエンジン実行前処理として提供する。
 
-今後、以下を決める必要がある。
+Entry 側は `WithConfig<TConfig>()` で単一 Config 型を明示する。
 
-- エンジン標準の Config 読み込みを提供するか
-- Config 読み込み Step を標準部品として提供するか
-- 複数 Config ファイルをどう統合するか
+CLI `run` は `.csx` ロード後、Entry の Config 型メタ情報と `--config` の path を使って YAML を型付き Config に変換し、Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。
 
-現時点では、Config は `StepContext` に置く方針で合意済み。
+`--set` は T23 では `EngineArguments.Settings` に保持するだけで、標準 Config には反映しない。
+
+複数 Config ファイルの統合、名前付き Config、Config 型自動推論は今後の課題とする。
 
 ### 21.3 CLI override の仕様
+
+T24 で以下を決める。
 
 - 入れ子キーの書式
 - 配列の上書き

@@ -87,7 +87,13 @@ public sealed class CsxEntryLoader
                     $"Entry step was not found: {resolvedEntryName}");
             }
 
-            return ExecuteEntry(entry, options);
+            WorkflowExecutionOptions? preparedOptions = PrepareExecutionOptions(resolvedEntryName, entry, options, out WorkflowResult? failure);
+            if (failure is not null)
+            {
+                return failure;
+            }
+
+            return ExecuteEntry(entry, preparedOptions);
         }
         catch (CsxReferenceValidationException exception)
         {
@@ -372,6 +378,53 @@ public sealed class CsxEntryLoader
         return Failure("", WorkflowErrorCodes.EntryStepNotFound, "Entry step could not be executed.");
     }
 
+    /// <summary>
+    /// Entry metadata に基づいて標準 Config を読み込み、実行 option を準備します。
+    /// </summary>
+    private static WorkflowExecutionOptions? PrepareExecutionOptions(
+        string entryName,
+        object entry,
+        WorkflowExecutionOptions? options,
+        out WorkflowResult? failure)
+    {
+        failure = null;
+
+        Type? configType = GetCompositeStepConfigType(entry);
+        if (configType is null)
+        {
+            return options;
+        }
+
+        string configPath = options?.EngineArguments?.ConfigPath ?? "";
+        if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath))
+        {
+            failure = Failure(
+                entryName,
+                WorkflowErrorCodes.ConfigNotFound,
+                string.IsNullOrWhiteSpace(configPath)
+                    ? "Config file was not specified."
+                    : $"Config file was not found: {configPath}");
+
+            return null;
+        }
+
+        try
+        {
+            object standardConfig = StandardConfigLoader.Load(configPath, configType);
+
+            return (options ?? new WorkflowExecutionOptions()).WithStandardConfig(standardConfig);
+        }
+        catch (Exception exception) when (exception is not ArgumentException)
+        {
+            failure = Failure(
+                entryName,
+                WorkflowErrorCodes.ConfigLoadFailed,
+                $"Config file could not be loaded: {configPath}. {exception.Message}");
+
+            return null;
+        }
+    }
+
     private static bool IsCompositeStep(object? value)
     {
         Type? type = value?.GetType();
@@ -382,6 +435,14 @@ public sealed class CsxEntryLoader
     private static string GetCompositeStepName(object? value)
     {
         return value?.GetType().GetProperty(nameof(CompositeStep<Unit>.Name))?.GetValue(value) as string ?? "";
+    }
+
+    /// <summary>
+    /// CompositeStep の標準 Config 型 metadata を取得します。
+    /// </summary>
+    private static Type? GetCompositeStepConfigType(object value)
+    {
+        return value.GetType().GetProperty(nameof(CompositeStep<Unit>.ConfigType))?.GetValue(value) as Type;
     }
 
     private static IEnumerable<ValidationError> ValidateConfigPaths(string entryPath, CsxValidationOptions? validationOptions)
@@ -624,9 +685,9 @@ public sealed class CsxEntryLoaderOptions
     public string? WorkflowRoot { get; init; }
 
     /// <summary>
-    /// Gets assembly names that may be referenced by #r directives.
+    /// #r directive で参照できる assembly name を取得します。
     /// </summary>
-    public IReadOnlyList<string> AllowedAssemblyReferences { get; init; } = [];
+    public IReadOnlyList<string> AllowedAssemblyReferences { get; init; } = ["System.ComponentModel.Annotations"];
 
     /// <summary>
     /// Gets directories whose files may be referenced by #r file directives.

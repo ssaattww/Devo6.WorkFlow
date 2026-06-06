@@ -47,18 +47,24 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 {
     private readonly IReadOnlyList<StepRegistration> steps;
 
-    internal CompositeStep(string name, IReadOnlyList<StepRegistration> steps)
+    internal CompositeStep(string name, IReadOnlyList<StepRegistration> steps, Type? configType = null)
     {
         Name = name;
         this.steps = steps.ToArray();
+        ConfigType = configType;
     }
 
     public string Name { get; }
 
+    /// <summary>
+    /// Entry が要求する標準 Config 型を取得します。未指定の場合は null を返します。
+    /// </summary>
+    public Type? ConfigType { get; }
+
     public CompositeStep<TNext> Run<TStep, TNext>()
         where TStep : IStep<TNext>, new()
     {
-        return new CompositeStep<TNext>(Name, Append(StepRegistration.Create<TStep, TNext>()));
+        return new CompositeStep<TNext>(Name, Append(StepRegistration.Create<TStep, TNext>()), ConfigType);
     }
 
     /// <summary>
@@ -70,7 +76,17 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     public CompositeStep<TNext> RunAsync<TStep, TNext>()
         where TStep : IAsyncStep<TNext>, new()
     {
-        return new CompositeStep<TNext>(Name, Append(StepRegistration.CreateAsync<TStep, TNext>()));
+        return new CompositeStep<TNext>(Name, Append(StepRegistration.CreateAsync<TStep, TNext>()), ConfigType);
+    }
+
+    /// <summary>
+    /// Entry が要求する標準 Config 型を metadata として設定します。
+    /// </summary>
+    /// <typeparam name="TConfig">StepContext に登録する標準 Config 型。</typeparam>
+    /// <returns>標準 Config 型 metadata を持つ composite entry。</returns>
+    public CompositeStep<TOut> WithConfig<TConfig>()
+    {
+        return new CompositeStep<TOut>(Name, steps, typeof(TConfig));
     }
 
     public CompositeStep<TOut> Produce<TValue>(Func<TOut, TValue> selector)
@@ -153,6 +169,11 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         if (options.EngineArguments is not null)
         {
             context.Set(options.EngineArguments);
+        }
+
+        if (options.StandardConfig is not null)
+        {
+            SetStandardConfig(context, ConfigType, options.StandardConfig);
         }
 
         var input = new StepInput(context);
@@ -477,7 +498,22 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         StepRegistration[] nextSteps = steps.ToArray();
         nextSteps[^1] = registration;
 
-        return new CompositeStep<TOut>(Name, nextSteps);
+        return new CompositeStep<TOut>(Name, nextSteps, ConfigType);
+    }
+
+    /// <summary>
+    /// 標準 Config instance を宣言された Config 型で StepContext に登録します。
+    /// </summary>
+    private static void SetStandardConfig(StepContext context, Type? configType, object standardConfig)
+    {
+        Type targetType = configType ?? standardConfig.GetType();
+        typeof(StepContext)
+            .GetMethods()
+            .Single(method => method.Name == nameof(StepContext.Set)
+                && method.IsGenericMethodDefinition
+                && method.GetParameters().Length == 1)
+            .MakeGenericMethod(targetType)
+            .Invoke(context, [standardConfig]);
     }
 }
 

@@ -11,7 +11,7 @@
 | P5 | 完了 | CLI、Config 引数保持、統合根拠の実装。 | T17-T18 が検査先行で実装、CLI 利用者目線の E2E、Markdown lint、表記揺れ検査、`dotnet test`、点検を通し、初期版の対象外混入がないことを記録する。 | T17-T18 完了、`tasks-status.md` T17-T18、`reports/t17-cli-run-validate-implementation-20260606203000.md`、`reports/t17-cli-run-validate-review-20260606203000.md`、`reports/t18-initial-version-integration-verification-20260606204500.md`、`reports/t18-initial-version-integration-review-20260606204500.md` |
 | P6 | 完了 | 初期版後の候補整理。 | 非同期 Step API、timeout、標準 Config 読み込み、retry、値を含む trace、NuGet ロックファイル、`#load "nuget: ..."`、Step 名名前空間化を、初期版とは別 task として扱える状態にする。 | T19 完了、`tasks-status.md` T20-T29、`reports/issue-1-post-initial-candidates-breakdown-20260606195401.md` |
 | P7 | 完了 | 実行制御の拡張。 | T20-T22 が検査先行で実装、非同期 Step API、timeout と協調キャンセル、retry が相互に矛盾しない契約として提出可能な状態になる。 | T20-T22 完了、`tasks-status.md` T20-T22、`reports/t20-async-step-api-final-review-20260607001007.md`、`reports/t21-timeout-cancellation-final-rereview-20260607014500.md`、`reports/t22-retry-final-review-20260607032000.md` |
-| P8 | 未着手 | Config 標準化。 | T23-T24 が検査先行で実装、標準 Config 読み込みと CLI override が利用者目線の E2E で確認される。 | `tasks-status.md` T23-T24 |
+| P8 | 進行中 | Config 標準化。 | T23-T24 が検査先行で実装、標準 Config 読み込みと CLI override が利用者目線の E2E で確認される。 | T23 完了、`tasks-status.md` T23-T24、`reports/t23-standard-config-final-review-20260607051500.md` |
 | P9 | 未着手 | 値の寿命と trace 拡張。 | T25-T26 が検査先行で実装、`Produce` 後の値寿命と値を含む `ExecutionTrace` が秘匿と失敗時挙動を含めて確認される。 | `tasks-status.md` T25-T26 |
 | P10 | 未着手 | csx 依存の再現性強化。 | T27-T28 が検査先行で実装、NuGet ロックファイルと `#load "nuget: ..."` が外部通信依存を避けた検査で確認される。 | `tasks-status.md` T27-T28 |
 | P11 | 未着手 | Step 名管理の拡張。 | T29 が検査先行で実装、Step 名の名前空間化と CLI 指定、重複検証が確認される。 | `tasks-status.md` T29 |
