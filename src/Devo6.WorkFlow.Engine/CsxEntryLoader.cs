@@ -99,6 +99,91 @@ public sealed class CsxEntryLoader
         }
     }
 
+    /// <summary>
+    /// Validates a trusted .csx workflow entry before executing any workflow steps.
+    /// </summary>
+    /// <param name="entryPath">The .csx file path to validate.</param>
+    /// <param name="entryName">The named script variable to validate as the workflow entry, or null for Main.</param>
+    /// <param name="validationOptions">Additional validation inputs such as config file paths.</param>
+    /// <returns>The validation result containing all detected pre-execution errors.</returns>
+    public WorkflowValidationResult Validate(
+        string entryPath,
+        string? entryName = null,
+        CsxValidationOptions? validationOptions = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
+
+        string resolvedEntryName = string.IsNullOrWhiteSpace(entryName) ? DefaultEntryName : entryName;
+        var errors = new List<ValidationError>();
+
+        if (!File.Exists(entryPath))
+        {
+            errors.Add(ToValidationError(entryPath, WorkflowErrorCodes.EntryScriptNotFound, $"Entry script was not found: {entryPath}"));
+
+            return new WorkflowValidationResult { Errors = errors };
+        }
+
+        errors.AddRange(ValidateConfigPaths(entryPath, validationOptions));
+
+        try
+        {
+            CsxScriptSource source = LoadScriptSource(entryPath);
+            ScriptOptions scriptOptions = CreateScriptOptions(entryPath, source);
+            Microsoft.CodeAnalysis.Scripting.Script<object> script = CSharpScript.Create<object>(
+                source.Code,
+                scriptOptions,
+                typeof(object));
+            ImmutableArray<Diagnostic> compileErrors = script.Compile()
+                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                .ToImmutableArray();
+
+            if (!compileErrors.IsEmpty)
+            {
+                errors.Add(ToValidationError(
+                    entryPath,
+                    WorkflowErrorCodes.ScriptCompileFailed,
+                    string.Join(Environment.NewLine, compileErrors.Select(diagnostic => diagnostic.ToString()))));
+
+                return new WorkflowValidationResult { Errors = errors };
+            }
+
+            ScriptState<object> state = script.RunAsync(new object()).GetAwaiter().GetResult();
+            IReadOnlyList<ScriptVariable> entryVariables = state.Variables
+                .Where(variable => IsCompositeStep(variable.Value))
+                .ToArray();
+            List<IGrouping<string, ScriptVariable>> duplicateStepNames = entryVariables
+                .GroupBy(variable => GetCompositeStepName(variable.Value), StringComparer.Ordinal)
+                .Where(group => group.Key.Length > 0 && group.Count() > 1)
+                .ToList();
+
+            foreach (IGrouping<string, ScriptVariable> duplicate in duplicateStepNames)
+            {
+                errors.Add(ToValidationError(
+                    duplicate.Key,
+                    WorkflowErrorCodes.DuplicateStepName,
+                    $"Duplicate public step name was found: {duplicate.Key}"));
+            }
+
+            if (duplicateStepNames.Count == 0 && !entryVariables.Any(variable => variable.Name == resolvedEntryName))
+            {
+                errors.Add(ToValidationError(
+                    resolvedEntryName,
+                    WorkflowErrorCodes.EntryStepNotFound,
+                    $"Entry step was not found: {resolvedEntryName}"));
+            }
+        }
+        catch (CsxReferenceValidationException exception)
+        {
+            errors.Add(ToValidationError(entryPath, exception.ErrorCode, exception.Message));
+        }
+        catch (Exception exception)
+        {
+            errors.Add(ToValidationError(entryPath, WorkflowErrorCodes.ScriptLoadFailed, exception.Message));
+        }
+
+        return new WorkflowValidationResult { Errors = errors };
+    }
+
     private CsxScriptSource LoadScriptSource(string entryPath)
     {
         string entryFullPath = Path.GetFullPath(entryPath);
@@ -206,6 +291,8 @@ public sealed class CsxEntryLoader
                     $"File reference is not allowed: {referenceValue}");
             }
 
+            ValidateApiAssemblyIdentity(referencePath);
+
             context.ReferencePaths.Add(referencePath);
             return false;
         }
@@ -290,6 +377,75 @@ public sealed class CsxEntryLoader
         Type? type = value?.GetType();
 
         return type is { IsGenericType: true } && type.GetGenericTypeDefinition() == typeof(CompositeStep<>);
+    }
+
+    private static string GetCompositeStepName(object? value)
+    {
+        return value?.GetType().GetProperty(nameof(CompositeStep<Unit>.Name))?.GetValue(value) as string ?? "";
+    }
+
+    private static IEnumerable<ValidationError> ValidateConfigPaths(string entryPath, CsxValidationOptions? validationOptions)
+    {
+        if (validationOptions is null)
+        {
+            yield break;
+        }
+
+        string entryDirectory = Path.GetDirectoryName(Path.GetFullPath(entryPath)) ?? Directory.GetCurrentDirectory();
+
+        foreach (string configPath in validationOptions.ConfigPaths)
+        {
+            string resolvedPath = Path.IsPathRooted(configPath)
+                ? configPath
+                : Path.Combine(entryDirectory, configPath);
+
+            if (!File.Exists(resolvedPath))
+            {
+                yield return ToValidationError(
+                    configPath,
+                    WorkflowErrorCodes.ConfigNotFound,
+                    $"Config file was not found: {configPath}");
+            }
+        }
+    }
+
+    private static void ValidateApiAssemblyIdentity(string referencePath)
+    {
+        AssemblyName referenceAssemblyName;
+
+        try
+        {
+            referenceAssemblyName = AssemblyName.GetAssemblyName(referencePath);
+        }
+        catch (BadImageFormatException)
+        {
+            return;
+        }
+
+        RejectCopiedApiAssembly(referencePath, referenceAssemblyName, typeof(IStep<>).Assembly);
+        RejectCopiedApiAssembly(referencePath, referenceAssemblyName, typeof(CompositeStep).Assembly);
+    }
+
+    private static void RejectCopiedApiAssembly(string referencePath, AssemblyName referenceAssemblyName, Assembly hostAssembly)
+    {
+        AssemblyName hostAssemblyName = hostAssembly.GetName();
+
+        if (!string.Equals(referenceAssemblyName.Name, hostAssemblyName.Name, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (string.Equals(
+            ResolvePathFinalTarget(referencePath),
+            ResolvePathFinalTarget(hostAssembly.Location),
+            StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new CsxReferenceValidationException(
+            WorkflowErrorCodes.ScriptApiIdentityMismatch,
+            $"Script references a different copy of public API assembly: {referencePath}");
     }
 
     private static bool TryReadDirective(string line, string directiveName, out string value)
@@ -417,6 +573,16 @@ public sealed class CsxEntryLoader
             ErrorCode = errorCode,
             ErrorMessage = errorMessage,
             Trace = new ExecutionTrace([]),
+        };
+    }
+
+    private static ValidationError ToValidationError(string path, string code, string message)
+    {
+        return new ValidationError
+        {
+            Path = path,
+            Code = code,
+            Message = message,
         };
     }
 
