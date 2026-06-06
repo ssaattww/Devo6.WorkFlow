@@ -403,17 +403,19 @@ Step("Main")
 
 ### 7.4 StoreAs
 
-`StoreAs` は、戻り値をそのまま登録するための省略 API として扱う。
+`StoreAs` は、現在の Step 戻り値をその型のまま登録する省略 API として扱う。
 
 ```csharp
-.StoreAs<LoadResult>()
+.StoreAs()
 ```
 
 これは以下の省略形である。
 
 ```csharp
-.Produce<LoadResult>(x => x)
+.Produce<TOut>(x => x)
 ```
+
+ここでの `TOut` は、現在の `Run<TStep, TOut>()` の戻り値型である。
 
 ただし、主要 API は `Produce` とする。
 
@@ -666,7 +668,7 @@ Step("Main")
     .Run<ReadBodyStep, string>()
         .Produce<string>("body", x => x)
     .Run<MergeStep, Article>()
-        .StoreAs<Article>();
+        .StoreAs();
 ```
 
 取得側:
@@ -816,7 +818,7 @@ Step("Main")
     .Run<LoadStep, LoadResult>()
         .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
     .Run<ConvertStep, ConvertResult>()
-        .StoreAs<ConvertResult>();
+        .StoreAs();
 ```
 
 エンジンはロード済み `.csx` から、指定名に一致する `CompositeStep` を取得して実行する。
