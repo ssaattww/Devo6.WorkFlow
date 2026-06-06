@@ -166,30 +166,54 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
         engineLogger.LogInformation("Entry started");
 
+        int maxAttempts = GetMaxAttempts(options.Retry);
+
         for (int stepIndex = 0; stepIndex < steps.Count; stepIndex++)
         {
             StepRegistration step = steps[stepIndex];
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            using IDisposable? stepScope = engineLogger.BeginScope(new Dictionary<string, object?>
+            var succeededAttempt = 1;
+            Stopwatch? succeededAttemptStopwatch = null;
+
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                ["EntryName"] = Name,
-                ["StepName"] = step.Name,
-                ["Attempt"] = 1,
-            });
+                Stopwatch stopwatch = Stopwatch.StartNew();
+                using IDisposable? stepScope = engineLogger.BeginScope(new Dictionary<string, object?>
+                {
+                    ["EntryName"] = Name,
+                    ["StepName"] = step.Name,
+                    ["Attempt"] = attempt,
+                });
 
-            engineLogger.LogInformation("Step started");
+                engineLogger.LogInformation("Step started for attempt {Attempt}", attempt);
 
-            using StepExecutionCancellation stepCancellation = CreateStepExecutionCancellation(options.StepTimeout, cancellationToken);
+                using StepExecutionCancellation stepCancellation = CreateStepExecutionCancellation(options.StepTimeout, cancellationToken);
 
-            try
-            {
-                currentValue = await step.ExecuteAsync(input, stepCancellation.Token).ConfigureAwait(false);
+                try
+                {
+                    currentValue = await step.ExecuteAsync(input, stepCancellation.Token).ConfigureAwait(false);
 
-                StepCancellationFailure? cancellationFailure = DetectCancellationFailure(
-                    step,
-                    stepCancellation,
-                    cancellationToken);
-                if (cancellationFailure is not null)
+                    StepCancellationFailure? cancellationFailure = DetectCancellationFailure(
+                        step,
+                        stepCancellation,
+                        cancellationToken);
+                    if (cancellationFailure is not null)
+                    {
+                        stopwatch.Stop();
+
+                        return ToCancellationWorkflowResult(
+                            traceSteps,
+                            step,
+                            stopwatch.Elapsed,
+                            attempt,
+                            cancellationFailure,
+                            engineLogger);
+                    }
+
+                    succeededAttempt = attempt;
+                    succeededAttemptStopwatch = stopwatch;
+                    break;
+                }
+                catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
                 {
                     stopwatch.Stop();
 
@@ -197,52 +221,106 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                         traceSteps,
                         step,
                         stopwatch.Elapsed,
-                        cancellationFailure,
+                        attempt,
+                        StepCancellationFailure.Canceled(exception.Message),
                         engineLogger);
                 }
+                catch (OperationCanceledException exception) when (stepCancellation.TimeoutWasRequested)
+                {
+                    stopwatch.Stop();
 
+                    return ToCancellationWorkflowResult(
+                        traceSteps,
+                        step,
+                        stopwatch.Elapsed,
+                        attempt,
+                        StepCancellationFailure.TimedOut(step.Name, stepCancellation.Timeout!.Value, exception.Message),
+                        engineLogger);
+                }
+                catch (Exception exception)
+                {
+                    stopwatch.Stop();
+                    traceSteps.Add(new ExecutionTraceStep(
+                        step.Name,
+                        ExecutionTraceStepStatus.Failed,
+                        stopwatch.Elapsed,
+                        WorkflowErrorCodes.StepExecutionFailed,
+                        attempt));
+
+                    if (attempt < maxAttempts)
+                    {
+                        engineLogger.LogWarning(
+                            exception,
+                            "Step attempt {Attempt} failed with error code {ErrorCode}; retrying",
+                            attempt,
+                            WorkflowErrorCodes.StepExecutionFailed);
+                        continue;
+                    }
+
+                    engineLogger.LogError(
+                        exception,
+                        "Step failed after attempt {Attempt} with error code {ErrorCode}",
+                        attempt,
+                        WorkflowErrorCodes.StepExecutionFailed);
+                    engineLogger.LogError(
+                        exception,
+                        "Entry failed after attempt {Attempt} with error code {ErrorCode}",
+                        attempt,
+                        WorkflowErrorCodes.StepExecutionFailed);
+
+                    return new WorkflowResult
+                    {
+                        EntryName = Name,
+                        Succeeded = false,
+                        ErrorCode = WorkflowErrorCodes.StepExecutionFailed,
+                        ErrorMessage = exception.Message,
+                        Trace = new ExecutionTrace(traceSteps),
+                    };
+                }
+            }
+
+            if (succeededAttemptStopwatch is null)
+            {
+                throw new InvalidOperationException("Step retry loop completed without a terminal result.");
+            }
+
+            using IDisposable? produceScope = engineLogger.BeginScope(new Dictionary<string, object?>
+            {
+                ["EntryName"] = Name,
+                ["StepName"] = step.Name,
+                ["Attempt"] = succeededAttempt,
+            });
+
+            try
+            {
                 step.Produce(input, currentValue);
-                stopwatch.Stop();
-                traceSteps.Add(new ExecutionTraceStep(step.Name, ExecutionTraceStepStatus.Succeeded, stopwatch.Elapsed, null));
-                engineLogger.LogInformation("Step succeeded");
-            }
-            catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
-            {
-                stopwatch.Stop();
-
-                return ToCancellationWorkflowResult(
-                    traceSteps,
-                    step,
-                    stopwatch.Elapsed,
-                    StepCancellationFailure.Canceled(exception.Message),
-                    engineLogger);
-            }
-            catch (OperationCanceledException exception) when (stepCancellation.TimeoutWasRequested)
-            {
-                stopwatch.Stop();
-
-                return ToCancellationWorkflowResult(
-                    traceSteps,
-                    step,
-                    stopwatch.Elapsed,
-                    StepCancellationFailure.TimedOut(step.Name, stepCancellation.Timeout!.Value, exception.Message),
-                    engineLogger);
+                succeededAttemptStopwatch.Stop();
+                traceSteps.Add(new ExecutionTraceStep(
+                    step.Name,
+                    ExecutionTraceStepStatus.Succeeded,
+                    succeededAttemptStopwatch.Elapsed,
+                    null,
+                    succeededAttempt));
+                engineLogger.LogInformation("Step succeeded on attempt {Attempt}", succeededAttempt);
             }
             catch (Exception exception)
             {
-                stopwatch.Stop();
+                succeededAttemptStopwatch.Stop();
                 traceSteps.Add(new ExecutionTraceStep(
                     step.Name,
                     ExecutionTraceStepStatus.Failed,
-                    stopwatch.Elapsed,
-                    WorkflowErrorCodes.StepExecutionFailed));
+                    succeededAttemptStopwatch.Elapsed,
+                    WorkflowErrorCodes.StepExecutionFailed,
+                    succeededAttempt));
                 engineLogger.LogError(
                     exception,
-                    "Step failed with error code {ErrorCode}",
+                    "Step post-processing failed on attempt {Attempt} with error code {ErrorCode}",
+                    succeededAttempt,
                     WorkflowErrorCodes.StepExecutionFailed);
                 engineLogger.LogError(
                     exception,
-                    "Entry failed with error code {ErrorCode}",
+                    "Entry failed on attempt {Attempt} with error code {ErrorCode}",
+                    succeededAttempt,
                     WorkflowErrorCodes.StepExecutionFailed);
 
                 return new WorkflowResult
@@ -264,6 +342,19 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             Succeeded = true,
             Trace = new ExecutionTrace(traceSteps),
         };
+    }
+
+    /// <summary>
+    /// retry 設定から Step 本体の最大試行回数を取得します。
+    /// </summary>
+    private static int GetMaxAttempts(RetryOptions? retry)
+    {
+        if (retry is null || retry.MaxAttempts <= 1)
+        {
+            return 1;
+        }
+
+        return retry.MaxAttempts;
     }
 
     /// <summary>
@@ -325,6 +416,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         List<ExecutionTraceStep> traceSteps,
         StepRegistration step,
         TimeSpan elapsed,
+        int attempt,
         StepCancellationFailure failure,
         ILogger engineLogger)
     {
@@ -332,12 +424,15 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             step.Name,
             ExecutionTraceStepStatus.Failed,
             elapsed,
-            failure.ErrorCode));
+            failure.ErrorCode,
+            attempt));
         engineLogger.LogWarning(
-            "Step stopped with error code {ErrorCode}",
+            "Step stopped on attempt {Attempt} with error code {ErrorCode}",
+            attempt,
             failure.ErrorCode);
         engineLogger.LogWarning(
-            "Entry failed with error code {ErrorCode}",
+            "Entry failed on attempt {Attempt} with error code {ErrorCode}",
+            attempt,
             failure.ErrorCode);
 
         return new WorkflowResult

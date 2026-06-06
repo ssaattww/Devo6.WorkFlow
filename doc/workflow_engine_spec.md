@@ -585,13 +585,33 @@ public enum FailurePolicy
 
 ### 11.4 retry と timeout
 
-初期版では retry を実装しない。
+T22 では Step 本体の通常例外に対する retry を実装する。
 
-retry を追加する場合、対象は Step 実行中の一時的な例外に限定する。
+retry は `WorkflowExecutionOptions.Retry` で指定する。
 
-入力取得失敗、Config 検証失敗、`.csx` コンパイル失敗、参照解決失敗は retry 対象外とする。
+`RetryOptions.MaxAttempts` は初回を含む最大試行回数とする。
 
-T21 では retry と独立して、Step 単位の timeout を追加する。
+`Retry = null` または `MaxAttempts <= 1` の場合、retry は行わない。
+
+例えば `MaxAttempts = 3` は、対象 Step を最大 3 回実行することを意味する。
+
+T22 の retry は全 Step 一律の指定に限定する。
+
+Step 別 retry、待機時間制御、例外型による絞り込み、CLI 指定、Config 指定は T22 の対象外とする。
+
+retry 対象は Step 本体の通常例外に限定する。
+
+最終的に `STEP_EXECUTION_FAILED` になる候補だけを retry 対象とする。
+
+入力取得失敗、Config 検証失敗、`.csx` ロード失敗、`.csx` コンパイル失敗、参照解決失敗は retry 対象外とする。
+
+`Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とする。
+
+失敗した試行の `Produce` は実行しない。
+
+途中の試行が成功した場合、成功した最後の試行の戻り値だけに `Produce` を実行し、後続 Step は 1 回だけ開始する。
+
+全試行が失敗した場合、後続 Step は開始しない。
 
 timeout は `WorkflowExecutionOptions.StepTimeout` で指定する。
 
@@ -599,7 +619,15 @@ timeout は `WorkflowExecutionOptions.StepTimeout` で指定する。
 
 timeout は強制停止ではなく、`CancellationToken` による協調キャンセルとして扱う。
 
-CLI の timeout オプション、retry との統合、実行中 Step の強制停止、workflow 全体 timeout は T21 の対象外とする。
+timeout と外部キャンセルは retry 対象外とする。
+
+timeout は `STEP_TIMEOUT`、外部キャンセルは `STEP_CANCELED` として扱い、どちらも retry を止める。
+
+timeout と外部キャンセルの両方が観測される場合は、T21 と同じく外部キャンセルを優先して `STEP_CANCELED` とする。
+
+各試行の timeout は、試行開始時に作成した Step 単位の timeout 用 `CancellationTokenSource` で判定する。
+
+実行中 Step の強制停止、workflow 全体 timeout は T22 の対象外とする。
 
 ---
 
@@ -864,6 +892,11 @@ public sealed class WorkflowExecutionOptions
     public TimeSpan? StepTimeout { get; init; }
 
     /// <summary>
+    /// Step 本体の通常例外に対する retry 設定を取得または設定します。null の場合は retry しません。
+    /// </summary>
+    public RetryOptions? Retry { get; init; }
+
+    /// <summary>
     /// エンジンと Step のログ出力に使う logger factory を取得または設定します。
     /// </summary>
     public ILoggerFactory? LoggerFactory { get; init; }
@@ -873,6 +906,14 @@ public sealed class WorkflowExecutionOptions
     /// </summary>
     public EngineArguments? EngineArguments { get; init; }
 }
+
+public sealed class RetryOptions
+{
+    /// <summary>
+    /// 初回を含む最大試行回数を取得または設定します。1 以下の場合は retry しません。
+    /// </summary>
+    public int MaxAttempts { get; init; }
+}
 ```
 
 `StepTimeout` は workflow 全体ではなく、Step 実行ごとの timeout として扱う。
@@ -880,6 +921,14 @@ public sealed class WorkflowExecutionOptions
 `StepTimeout` が `null` の場合、timeout 用の `CancellationTokenSource` は作らず、外部 `CancellationToken` だけを使う。
 
 `StepTimeout` は CLI オプションではなく、エンジン実行時オプションとして扱う。
+
+`Retry` は全 Step 一律の retry 設定として扱う。
+
+`Retry` が `null`、または `Retry.MaxAttempts <= 1` の場合、retry は行わない。
+
+`Retry.MaxAttempts` は初回を含む最大試行回数であり、`MaxAttempts = 3` は最大 3 回の Step 本体実行を表す。
+
+T22 では `Retry` を CLI オプションまたは Config から直接指定しない。
 
 ### 14.6 Unit
 
@@ -1196,6 +1245,20 @@ CLI 実行では、成功時は終了コード 0、失敗時は 0 以外を返�
 
 非同期 Step の完了後に `Produce`、`StoreAs`、`Discard` を実行する。
 
+retry が有効な場合、Step 本体の通常例外は `RetryOptions.MaxAttempts` まで再試行する。
+
+途中の試行が成功した場合、エンジンは成功した試行の戻り値だけに `Produce`、`StoreAs`、`Discard` を実行する。
+
+失敗した試行の `Produce`、`StoreAs`、`Discard` は実行しない。
+
+全試行が失敗した場合、エンジンは `WorkflowResult.Succeeded = false` の失敗結果を返す。
+
+全試行失敗時の `ErrorCode` は `STEP_EXECUTION_FAILED` とする。
+
+全試行失敗時の `ErrorMessage` は、最後に観測した例外 message を基本とする。
+
+全試行失敗後、エンジンは後続 Step を開始しない。
+
 Step timeout または外部キャンセルが発生した場合、エンジンは `WorkflowResult.Succeeded = false` の失敗結果を返す。
 
 timeout の場合、`ErrorCode` は `STEP_TIMEOUT` とする。
@@ -1205,6 +1268,8 @@ timeout の場合、`ErrorCode` は `STEP_TIMEOUT` とする。
 timeout または外部キャンセルで Step が失敗した場合、その Step の `Produce`、`StoreAs`、`Discard` は実行しない。
 
 timeout または外部キャンセルを検出した後、エンジンは後続 Step を開始しない。
+
+timeout と外部キャンセルは retry 対象外とし、観測した時点で workflow を失敗終了する。
 
 ### 18.2 エラーコード
 
@@ -1240,6 +1305,10 @@ timeout と外部キャンセルの両方が観測される場合は、外部キ
 
 `STEP_CANCELED` は通常の Step 例外を表す `STEP_EXECUTION_FAILED` とは区別する。
 
+retry で全試行が失敗した場合も、retry 専用エラーコードは追加せず `STEP_EXECUTION_FAILED` を使う。
+
+`Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とし、既存の Step 失敗として扱う。
+
 ### 18.3 ログ
 
 ログはエンジンで独自実装せず、`Microsoft.Extensions.Logging` を利用する。
@@ -1252,7 +1321,15 @@ timeout と外部キャンセルの両方が観測される場合は、外部キ
 
 ログ出力では文字列連結ではなく、構造化ログを使う。
 
-エンジンは Entry 名、Step 名、試行回数をログのスコープへ含める。
+エンジンは Entry 名、Step 名、試行番号をログのスコープへ含める。
+
+ログのスコープの `Attempt` は実試行番号とする。
+
+retry が発生する場合、エンジンは試行ごとの Step 失敗、retry 予定、最終失敗を構造化ログとして記録する。
+
+retry 予定のログには、`EntryName`、`StepName`、`Attempt`、次の試行番号、`ErrorCode` を含める。
+
+最終失敗のログには、`EntryName`、`StepName`、`Attempt`、`ErrorCode`、最終試行であることを含める。
 
 timeout または外部キャンセルで終了した場合、対象 Step 名とエラーコードをログに含める。
 
@@ -1272,6 +1349,25 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 値を保存する場合は、明示設定と秘匿化の規則を必要とする。
 
 同期 Step と非同期 Step が混在する場合も、trace は定義順の実行履歴として記録する。
+
+`ExecutionTraceStep` には試行番号を追加する。
+
+```csharp
+public sealed record ExecutionTraceStep(
+    string StepName,
+    ExecutionTraceStepStatus Status,
+    TimeSpan Duration,
+    string? ErrorCode,
+    int Attempt);
+```
+
+`Attempt` は 1 から始まる実試行番号とする。
+
+retry された Step は、同じ Step 名の trace 記録を試行ごとに追加する。
+
+途中で成功した場合、失敗試行の trace 記録を複数件追加し、最後に成功試行の trace 記録を 1 件追加する。
+
+全試行が失敗した場合、失敗試行の trace 記録を試行数分追加し、最後の記録の `ErrorCode` は `STEP_EXECUTION_FAILED` とする。
 
 非同期 Step で例外が発生した場合、非同期待機で観測した例外を `STEP_EXECUTION_FAILED` の失敗 trace に変換する。
 
@@ -1309,8 +1405,10 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 - `Microsoft.Extensions.Logging` 統合
 - `WorkflowResult` と基本エラーコード
 - `WorkflowExecutionOptions.StepTimeout` による Step 単位の timeout
+- `WorkflowExecutionOptions.Retry` による全 Step 一律の retry
 - `ExecuteWorkflowAsync` の外部 `CancellationToken` と timeout 用の `CancellationToken` の合成
 - timeout と外部キャンセルの失敗結果化
+- retry 試行ごとのログと trace
 
 ### 19.2 初期版で扱わない範囲
 
@@ -1326,10 +1424,13 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 - `#load "nuget: ..."`
 - 未信頼 `.csx` の安全な実行
 - Config YAML の標準型変換
-- retry
 - 値を含む `ExecutionTrace`
 - CLI の timeout オプション
-- retry と timeout の統合
+- CLI の retry オプション
+- Config による retry 指定
+- Step 別 retry 方針
+- retry 待機時間制御
+- retry の例外型による絞り込み
 - 実行中 Step の強制停止
 - workflow 全体 timeout
 - timeout またはキャンセル専用の trace 状態
@@ -1339,10 +1440,14 @@ T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加�
 次フェーズ候補は以下とする。
 
 - CLI の timeout オプション
+- CLI の retry オプション
+- Config による retry 指定
+- Step 別 retry 方針
+- retry 待機時間制御
+- retry の例外型による絞り込み
 - workflow 全体 timeout
 - timeout またはキャンセル専用の trace 状態
 - 標準 Config 読み込み
-- retry
 - 値を含む `ExecutionTrace`
 - NuGet ロックファイル
 - `#load "nuget: ..."`
@@ -1400,10 +1505,34 @@ T21 では以下を採用する。
 T21 では以下を扱わない。
 
 - CLI の timeout オプション
-- retry と timeout の統合
 - 実行中 Step の強制停止
 - workflow 全体 timeout
 - timeout またはキャンセル専用の trace 状態
+
+T22 では以下を採用する。
+
+- `WorkflowExecutionOptions` に `RetryOptions? Retry` を追加する
+- `RetryOptions` に `int MaxAttempts` を追加する
+- `Retry = null` または `MaxAttempts <= 1` は retry なしとする
+- `MaxAttempts` は初回を含む最大試行回数とする
+- retry は全 Step 一律の指定に限定する
+- retry 対象は Step 本体の通常例外だけとする
+- timeout と外部キャンセルは retry 対象外とする
+- timeout と外部キャンセルの両方が観測される場合は外部キャンセルを優先する
+- `Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とする
+- 成功した最後の試行だけ `Produce`、`StoreAs`、`Discard` を実行する
+- 全試行失敗時は `STEP_EXECUTION_FAILED` の失敗結果にする
+- `ExecutionTraceStep` に `Attempt` を追加する
+- ログのスコープの `Attempt` は実試行番号にする
+- retry 予定と最終失敗を構造化ログで記録する
+
+T22 では以下を扱わない。
+
+- CLI の retry オプション
+- Config による retry 指定
+- Step 別 retry 方針
+- retry 待機時間制御
+- retry の例外型による絞り込み
 
 ### 21.2 Config 読み込み責務
 

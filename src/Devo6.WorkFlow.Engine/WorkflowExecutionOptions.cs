@@ -33,4 +33,9 @@ public sealed class WorkflowExecutionOptions
     /// Step ごとに適用する timeout を取得または設定します。null の場合は timeout を適用しません。
     /// </summary>
     public TimeSpan? StepTimeout { get; set; }
+
+    /// <summary>
+    /// Step 本体の通常例外に適用する retry 設定を取得または設定します。null の場合は retry を行いません。
+    /// </summary>
+    public RetryOptions? Retry { get; set; }
 }

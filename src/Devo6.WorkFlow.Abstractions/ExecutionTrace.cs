@@ -23,17 +23,36 @@ public sealed class ExecutionTrace
 }
 
 /// <summary>
-/// Describes one step execution in the trace without exposing input, configuration, or output values.
+/// 入力、設定、出力値を含めずに 1 回の Step 試行履歴を表します。
 /// </summary>
-/// <param name="StepName">The step type name recorded for the execution.</param>
-/// <param name="Status">The final execution status for the step.</param>
-/// <param name="Duration">The elapsed time spent executing the step.</param>
-/// <param name="ErrorCode">The workflow error code when the step failed.</param>
+/// <param name="StepName">記録対象の Step 型名。</param>
+/// <param name="Status">Step 試行の最終状態。</param>
+/// <param name="Duration">Step 試行にかかった時間。</param>
+/// <param name="ErrorCode">Step 試行が失敗した場合の workflow error code。</param>
+/// <param name="Attempt">1 始まりの試行番号。</param>
 public sealed record ExecutionTraceStep(
     string StepName,
     ExecutionTraceStepStatus Status,
     TimeSpan Duration,
-    string? ErrorCode);
+    string? ErrorCode,
+    int Attempt)
+{
+    /// <summary>
+    /// 互換性のため、試行番号 1 の Step 試行履歴を作成します。
+    /// </summary>
+    /// <param name="stepName">記録対象の Step 型名。</param>
+    /// <param name="status">Step 試行の最終状態。</param>
+    /// <param name="duration">Step 試行にかかった時間。</param>
+    /// <param name="errorCode">Step 試行が失敗した場合の workflow error code。</param>
+    public ExecutionTraceStep(
+        string stepName,
+        ExecutionTraceStepStatus status,
+        TimeSpan duration,
+        string? errorCode)
+        : this(stepName, status, duration, errorCode, 1)
+    {
+    }
+}
 
 /// <summary>
 /// Defines the supported final states for a traced step execution.
