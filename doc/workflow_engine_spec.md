@@ -108,6 +108,10 @@ public interface IStep<TOut>
 
 `StepInput` は、型付き・名前付きの可変長入力集合である。
 
+`StepInput` は、`Produce` と `StoreAs` で追加された値を同一 `CompositeStep` 実行中の後続すべての Step へ保持する追記型集合である。
+
+登録前の上流 Step 以前からは、追加予定の値を読めない。
+
 含まれる値の例:
 
 - 上流 Step の出力全体
@@ -131,7 +135,13 @@ Type + name
 
 同じ型と名前の組み合わせを複数登録してはならない。
 
-`Produce` により既存キーへ再登録しようとした場合、エンジンは実行時エラーとして扱う。
+`Produce` または `StoreAs` により既存キーへ再登録しようとした場合、エンジンは実行時エラーとして扱う。
+
+この制約は、複数 Step にまたがる再登録にも適用する。暗黙上書きは行わない。
+
+型キーと名前付きキーは、同じ CLR 型でも別キーとして扱う。
+
+例えば `string`、`string` + `title`、`string` + `body` は別の値として共存できる。
 
 例:
 
@@ -195,10 +205,13 @@ StepContext context = input.Get<StepContext>();
 
 ```text
 StepInput:
-  Step 間で明示的に受け渡す可変長入力集合
+  Step 間で明示的に受け渡す追記型の可変長入力集合
+  Produce と StoreAs で追加した値を後続 Step へ保持する
+  既存値を削除せず、同じキーを暗黙上書きしない
 
 StepContext:
   実行全体で共有される長寿命の値
+  Set により同じキーを明示上書きできる
 ```
 
 Config は `StepContext` に置く方針とする。
@@ -412,6 +425,8 @@ var Main = CompositeStep.Define("Main")
 
 `LoadResult.Text` から `ConvertInput` を生成し、それだけを `StepInput` に登録する。
 
+登録された `ConvertInput` は、この `CompositeStep` 実行中の後続すべての Step から読める。
+
 ### 7.3 Produce
 
 `Produce` は、Step の戻り値から `StepInput` に追加する値を生成する。
@@ -425,6 +440,14 @@ var Main = CompositeStep.Define("Main")
 ```csharp
 .Produce<TValue>(string name, Func<TOut, TValue> selector)
 ```
+
+`Produce` で追加された値は、登録した Step より後に実行されるすべての Step から読める。
+
+登録前の Step からは読めない。
+
+同じ型キー、または同じ型と名前のキーへ再登録しようとした場合は実行時エラーとする。
+
+型キーと名前付きキーは、同じ CLR 型でも別キーである。
 
 ### 7.4 StoreAs
 
@@ -446,9 +469,13 @@ var Main = CompositeStep.Define("Main")
 
 理由は、`StoreAs` だけでは上流出力の一部を下流用入力として生成できないためである。
 
+`StoreAs` で登録された値の寿命、可視範囲、重複キーの扱いは `Produce` と同じである。
+
 ### 7.5 Discard
 
 `Discard` は Step の戻り値を `StepInput` に登録しない。
+
+`Discard` は現在 Step の戻り値登録を抑止するだけであり、既に `StepInput` に登録済みの値を削除しない。
 
 ```csharp
 .Run<SaveStep, Unit>()
@@ -643,7 +670,9 @@ retry 対象は Step 本体の通常例外に限定する。
 
 `Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とする。
 
-失敗した試行の `Produce` は実行しない。
+失敗した試行の `Produce`、`StoreAs`、`Discard` は実行しない。
+
+失敗した試行の戻り値由来の値は `StepInput` に残さない。
 
 途中の試行が成功した場合、成功した最後の試行の戻り値だけに `Produce` を実行し、後続 Step は 1 回だけ開始する。
 
@@ -662,6 +691,8 @@ timeout は `STEP_TIMEOUT`、外部キャンセルは `STEP_CANCELED` として�
 timeout と外部キャンセルの両方が観測される場合は、T21 と同じく外部キャンセルを優先して `STEP_CANCELED` とする。
 
 各試行の timeout は、試行開始時に作成した Step 単位の timeout 用 `CancellationTokenSource` で判定する。
+
+timeout または外部キャンセルで失敗した Step は `Produce`、`StoreAs`、`Discard` を実行せず、値を `StepInput` に残さない。
 
 実行中 Step の強制停止、workflow 全体 timeout は T22 の対象外とする。
 
@@ -1306,6 +1337,8 @@ retry が有効な場合、Step 本体の通常例外は `RetryOptions.MaxAttemp
 
 失敗した試行の `Produce`、`StoreAs`、`Discard` は実行しない。
 
+失敗した試行の戻り値由来の値は `StepInput` に残さない。
+
 全試行が失敗した場合、エンジンは `WorkflowResult.Succeeded = false` の失敗結果を返す。
 
 全試行失敗時の `ErrorCode` は `STEP_EXECUTION_FAILED` とする。
@@ -1321,6 +1354,8 @@ timeout の場合、`ErrorCode` は `STEP_TIMEOUT` とする。
 外部キャンセルの場合、`ErrorCode` は `STEP_CANCELED` とする。
 
 timeout または外部キャンセルで Step が失敗した場合、その Step の `Produce`、`StoreAs`、`Discard` は実行しない。
+
+timeout または外部キャンセルで失敗した Step の戻り値由来の値は `StepInput` に残さない。
 
 timeout または外部キャンセルを検出した後、エンジンは後続 Step を開始しない。
 
@@ -1402,6 +1437,12 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 初期版では、`StepInput`、Config、Step 出力の値そのものは既定では保存しない。
 
 値を保存する場合は、明示設定と秘匿化の規則を必要とする。
+
+T25 では、`ExecutionTrace` の値候補の基礎単位を「成功して `StepInput` に登録された値」として境界だけを定める。
+
+失敗した試行、timeout、外部キャンセルで `Produce` または `StoreAs` の値登録処理が実行されなかった値は、通常の登録済み値として扱わない。
+
+値の保存形式、秘匿、直列化できない値の扱いは T26 で決める。
 
 同期 Step と非同期 Step が混在する場合も、trace は定義順の実行履歴として記録する。
 
@@ -1639,15 +1680,31 @@ T24 では、`--set` を標準 Config に対するプロパティ path override 
 
 ### 21.4 Produce 後の値の寿命
 
-`StepInput` に追加された値を、最後まで保持するか、スコープ管理するかは未確定。
+`StepInput` に追加された値は、同一 `CompositeStep` 実行中の後続すべての Step へ保持する。
 
-初期版では、CompositeStep の実行中は保持し続ける設計が単純である。
+`Produce` と `StoreAs` は、Step 成功後に値を `StepInput` へ追記する。
+
+登録前の上流 Step 以前からは、その値を読めない。
+
+`Discard` は現在 Step の戻り値登録を抑止するだけで、既存値を削除しない。
+
+同じ型キー、または同じ型と名前のキーを再登録しようとした場合は実行時エラーとする。暗黙上書きは行わない。
+
+型キーと名前付きキーは、同じ CLR 型でも別キーとして扱う。
+
+長寿命で上書き可能な共有値は `StepContext` に置く。Step 間で明示的に受け渡す値は `StepInput` に置く。
 
 ### 21.5 トレース値の保存
 
 `ExecutionTrace` に `StepInput`、Config、Step 出力の値を保存するかは未確定。
 
 初期版では、値そのものは保存せず、Step 名、状態、所要時間、エラーコードを優先する。
+
+T25 では、`ExecutionTrace` の値候補の基礎単位を「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
+
+失敗した試行、timeout、外部キャンセルにより `Produce` または `StoreAs` の値登録処理が実行されなかった値は、登録済み値として扱わない。
+
+値の保存形式、秘匿規則、直列化できない値の扱いは T26 で決める。
 
 ---
 

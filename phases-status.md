@@ -12,7 +12,7 @@
 | P6 | 完了 | 初期版後の候補整理。 | 非同期 Step API、timeout、標準 Config 読み込み、retry、値を含む trace、NuGet ロックファイル、`#load "nuget: ..."`、Step 名名前空間化を、初期版とは別 task として扱える状態にする。 | T19 完了、`tasks-status.md` T20-T29、`reports/issue-1-post-initial-candidates-breakdown-20260606195401.md` |
 | P7 | 完了 | 実行制御の拡張。 | T20-T22 が検査先行で実装、非同期 Step API、timeout と協調キャンセル、retry が相互に矛盾しない契約として提出可能な状態になる。 | T20-T22 完了、`tasks-status.md` T20-T22、`reports/t20-async-step-api-final-review-20260607001007.md`、`reports/t21-timeout-cancellation-final-rereview-20260607014500.md`、`reports/t22-retry-final-review-20260607032000.md` |
 | P8 | 完了 | Config 標準化。 | T23-T24 が検査先行で実装、標準 Config 読み込みと CLI override が利用者目線の E2E で確認される。 | T23-T24 完了、`tasks-status.md` T23-T24、`reports/t23-standard-config-final-review-20260607051500.md`、`reports/t24-cli-override-final-review-20260607072000.md` |
-| P9 | 未着手 | 値の寿命と trace 拡張。 | T25-T26 が検査先行で実装、`Produce` 後の値寿命と値を含む `ExecutionTrace` が秘匿と失敗時挙動を含めて確認される。 | `tasks-status.md` T25-T26 |
+| P9 | 進行中 | 値の寿命と trace 拡張。 | T25-T26 が検査先行で実装、`Produce` 後の値寿命と値を含む `ExecutionTrace` が秘匿と失敗時挙動を含めて確認される。 | T25 完了、`tasks-status.md` T25-T26、`reports/t25-produce-value-lifetime-final-rereview-20260607095000.md` |
 | P10 | 未着手 | csx 依存の再現性強化。 | T27-T28 が検査先行で実装、NuGet ロックファイルと `#load "nuget: ..."` が外部通信依存を避けた検査で確認される。 | `tasks-status.md` T27-T28 |
 | P11 | 未着手 | Step 名管理の拡張。 | T29 が検査先行で実装、Step 名の名前空間化と CLI 指定、重複検証が確認される。 | `tasks-status.md` T29 |
 | P12 | 未着手 | 利用者文書とコード標準の整備。 | T30-T31 が検査先行で実施され、`README.md`、英語関数名、日本語の C# 文書注釈、すべての関数とプロパティの説明文が確認される。 | `tasks-status.md` T30-T31 |
