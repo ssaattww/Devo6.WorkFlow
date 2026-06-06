@@ -28,4 +28,9 @@ public sealed class WorkflowExecutionOptions
     /// Gets command-line engine arguments exposed through StepContext during workflow execution.
     /// </summary>
     public EngineArguments? EngineArguments { get; }
+
+    /// <summary>
+    /// Step ごとに適用する timeout を取得または設定します。null の場合は timeout を適用しません。
+    /// </summary>
+    public TimeSpan? StepTimeout { get; set; }
 }

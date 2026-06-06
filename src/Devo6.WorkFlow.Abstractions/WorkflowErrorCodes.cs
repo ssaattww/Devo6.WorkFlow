@@ -81,6 +81,11 @@ public static class WorkflowErrorCodes
     public const string StepTimeout = "STEP_TIMEOUT";
 
     /// <summary>
+    /// Step が外部 CancellationToken により cancel されたことを示します。
+    /// </summary>
+    public const string StepCanceled = "STEP_CANCELED";
+
+    /// <summary>
     /// Indicates that serializing the execution trace failed.
     /// </summary>
     public const string TraceSerializationFailed = "TRACE_SERIALIZATION_FAILED";

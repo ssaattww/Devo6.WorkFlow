@@ -591,9 +591,15 @@ retry を追加する場合、対象は Step 実行中の一時的な例外に�
 
 入力取得失敗、Config 検証失敗、`.csx` コンパイル失敗、参照解決失敗は retry 対象外とする。
 
-timeout は非同期 API と `CancellationToken` の扱いを決めた後に追加する。
+T21 では retry と独立して、Step 単位の timeout を追加する。
 
-timeout を追加する場合も、強制停止ではなく協調キャンセルとして扱う。
+timeout は `WorkflowExecutionOptions.StepTimeout` で指定する。
+
+`StepTimeout` の既定値は `null` とし、timeout を設定しない現行動作を維持する。
+
+timeout は強制停止ではなく、`CancellationToken` による協調キャンセルとして扱う。
+
+CLI の timeout オプション、retry との統合、実行中 Step の強制停止、workflow 全体 timeout は T21 の対象外とする。
 
 ---
 
@@ -635,9 +641,23 @@ public interface IAsyncStep<TOut>
 
 非同期 Step の実行中に例外が発生した場合、同期 Step と同じく `STEP_EXECUTION_FAILED` の実行結果と trace に変換する。
 
-`CancellationToken` は `IAsyncStep<TOut>.ExecuteAsync` に渡す。
+`ExecuteWorkflowAsync` が受け取った外部 `CancellationToken` は、各 Step の実行制御に使う。
 
-timeout 超過時の結果化、協調キャンセルの詳細、同期 Step の停止可否は T21 で扱う。
+`WorkflowExecutionOptions.StepTimeout` が設定されている場合、エンジンは Step 実行ごとに timeout 用の `CancellationTokenSource` を作る。
+
+外部 `CancellationToken` と timeout 用の `CancellationToken` は Step 実行ごとに合成する。
+
+非同期 Step には合成した `CancellationToken` を `IAsyncStep<TOut>.ExecuteAsync` へ渡す。
+
+同期 Step は `CancellationToken` を受け取らないため、実行中の timeout や外部キャンセルで強制中断しない。
+
+同期 Step 実行中に timeout または外部キャンセルが要求された場合、エンジンは同期 Step の完了を待つ。
+
+同期 Step 完了後にキャンセルが要求済みであれば、`Produce`、`StoreAs`、`Discard`、後続 Step を実行せず、失敗結果に変換する。
+
+timeout と外部キャンセルは区別する。
+
+timeout は `STEP_TIMEOUT`、外部キャンセルは `STEP_CANCELED` の失敗結果として扱う。
 
 採用しない案:
 
@@ -833,7 +853,35 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 }
 ```
 
-### 14.5 Unit
+### 14.5 `WorkflowExecutionOptions`
+
+```csharp
+public sealed class WorkflowExecutionOptions
+{
+    /// <summary>
+    /// Step ごとの timeout 時間を取得または設定します。null の場合は timeout を設定しません。
+    /// </summary>
+    public TimeSpan? StepTimeout { get; init; }
+
+    /// <summary>
+    /// エンジンと Step のログ出力に使う logger factory を取得または設定します。
+    /// </summary>
+    public ILoggerFactory? LoggerFactory { get; init; }
+
+    /// <summary>
+    /// CLI 由来の config path と set override を StepContext に渡すための引数を取得または設定します。
+    /// </summary>
+    public EngineArguments? EngineArguments { get; init; }
+}
+```
+
+`StepTimeout` は workflow 全体ではなく、Step 実行ごとの timeout として扱う。
+
+`StepTimeout` が `null` の場合、timeout 用の `CancellationTokenSource` は作らず、外部 `CancellationToken` だけを使う。
+
+`StepTimeout` は CLI オプションではなく、エンジン実行時オプションとして扱う。
+
+### 14.6 Unit
 
 ```csharp
 public readonly struct Unit
@@ -842,7 +890,7 @@ public readonly struct Unit
 }
 ```
 
-### 14.6 型定義方針
+### 14.7 型定義方針
 
 Step の入力、出力、Config は C# 型として `.csx` に定義する。
 
@@ -1148,6 +1196,16 @@ CLI 実行では、成功時は終了コード 0、失敗時は 0 以外を返�
 
 非同期 Step の完了後に `Produce`、`StoreAs`、`Discard` を実行する。
 
+Step timeout または外部キャンセルが発生した場合、エンジンは `WorkflowResult.Succeeded = false` の失敗結果を返す。
+
+timeout の場合、`ErrorCode` は `STEP_TIMEOUT` とする。
+
+外部キャンセルの場合、`ErrorCode` は `STEP_CANCELED` とする。
+
+timeout または外部キャンセルで Step が失敗した場合、その Step の `Produce`、`StoreAs`、`Discard` は実行しない。
+
+timeout または外部キャンセルを検出した後、エンジンは後続 Step を開始しない。
+
 ### 18.2 エラーコード
 
 代表的なエラーコードは以下とする。
@@ -1166,6 +1224,7 @@ STEP_INPUT_NOT_FOUND
 STEP_INPUT_TYPE_MISMATCH
 CONFIG_NOT_FOUND
 CONFIG_LOAD_FAILED
+STEP_CANCELED
 STEP_EXECUTION_FAILED
 STEP_TIMEOUT
 TRACE_SERIALIZATION_FAILED
@@ -1173,7 +1232,13 @@ TRACE_SERIALIZATION_FAILED
 
 非同期 Step の例外は、同期 Step の例外と同じく `STEP_EXECUTION_FAILED` に変換する。
 
-timeout 超過時の `STEP_TIMEOUT` への変換条件は T21 で扱う。
+timeout 用の `CancellationToken` によって Step 実行がキャンセルされた場合は `STEP_TIMEOUT` に変換する。
+
+`ExecuteWorkflowAsync` に渡された外部 `CancellationToken` によって Step 実行がキャンセルされた場合は `STEP_CANCELED` に変換する。
+
+timeout と外部キャンセルの両方が観測される場合は、外部キャンセルを優先して `STEP_CANCELED` とする。
+
+`STEP_CANCELED` は通常の Step 例外を表す `STEP_EXECUTION_FAILED` とは区別する。
 
 ### 18.3 ログ
 
@@ -1188,6 +1253,8 @@ timeout 超過時の `STEP_TIMEOUT` への変換条件は T21 で扱う。
 ログ出力では文字列連結ではなく、構造化ログを使う。
 
 エンジンは Entry 名、Step 名、試行回数をログのスコープへ含める。
+
+timeout または外部キャンセルで終了した場合、対象 Step 名とエラーコードをログに含める。
 
 Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した logger provider に委譲する。
 
@@ -1207,6 +1274,14 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 同期 Step と非同期 Step が混在する場合も、trace は定義順の実行履歴として記録する。
 
 非同期 Step で例外が発生した場合、非同期待機で観測した例外を `STEP_EXECUTION_FAILED` の失敗 trace に変換する。
+
+timeout が発生した場合、対象 Step の trace は `ExecutionTraceStepStatus.Failed` とし、`ErrorCode` は `STEP_TIMEOUT` とする。
+
+外部キャンセルで Step 実行が止まった場合、対象 Step の trace は `ExecutionTraceStepStatus.Failed` とし、`ErrorCode` は `STEP_CANCELED` とする。
+
+timeout または外部キャンセルの後に実行しなかった後続 Step は trace に追加しない。
+
+T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加しない。
 
 ---
 
@@ -1233,6 +1308,9 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 - `Dotnet.Script.Core` によるロードとコンパイル
 - `Microsoft.Extensions.Logging` 統合
 - `WorkflowResult` と基本エラーコード
+- `WorkflowExecutionOptions.StepTimeout` による Step 単位の timeout
+- `ExecuteWorkflowAsync` の外部 `CancellationToken` と timeout 用の `CancellationToken` の合成
+- timeout と外部キャンセルの失敗結果化
 
 ### 19.2 初期版で扱わない範囲
 
@@ -1250,14 +1328,19 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 - Config YAML の標準型変換
 - retry
 - 値を含む `ExecutionTrace`
-- timeout 超過時の詳細な結果化
-- 協調キャンセルの詳細挙動
+- CLI の timeout オプション
+- retry と timeout の統合
+- 実行中 Step の強制停止
+- workflow 全体 timeout
+- timeout またはキャンセル専用の trace 状態
 
 ### 19.3 次フェーズ候補
 
 次フェーズ候補は以下とする。
 
-- timeout と協調キャンセル
+- CLI の timeout オプション
+- workflow 全体 timeout
+- timeout またはキャンセル専用の trace 状態
 - 標準 Config 読み込み
 - retry
 - 値を含む `ExecutionTrace`
@@ -1301,12 +1384,26 @@ T20 では以下を採用する。
 - 非同期ワークフロー実行 API として `ExecuteWorkflowAsync` を追加する
 - 非同期 Step の `ExecuteAsync` には `CancellationToken` を渡す
 
-T21 では以下を決める必要がある。
+T21 では以下を採用する。
 
-- timeout 超過時の `WorkflowResult` とエラーコード
-- 協調キャンセル時の後続 Step 停止規則
-- 同期 Step 実行中にキャンセルが要求された場合の扱い
-- trace とログに残すキャンセル情報
+- `WorkflowExecutionOptions` に `TimeSpan? StepTimeout` を追加する
+- `StepTimeout` の既定値は `null` とし、timeout を設定しない
+- `ExecuteWorkflowAsync` の外部 `CancellationToken` と timeout 用の `CancellationToken` を Step 実行ごとに合成する
+- 非同期 Step には合成した `CancellationToken` を渡す
+- timeout は `STEP_TIMEOUT` の失敗結果に変換する
+- 外部キャンセルは `STEP_CANCELED` の失敗結果に変換し、timeout と区別する
+- timeout または外部キャンセル時は対象 Step を失敗 trace とし、エラーコードを記録する
+- timeout または外部キャンセル時は対象 Step の `Produce` と後続 Step を実行しない
+- 同期 Step 実行中は強制中断しない
+- 同期 Step 完了後にキャンセルが要求済みであれば、後続 Step を開始しない
+
+T21 では以下を扱わない。
+
+- CLI の timeout オプション
+- retry と timeout の統合
+- 実行中 Step の強制停止
+- workflow 全体 timeout
+- timeout またはキャンセル専用の trace 状態
 
 ### 21.2 Config 読み込み責務
 

@@ -107,25 +107,33 @@ public sealed class AsyncStepApiContractTests
     }
 
     /// <summary>
-    /// Verifies that a pre-cancelled workflow token is not converted to STEP_EXECUTION_FAILED before a synchronous step runs.
+    /// 事前 cancel 済みの workflow token が sync Step 完了後に STEP_CANCELED になることを確認します。
     /// </summary>
-    [Fact(DisplayName = "同期 Step は実行前 cancellation requested だけでは STEP_EXECUTION_FAILED にならない")]
-    public async Task 同期Stepは実行前CancellationRequestedだけではStepExecutionFailedにならない()
+    [Fact(DisplayName = "pre-cancelled token converts sync step completion to STEP_CANCELED")]
+    public async Task PreCancelledTokenConvertsSyncStepCompletionToStepCanceled()
     {
+        ExecutionLog.Clear();
         using var cancellationTokenSource = new CancellationTokenSource();
         await cancellationTokenSource.CancelAsync();
         CompositeStep<FirstOutput> step = CompositeStep
             .Define("Main")
             .Run<FirstSyncStep, FirstOutput>()
-                .StoreAs();
+                .Produce<AsyncInput>(output =>
+                {
+                    ExecutionLog.Add("pre-cancel-produce");
+
+                    return new AsyncInput(output.Value);
+                });
 
         WorkflowResult result = await step.ExecuteWorkflowAsync(cancellationToken: cancellationTokenSource.Token);
 
-        Assert.True(result.Succeeded);
-        Assert.Null(result.ErrorCode);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Equal(["sync-first"], ExecutionLog.Values);
         ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
         Assert.Equal(nameof(FirstSyncStep), traceStep.StepName);
-        Assert.Equal(ExecutionTraceStepStatus.Succeeded, traceStep.Status);
+        Assert.Equal(ExecutionTraceStepStatus.Failed, traceStep.Status);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, traceStep.ErrorCode);
     }
 
     private static Type RequireAsyncStepType(Type outputType)
