@@ -262,26 +262,25 @@ public sealed class ConvertStep : IStep<ConvertResult>
 
 ワークフロー定義には YAML を使わない。
 
-Config は `.csx` 内で生成する値、エンジン引数、環境変数、または任意の設定ファイルから生成した値として扱う。
+Config は `.csx` 内で生成する値、エンジン引数、環境変数、または Config ファイルから生成した値として扱う。
 
-設定ファイルを使う場合でも、ファイル形式はワークフロー定義の形式とは分離する。
+Config ファイルの標準形式は YAML とする。
+
+この YAML は実行時設定の入力であり、ワークフロー定義ではない。
 
 Config ファイルの相対パスは、Entry `.csx` の存在するディレクトリを基準に解決する。
 
 例:
 
-```json
-{
-  "load": {
-    "path": "./input.txt"
-  },
-  "convert": {
-    "toUpper": true
-  },
-  "save": {
-    "path": "./output.txt"
-  }
-}
+```yaml
+load:
+  path: ./input.txt
+
+convert:
+  toUpper: true
+
+save:
+  path: ./output.txt
 ```
 
 ### 6.3 Config 読み込み
@@ -318,12 +317,12 @@ public sealed class LoadConfigStep : IStep<Unit>
 エンジン起動時に Config ファイルを指定できる。
 
 ```bash
-engine run main.csx --config appsettings.json
+engine run main.csx --config appsettings.yaml
 ```
 
 初期版では、`--config` は Config ファイルパスとして `EngineArguments` に保持する。
 
-エンジンは任意形式の Config ファイルを標準では型変換しない。
+初期版では、エンジンは Config YAML を標準では型変換しない。
 
 ### 6.6 CLI による Config 上書き
 
@@ -332,7 +331,7 @@ CLI 引数で Config の一部を上書きできることを要件とする。
 例:
 
 ```bash
-engine run main.csx --config appsettings.json --set convert.toUpper=false
+engine run main.csx --config appsettings.yaml --set convert.toUpper=false
 ```
 
 上書き仕様の詳細は未確定だが、最低限以下を検討対象とする。
@@ -847,7 +846,7 @@ workflow-root/
 ├── shared/
 │   └── common.csx
 ├── config/
-│   └── appsettings.json
+│   └── appsettings.yaml
 └── lib/
     └── custom-helper.dll
 ```
@@ -981,7 +980,7 @@ CLI は実行前検証のために `validate` を提供する。
 ```bash
 engine validate main.csx
 engine validate main.csx --entry Build
-engine validate main.csx --config appsettings.json
+engine validate main.csx --config appsettings.yaml
 ```
 
 ### 17.2 検証対象
@@ -1012,7 +1011,7 @@ engine validate main.csx --config appsettings.json
 
 ### 17.4 Config 検証
 
-初期版では、エンジンは任意形式の Config ファイルを自動で型へ結び付けない。
+初期版では、エンジンは Config YAML を自動で型へ結び付けない。
 
 `--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
 
@@ -1160,7 +1159,7 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 - 統合実行
 - `#load "nuget: ..."`
 - 未信頼 `.csx` の安全な実行
-- Config ファイルの標準型変換
+- Config YAML の標準型変換
 - retry
 - 値を含む `ExecutionTrace`
 - 非同期 Step API
