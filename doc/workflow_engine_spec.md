@@ -449,6 +449,19 @@ var Main = CompositeStep.Define("Main")
 
 型キーと名前付きキーは、同じ CLR 型でも別キーである。
 
+trace 値を保存する場合は、`Produce` ごとに明示する。
+
+```csharp
+.Produce<TValue>(Func<TOut, TValue> selector, TraceValueCapture traceValueCapture)
+.Produce<TValue>(string name, Func<TOut, TValue> selector, TraceValueCapture traceValueCapture)
+```
+
+既存の `Produce` と名前付き `Produce` は値を trace に保存しない。
+
+`TraceValueCapture.Serialized` は値本文を `System.Text.Json` の直列化文字列として保存する。
+
+`TraceValueCapture.Redacted` は型名、任意の名前、登録元、保存状態だけを保存し、値本文は保存しない。
+
 ### 7.4 StoreAs
 
 `StoreAs` は、現在の Step 戻り値をその型のまま登録する省略 API として扱う。
@@ -471,11 +484,21 @@ var Main = CompositeStep.Define("Main")
 
 `StoreAs` で登録された値の寿命、可視範囲、重複キーの扱いは `Produce` と同じである。
 
+trace 値を保存する場合は、`StoreAs` にも明示する。
+
+```csharp
+.StoreAs(TraceValueCapture traceValueCapture)
+```
+
+既存の `StoreAs` は値を trace に保存しない。
+
 ### 7.5 Discard
 
 `Discard` は Step の戻り値を `StepInput` に登録しない。
 
 `Discard` は現在 Step の戻り値登録を抑止するだけであり、既に `StepInput` に登録済みの値を削除しない。
+
+`Discard` は trace 値を生成しない。
 
 ```csharp
 .Run<SaveStep, Unit>()
@@ -1361,6 +1384,14 @@ timeout または外部キャンセルを検出した後、エンジンは後続
 
 timeout と外部キャンセルは retry 対象外とし、観測した時点で workflow を失敗終了する。
 
+trace 値の基礎単位は、Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値である。
+
+Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の値一覧は空である。
+
+値生成処理の失敗または重複登録失敗では当該 Step を失敗 trace とし、trace 値の一覧は空にする。
+
+複数の値生成処理の一部が成功していても、Step が値生成処理の失敗または重複登録失敗になった場合は、部分的に成功した値も失敗 trace へ保存しない。
+
 ### 18.2 エラーコード
 
 代表的なエラーコードは以下とする。
@@ -1399,6 +1430,10 @@ retry で全試行が失敗した場合も、retry 専用エラーコードは�
 
 `Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とし、既存の Step 失敗として扱う。
 
+trace 値を `System.Text.Json` で直列化できない場合でも、T26 の既定動作では workflow を失敗させない。
+
+`TRACE_SERIALIZATION_FAILED` は、将来の trace 外部保存や厳格動作で workflow 失敗を選ぶ場合のために残す。T26 の既定 workflow 失敗には使わない。
+
 ### 18.3 ログ
 
 ログはエンジンで独自実装せず、`Microsoft.Extensions.Logging` を利用する。
@@ -1436,13 +1471,13 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 
 初期版では、`StepInput`、Config、Step 出力の値そのものは既定では保存しない。
 
-値を保存する場合は、明示設定と秘匿化の規則を必要とする。
+T26 では、値を含む trace の基礎単位を「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
 
-T25 では、`ExecutionTrace` の値候補の基礎単位を「成功して `StepInput` に登録された値」として境界だけを定める。
+既存の `Produce`、名前付き `Produce`、`StoreAs` は値を trace に保存しない。
 
-失敗した試行、timeout、外部キャンセルで `Produce` または `StoreAs` の値登録処理が実行されなかった値は、通常の登録済み値として扱わない。
+trace 値は、`TraceValueCapture.Serialized` または `TraceValueCapture.Redacted` を明示した値生成処理だけが生成する。
 
-値の保存形式、秘匿、直列化できない値の扱いは T26 で決める。
+`Discard` は trace 値を生成しない。
 
 同期 Step と非同期 Step が混在する場合も、trace は定義順の実行履歴として記録する。
 
@@ -1459,6 +1494,24 @@ public sealed record ExecutionTraceStep(
 
 `Attempt` は 1 から始まる実試行番号とする。
 
+T26 では `ExecutionTraceStep` に `ProducedValues` を追加する。
+
+```csharp
+public IReadOnlyList<ExecutionTraceValue> ProducedValues { get; init; }
+```
+
+`ProducedValues` は、その Step の成功した値生成処理が明示的に trace 保存した値の一覧である。
+
+`ExecutionTraceValue` は型名、任意の名前、source、保存状態、直列化文字列、直列化失敗理由を持つ。
+
+source は `Produce` または `StoreAs` とする。
+
+`TraceValueCapture.Serialized` の値は `System.Text.Json` で文字列へ直列化して保存する。
+
+`TraceValueCapture.Redacted` の値は型名、任意の名前、source、保存状態だけを残し、値本文を保存しない。
+
+直列化できない値は workflow を失敗させず、当該 trace 値を `NotSerializable` として値本文なしで残す。
+
 retry された Step は、同じ Step 名の trace 記録を試行ごとに追加する。
 
 途中で成功した場合、失敗試行の trace 記録を複数件追加し、最後に成功試行の trace 記録を 1 件追加する。
@@ -1474,6 +1527,12 @@ timeout が発生した場合、対象 Step の trace は `ExecutionTraceStepSta
 timeout または外部キャンセルの後に実行しなかった後続 Step は trace に追加しない。
 
 T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加しない。
+
+Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の `ProducedValues` は空である。
+
+値生成処理の失敗または重複登録失敗では当該 Step を失敗 trace とし、`ProducedValues` は空にする。
+
+値生成処理が複数ある場合でも、失敗 trace には部分的に成功した値を保存しない。
 
 ---
 
@@ -1696,15 +1755,44 @@ T24 では、`--set` を標準 Config に対するプロパティ path override 
 
 ### 21.5 トレース値の保存
 
-`ExecutionTrace` に `StepInput`、Config、Step 出力の値を保存するかは未確定。
+`ExecutionTrace` に `StepInput`、Config、Step 出力全体の値は既定では保存しない。
 
 初期版では、値そのものは保存せず、Step 名、状態、所要時間、エラーコードを優先する。
 
-T25 では、`ExecutionTrace` の値候補の基礎単位を「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
+T26 では、`ExecutionTrace` の trace 値の基礎単位を「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
 
 失敗した試行、timeout、外部キャンセルにより `Produce` または `StoreAs` の値登録処理が実行されなかった値は、登録済み値として扱わない。
 
-値の保存形式、秘匿規則、直列化できない値の扱いは T26 で決める。
+既存の `Produce`、名前付き `Produce`、`StoreAs` は値を trace に保存しない。値を保存する場合は値生成処理ごとに `TraceValueCapture.Serialized` または `TraceValueCapture.Redacted` を明示する。
+
+`Discard` は新しい値を `StepInput` に登録しないため、trace 値も生成しない。
+
+trace 値は `ExecutionTraceStep.ProducedValues` に入る `ExecutionTraceValue` の一覧として表す。
+
+`ExecutionTraceValue` は次を持つ。
+
+- 型名
+- 任意の名前
+- source
+- 保存状態
+- 直列化文字列
+- 直列化失敗理由
+
+source は `Produce` または `StoreAs` とする。
+
+`TraceValueCapture.Serialized` は、値本文を `System.Text.Json` で文字列へ直列化して保存する。
+
+`TraceValueCapture.Redacted` は、型名、任意の名前、source、保存状態だけを保存し、直列化文字列は保存しない。
+
+直列化できない値は workflow を失敗させず、当該 trace 値を `NotSerializable` として値本文なしで残す。
+
+Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の値一覧は空である。
+
+値生成処理の失敗または重複登録失敗では当該 Step を失敗 trace とし、値一覧は空にする。部分的に成功した値も失敗 trace へ保存しない。
+
+T26 では秘匿値の自動検出、属性による秘匿、プロパティ単位秘匿、trace 永続化形式、CLI 出力形式、大きさ上限、厳格失敗動作は決めない。
+
+`TRACE_SERIALIZATION_FAILED` は将来の trace 外部保存や厳格動作用として残し、T26 の既定 workflow 失敗には使わない。
 
 ---
 

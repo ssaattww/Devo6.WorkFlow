@@ -123,17 +123,32 @@ public sealed class CompositeStepTests
         Assert.Equal(["first", "first", "second"], ExecutionLog.Values);
     }
 
+    /// <summary>
+    /// StoreAs overload が型引数を要求せず、公開引数だけで分岐することを確認します。
+    /// </summary>
     [Fact(DisplayName = "StoreAs は型引数を受け取らない")]
     public void StoreAsは型引数を受け取らない()
     {
-        var storeAs = Assert.Single(
-            typeof(CompositeStep<FirstOutput>)
-                .GetMethods()
-                .Where(method => method.DeclaringType == typeof(CompositeStep<FirstOutput>))
-                .Where(method => method.Name == "StoreAs"));
+        var storeAsMethods = typeof(CompositeStep<FirstOutput>)
+            .GetMethods()
+            .Where(method => method.DeclaringType == typeof(CompositeStep<FirstOutput>))
+            .Where(method => method.Name == "StoreAs")
+            .OrderBy(method => method.GetParameters().Length)
+            .ToArray();
 
-        Assert.False(storeAs.IsGenericMethodDefinition);
-        Assert.Empty(storeAs.GetParameters());
+        Assert.Collection(
+            storeAsMethods,
+            parameterless =>
+            {
+                Assert.False(parameterless.IsGenericMethodDefinition);
+                Assert.Empty(parameterless.GetParameters());
+            },
+            captureOverload =>
+            {
+                Assert.False(captureOverload.IsGenericMethodDefinition);
+                var parameter = Assert.Single(captureOverload.GetParameters());
+                Assert.Equal(typeof(TraceValueCapture), parameter.ParameterType);
+            });
     }
 
     private static class ExecutionLog
