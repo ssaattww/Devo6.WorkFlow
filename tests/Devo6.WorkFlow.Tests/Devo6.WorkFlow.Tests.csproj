@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Devo6.WorkFlow.Abstractions\Devo6.WorkFlow.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Devo6.WorkFlow.Cli\Devo6.WorkFlow.Cli.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Devo6.WorkFlow.Engine\Devo6.WorkFlow.Engine.csproj" />
   </ItemGroup>
