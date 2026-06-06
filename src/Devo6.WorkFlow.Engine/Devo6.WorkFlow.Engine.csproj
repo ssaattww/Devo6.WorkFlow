@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Devo6.WorkFlow.Abstractions\Devo6.WorkFlow.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

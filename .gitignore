@@ -2,3 +2,6 @@
 .codex/skills
 node_modules/
 .venv/
+bin/
+obj/
+TestResults/
