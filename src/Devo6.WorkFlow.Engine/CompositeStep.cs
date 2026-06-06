@@ -101,7 +101,13 @@ public sealed class CompositeStep<TOut> : IStep<TOut>
         ILogger engineLogger = loggerFactory.CreateLogger("Devo6.WorkFlow.Engine");
         ILogger stepLogger = loggerFactory.CreateLogger("Devo6.WorkFlow.Step");
         var traceSteps = new List<ExecutionTraceStep>();
-        var input = new StepInput(new StepContext(stepLogger));
+        var context = new StepContext(stepLogger);
+        if (options.EngineArguments is not null)
+        {
+            context.Set(options.EngineArguments);
+        }
+
+        var input = new StepInput(context);
         object? currentValue = default(TOut);
 
         using IDisposable? entryScope = engineLogger.BeginScope(new Dictionary<string, object?>

@@ -1,3 +1,4 @@
+using Devo6.WorkFlow.Abstractions;
 using Microsoft.Extensions.Logging;
 
 namespace Devo6.WorkFlow.Engine;
@@ -11,13 +12,20 @@ public sealed class WorkflowExecutionOptions
     /// Creates options for a workflow execution.
     /// </summary>
     /// <param name="loggerFactory">The logger factory used by the engine and step context, or null to disable provider-backed logging.</param>
-    public WorkflowExecutionOptions(ILoggerFactory? loggerFactory = null)
+    /// <param name="engineArguments">The command-line engine arguments to expose through StepContext.</param>
+    public WorkflowExecutionOptions(ILoggerFactory? loggerFactory = null, EngineArguments? engineArguments = null)
     {
         LoggerFactory = loggerFactory;
+        EngineArguments = engineArguments;
     }
 
     /// <summary>
     /// Gets the logger factory used to create engine and step loggers.
     /// </summary>
     public ILoggerFactory? LoggerFactory { get; }
+
+    /// <summary>
+    /// Gets command-line engine arguments exposed through StepContext during workflow execution.
+    /// </summary>
+    public EngineArguments? EngineArguments { get; }
 }
