@@ -29,9 +29,21 @@ public sealed class CompositeStepDefinition
     {
         return new CompositeStep<TOut>(Name, [StepRegistration.Create<TStep, TOut>()]);
     }
+
+    /// <summary>
+    /// Registers the first asynchronous step in this composite entry.
+    /// </summary>
+    /// <typeparam name="TStep">The asynchronous step type to run.</typeparam>
+    /// <typeparam name="TOut">The output type produced by the asynchronous step.</typeparam>
+    /// <returns>A composite step that can be extended or executed.</returns>
+    public CompositeStep<TOut> RunAsync<TStep, TOut>()
+        where TStep : IAsyncStep<TOut>, new()
+    {
+        return new CompositeStep<TOut>(Name, [StepRegistration.CreateAsync<TStep, TOut>()]);
+    }
 }
 
-public sealed class CompositeStep<TOut> : IStep<TOut>
+public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 {
     private readonly IReadOnlyList<StepRegistration> steps;
 
@@ -47,6 +59,18 @@ public sealed class CompositeStep<TOut> : IStep<TOut>
         where TStep : IStep<TNext>, new()
     {
         return new CompositeStep<TNext>(Name, Append(StepRegistration.Create<TStep, TNext>()));
+    }
+
+    /// <summary>
+    /// Appends an asynchronous step to this composite entry.
+    /// </summary>
+    /// <typeparam name="TStep">The asynchronous step type to run.</typeparam>
+    /// <typeparam name="TNext">The output type produced by the asynchronous step.</typeparam>
+    /// <returns>A composite step whose current output type is the appended asynchronous step output.</returns>
+    public CompositeStep<TNext> RunAsync<TStep, TNext>()
+        where TStep : IAsyncStep<TNext>, new()
+    {
+        return new CompositeStep<TNext>(Name, Append(StepRegistration.CreateAsync<TStep, TNext>()));
     }
 
     public CompositeStep<TOut> Produce<TValue>(Func<TOut, TValue> selector)
@@ -75,13 +99,24 @@ public sealed class CompositeStep<TOut> : IStep<TOut>
 
     public TOut Execute(StepInput input)
     {
+        return ExecuteAsync(input, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Executes this composite step asynchronously with the supplied input values.
+    /// </summary>
+    /// <param name="input">The input values available to the first step.</param>
+    /// <param name="cancellationToken">The cancellation token passed to asynchronous steps.</param>
+    /// <returns>The output produced by the final step in the composite entry.</returns>
+    public async Task<TOut> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(input);
 
         object? currentValue = default(TOut);
 
         foreach (StepRegistration step in steps)
         {
-            currentValue = step.Execute(input);
+            currentValue = await step.ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
             step.Produce(input, currentValue);
         }
 
@@ -94,6 +129,19 @@ public sealed class CompositeStep<TOut> : IStep<TOut>
     /// <param name="options">The execution dependencies to use, or null for default options.</param>
     /// <returns>The workflow result describing success, failure, and captured trace history.</returns>
     public WorkflowResult ExecuteWorkflow(WorkflowExecutionOptions? options = null)
+    {
+        return ExecuteWorkflowAsync(options, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Executes this composite entry asynchronously through the engine path and returns a workflow result.
+    /// </summary>
+    /// <param name="options">The execution dependencies to use, or null for default options.</param>
+    /// <param name="cancellationToken">The cancellation token passed to asynchronous steps.</param>
+    /// <returns>The workflow result describing success, failure, and captured trace history.</returns>
+    public async Task<WorkflowResult> ExecuteWorkflowAsync(
+        WorkflowExecutionOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
         options ??= new WorkflowExecutionOptions();
 
@@ -133,7 +181,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>
 
             try
             {
-                currentValue = step.Execute(input);
+                currentValue = await step.ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
                 step.Produce(input, currentValue);
                 stopwatch.Stop();
                 traceSteps.Add(new ExecutionTraceStep(step.Name, ExecutionTraceStepStatus.Succeeded, stopwatch.Elapsed, null));
@@ -216,16 +264,16 @@ public sealed class CompositeStep<TOut> : IStep<TOut>
 internal sealed class StepRegistration
 {
     private readonly string name;
-    private readonly Func<StepInput, object?> execute;
+    private readonly Func<StepInput, CancellationToken, Task<object?>> executeAsync;
     private readonly IReadOnlyList<Action<StepInput, object?>> producers;
 
     private StepRegistration(
         string name,
-        Func<StepInput, object?> execute,
+        Func<StepInput, CancellationToken, Task<object?>> executeAsync,
         IReadOnlyList<Action<StepInput, object?>> producers)
     {
         this.name = name;
-        this.execute = execute;
+        this.executeAsync = executeAsync;
         this.producers = producers.ToArray();
     }
 
@@ -234,12 +282,27 @@ internal sealed class StepRegistration
     public static StepRegistration Create<TStep, TOut>()
         where TStep : IStep<TOut>, new()
     {
-        return new StepRegistration(typeof(TStep).Name, input => new TStep().Execute(input), []);
+        return new StepRegistration(
+            typeof(TStep).Name,
+            (input, cancellationToken) =>
+            {
+                return Task.FromResult<object?>(new TStep().Execute(input));
+            },
+            []);
     }
 
-    public object? Execute(StepInput input)
+    public static StepRegistration CreateAsync<TStep, TOut>()
+        where TStep : IAsyncStep<TOut>, new()
     {
-        return execute(input);
+        return new StepRegistration(
+            typeof(TStep).Name,
+            async (input, cancellationToken) => await new TStep().ExecuteAsync(input, cancellationToken).ConfigureAwait(false),
+            []);
+    }
+
+    public Task<object?> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
+    {
+        return executeAsync(input, cancellationToken);
     }
 
     public StepRegistration AddProducer(Action<StepInput, object?> producer)
@@ -255,12 +318,12 @@ internal sealed class StepRegistration
 
         nextProducers[^1] = producer;
 
-        return new StepRegistration(name, execute, nextProducers);
+        return new StepRegistration(name, executeAsync, nextProducers);
     }
 
     public StepRegistration ClearProducers()
     {
-        return new StepRegistration(name, execute, []);
+        return new StepRegistration(name, executeAsync, []);
     }
 
     public void Produce(StepInput input, object? value)

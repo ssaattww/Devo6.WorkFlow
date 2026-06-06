@@ -39,6 +39,52 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
+    /// Verifies that a .csx entry using RunAsync is awaited through the normal loader execution path.
+    /// </summary>
+    [Fact(DisplayName = "RunAsync を含む csx Entry を読み込んで実行できる")]
+    public void RunAsyncを含むCsxEntryを読み込んで実行できる()
+    {
+        string scriptPath = CreateScript(
+            """
+            using System.IO;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class AsyncMainStep : IAsyncStep<string>
+            {
+                public async Task<string> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+
+                    await Task.Yield();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "async-ran.txt"), "done");
+
+                    return "main";
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .RunAsync<AsyncMainStep, string>()
+                    .StoreAs();
+            """);
+        string markerPath = Path.Combine(Path.GetDirectoryName(scriptPath)!, "async-ran.txt");
+
+        WorkflowResult result = new CsxEntryLoader().Execute(
+            scriptPath,
+            options: new WorkflowExecutionOptions(engineArguments: new EngineArguments { EntryPath = scriptPath }));
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Main", result.EntryName);
+        Assert.Equal("done", File.ReadAllText(markerPath));
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal("AsyncMainStep", traceStep.StepName);
+        Assert.Equal(ExecutionTraceStepStatus.Succeeded, traceStep.Status);
+    }
+
+    /// <summary>
     /// Verifies that a named Build entry can be loaded from a sample .csx file and executed successfully.
     /// </summary>
     [Fact(DisplayName = "sample csx から指定 Entry 名 Build の CompositeStep を取得して実行できる")]

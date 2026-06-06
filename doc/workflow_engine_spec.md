@@ -601,11 +601,9 @@ timeout を追加する場合も、強制停止ではなく協調キャンセル
 
 ### 12.1 方針
 
-内部設計は将来的な非同期対応を考慮する。
+T20 では、既存の同期 Step API を維持したまま、非同期 Step 用の明示 API を追加する。
 
-同期 Step を基本としつつ、非同期 Step も扱える余地を残す。
-
-候補:
+既存の `IStep<TOut>` は同期 Step の契約として維持する。
 
 ```csharp
 public interface IStep<TOut>
@@ -614,6 +612,8 @@ public interface IStep<TOut>
 }
 ```
 
+非同期 Step は `IAsyncStep<TOut>` として定義する。
+
 ```csharp
 public interface IAsyncStep<TOut>
 {
@@ -621,7 +621,25 @@ public interface IAsyncStep<TOut>
 }
 ```
 
-または、初期から `Task<TOut>` に統一する。
+`IStep<TOut>` を `Task<TOut>` 系へ統一しない。
+
+`IStep<Task<T>>` は非同期 Step として特別扱いしない。
+
+この型は通常の同期 Step の戻り値型として扱い、エンジンは `IAsyncStep<TOut>` として登録された Step だけを非同期待機対象にする。
+
+非同期 Step は `RunAsync<TStep, TOut>()` などの明示 API で登録する。
+
+同期 Step と非同期 Step が混在する場合も、エンジンは定義順に 1 Step ずつ実行する。
+
+非同期 Step は `ExecuteAsync` の完了を待ってから、その戻り値に対して `Produce` または `StoreAs` を実行する。
+
+非同期 Step の実行中に例外が発生した場合、同期 Step と同じく `STEP_EXECUTION_FAILED` の実行結果と trace に変換する。
+
+`CancellationToken` は `IAsyncStep<TOut>.ExecuteAsync` に渡す。
+
+timeout 超過時の結果化、協調キャンセルの詳細、同期 Step の停止可否は T21 で扱う。
+
+採用しない案:
 
 ```csharp
 public interface IStep<TOut>
@@ -630,7 +648,7 @@ public interface IStep<TOut>
 }
 ```
 
-どちらを採用するかは未確定。
+この案は既存の `IStep<TOut>` 実装を破壊するため、T20 では採用しない。
 
 ---
 
@@ -690,7 +708,29 @@ public sealed class MergeStep : IStep<Article>
 }
 ```
 
-### 13.3 Config を StepContext に置く例
+### 13.3 非同期 Step
+
+非同期 Step は `RunAsync` で明示的に登録する。
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .Produce<ConvertInput>(x => new ConvertInput
+        {
+            Text = x.Text
+        })
+    .RunAsync<ConvertStep, ConvertResult>()
+        .Produce<SaveInput>(x => new SaveInput
+        {
+            Content = x.ConvertedText
+        })
+    .Run<SaveStep, Unit>()
+        .Discard();
+```
+
+`RunAsync` で登録された Step は、非同期待機後の戻り値を `Produce`、`StoreAs`、`Discard` の対象にする。
+
+### 13.4 Config を StepContext に置く例
 
 ```csharp
 var Main = CompositeStep.Define("Main")
@@ -714,14 +754,23 @@ var Main = CompositeStep.Define("Main")
 
 ## 14. 主要公開 API 案
 
-### 14.1 IStep
+### 14.1 Step 契約
 
 ```csharp
 public interface IStep<TOut>
 {
     TOut Execute(StepInput input);
 }
+
+public interface IAsyncStep<TOut>
+{
+    Task<TOut> ExecuteAsync(StepInput input, CancellationToken cancellationToken);
+}
 ```
+
+`IStep<TOut>` は同期 Step 用の既存契約として維持する。
+
+`IAsyncStep<TOut>` は非同期 Step 用の追加契約とする。
 
 ### 14.2 StepInput
 
@@ -764,9 +813,23 @@ public sealed class StepContext
 ### 14.4 CompositeStep
 
 ```csharp
-public sealed class CompositeStep<TOut> : IStep<TOut>
+public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 {
+    public CompositeStep<TStepOut> Run<TStep, TStepOut>()
+        where TStep : IStep<TStepOut>, new();
+
+    public CompositeStep<TStepOut> RunAsync<TStep, TStepOut>()
+        where TStep : IAsyncStep<TStepOut>, new();
+
     public TOut Execute(StepInput input);
+
+    public Task<TOut> ExecuteAsync(StepInput input, CancellationToken cancellationToken);
+
+    public WorkflowResult ExecuteWorkflow(WorkflowExecutionOptions? options = null);
+
+    public Task<WorkflowResult> ExecuteWorkflowAsync(
+        WorkflowExecutionOptions? options = null,
+        CancellationToken cancellationToken = default);
 }
 ```
 
@@ -823,6 +886,10 @@ var Main = CompositeStep.Define("Main")
 
 エンジンはロード済み `.csx` から、指定名に一致する `CompositeStep` を取得して実行する。
 
+非同期 Step を含む Entry の通常実行では、エンジンは `ExecuteWorkflowAsync` を使って非同期 Step の完了を待つ。
+
+同期 Step だけの Entry では、既存の `ExecuteWorkflow` を維持する。
+
 指定された Entry が存在しない場合は検証エラーとする。
 
 ### 15.2 Step 名の一意性
@@ -867,7 +934,9 @@ Entry `.csx` と外部 `.csx` のトップレベルステートメントは、St
 
 初期版では、副作用のあるトップレベルステートメントを完全には検出しない。
 
-利用者は、実処理を `IStep<TOut>.Execute` 内に置く。
+利用者は、同期処理を `IStep<TOut>.Execute` 内に置く。
+
+非同期処理は `IAsyncStep<TOut>.ExecuteAsync` 内に置く。
 
 ---
 
@@ -997,7 +1066,7 @@ engine validate main.csx --config appsettings.yaml
 - `#r` の許可判定
 - NuGet 参照の許可判定
 - `.csx` のコンパイル
-- `IStep<TOut>` 実装の確認
+- `IStep<TOut>` または `IAsyncStep<TOut>` 実装の確認
 - `StepInput` と `StepContext` の API 互換
 - Config ファイル指定時の存在確認
 
@@ -1073,6 +1142,12 @@ public sealed class WorkflowResult
 
 CLI 実行では、成功時は終了コード 0、失敗時は 0 以外を返す。
 
+非同期ワークフロー実行 API として `ExecuteWorkflowAsync` を追加する。
+
+非同期 Step を含むワークフローでは、各非同期 Step の完了を待ってから後続 Step へ進む。
+
+非同期 Step の完了後に `Produce`、`StoreAs`、`Discard` を実行する。
+
 ### 18.2 エラーコード
 
 代表的なエラーコードは以下とする。
@@ -1095,6 +1170,10 @@ STEP_EXECUTION_FAILED
 STEP_TIMEOUT
 TRACE_SERIALIZATION_FAILED
 ```
+
+非同期 Step の例外は、同期 Step の例外と同じく `STEP_EXECUTION_FAILED` に変換する。
+
+timeout 超過時の `STEP_TIMEOUT` への変換条件は T21 で扱う。
 
 ### 18.3 ログ
 
@@ -1125,6 +1204,10 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 
 値を保存する場合は、明示設定と秘匿化の規則を必要とする。
 
+同期 Step と非同期 Step が混在する場合も、trace は定義順の実行履歴として記録する。
+
+非同期 Step で例外が発生した場合、非同期待機で観測した例外を `STEP_EXECUTION_FAILED` の失敗 trace に変換する。
+
 ---
 
 ## 19. 初期実装範囲
@@ -1138,6 +1221,9 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 - CLI の `run` と検証コマンド
 - 逐次実行
 - `IStep<TOut>.Execute(StepInput input)`
+- `IAsyncStep<TOut>.ExecuteAsync(StepInput input, CancellationToken cancellationToken)`
+- 非同期 Step 登録 API
+- 非同期ワークフロー実行 API
 - `StepInput` の型付き、名前付き取得
 - `StepContext` の共有値保持
 - Config ファイルパスと `--set` の `EngineArguments` 格納
@@ -1164,13 +1250,13 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 - Config YAML の標準型変換
 - retry
 - 値を含む `ExecutionTrace`
-- 非同期 Step API
+- timeout 超過時の詳細な結果化
+- 協調キャンセルの詳細挙動
 
 ### 19.3 次フェーズ候補
 
 次フェーズ候補は以下とする。
 
-- 非同期 Step API
 - timeout と協調キャンセル
 - 標準 Config 読み込み
 - retry
@@ -1205,13 +1291,22 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 
 ### 21.1 非同期 API
 
-初期版では同期 API を基本にする。
+T20 では以下を採用する。
 
-今後、以下を決める必要がある。
+- `IAsyncStep<TOut>` を追加する
+- 既存 `IStep<TOut>` は維持する
+- `IStep<TOut>` を `Task<TOut>` 系へ統一しない
+- `IStep<Task<T>>` は通常の同期 Step の戻り値型として扱う
+- 非同期 Step は `RunAsync<TStep, TOut>()` などの明示 API で登録する
+- 非同期ワークフロー実行 API として `ExecuteWorkflowAsync` を追加する
+- 非同期 Step の `ExecuteAsync` には `CancellationToken` を渡す
 
-- `IAsyncStep<TOut>` を追加するか
-- `IStep<TOut>` を `Task<TOut>` に統一するか
-- timeout と `CancellationToken` をどの API で扱うか
+T21 では以下を決める必要がある。
+
+- timeout 超過時の `WorkflowResult` とエラーコード
+- 協調キャンセル時の後続 Step 停止規則
+- 同期 Step 実行中にキャンセルが要求された場合の扱い
+- trace とログに残すキャンセル情報
 
 ### 21.2 Config 読み込み責務
 
