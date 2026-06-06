@@ -5,5 +5,8 @@
 | P0 | 完了 | 作業管理の初期化。 | 最低限の制約文書と追跡ファイルが存在する。 | `AGENTS.md`、`tasks-status.md`、`phases-status.md`、`reports/.gitkeep` |
 | P1 | 完了 | Markdown lint の準備。 | 文書検査の実行入口と repo 固有設定が存在する。 | `package.json`、`tools/lint/`、`.textlintrc.json`、`cspell.config.jsonc`、`npm run lint:md` |
 | P1.5 | 完了 | 課題 #1 の設計更新。 | `doc/workflow_engine_spec.md` が csx 完結型の設計へ更新され、利用契約の穴点検、Markdown lint、表記揺れ検査、点検が通る。 | `doc/workflow_engine_spec.md`、`reports/issue-1-full-csx-design-update-20260605130833.md`、`reports/issue-1-full-csx-design-review-20260605130833.md`、`reports/issue-1-spec-gap-analysis-20260606161536.md`、`npm run lint:md`、`npm run lint:md:terms` |
-| P2 | 未着手 | workflow engine 仕様からの実装計画。 | 初期実装の task 分解が記録される。 |  |
-| P3 | 未着手 | 初期実装。 | P2 で分解した task が実装され、検証される。 |  |
+| P2 | 完了 | workflow engine 仕様からの実装計画。 | 初期実装の task 分解と、T10 以降を検査先行で進める方針が記録される。 | `tasks-status.md` T7-T18、`reports/task-breakdown-tracking-update-20260606165027.md`、`reports/task-breakdown-tdd-e2e-update-20260606170118.md` |
+| P3 | 未着手 | 中核プロジェクト、公開 API、逐次実行、実行結果契約の実装。 | T10-T13 が検査先行で実装、検査、点検され、E2E が成立しにくい箇所でも公開 API または利用者目線の検査を先に置き、公開 API と実行中核の提出可能な状態になる。 | `tasks-status.md` T10-T13 |
+| P4 | 未着手 | csx 読み込み、参照解決、実行前検証の実装。 | T14-T16 が検査先行で実装、検査、点検され、可能な範囲で E2E または利用者目線の統合検査を先に置き、`Dotnet.Script.Core` 統合と `validate` 処理の提出可能な状態になる。 | `tasks-status.md` T14-T16 |
+| P5 | 未着手 | CLI、Config 引数保持、統合根拠の実装。 | T17-T18 が検査先行で実装、CLI 利用者目線の E2E、Markdown lint、表記揺れ検査、`dotnet test`、点検を通し、初期版の対象外混入がないことを記録する。 | `tasks-status.md` T17-T18 |
+| P6 | 未着手 | 初期版後の候補整理。 | 非同期 Step API、timeout、標準 Config 読み込み、retry、値を含む trace、NuGet ロックファイル、`#load "nuget: ..."`、Step 名名前空間化を、初期版とは別 task として扱える状態にする。 | `doc/workflow_engine_spec.md` 19.3、21 |
