@@ -1,4 +1,7 @@
 using Devo6.WorkFlow.Abstractions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using System.Diagnostics;
 
 namespace Devo6.WorkFlow.Engine;
 
@@ -85,6 +88,89 @@ public sealed class CompositeStep<TOut> : IStep<TOut>
         return (TOut)currentValue!;
     }
 
+    /// <summary>
+    /// Executes this composite entry through the engine path and returns a workflow result with logs and trace history.
+    /// </summary>
+    /// <param name="options">The execution dependencies to use, or null for default options.</param>
+    /// <returns>The workflow result describing success, failure, and captured trace history.</returns>
+    public WorkflowResult ExecuteWorkflow(WorkflowExecutionOptions? options = null)
+    {
+        options ??= new WorkflowExecutionOptions();
+
+        ILoggerFactory loggerFactory = options.LoggerFactory ?? NullLoggerFactory.Instance;
+        ILogger engineLogger = loggerFactory.CreateLogger("Devo6.WorkFlow.Engine");
+        ILogger stepLogger = loggerFactory.CreateLogger("Devo6.WorkFlow.Step");
+        var traceSteps = new List<ExecutionTraceStep>();
+        var input = new StepInput(new StepContext(stepLogger));
+        object? currentValue = default(TOut);
+
+        using IDisposable? entryScope = engineLogger.BeginScope(new Dictionary<string, object?>
+        {
+            ["EntryName"] = Name,
+            ["Attempt"] = 1,
+        });
+
+        engineLogger.LogInformation("Entry started");
+
+        foreach (StepRegistration step in steps)
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+
+            using IDisposable? stepScope = engineLogger.BeginScope(new Dictionary<string, object?>
+            {
+                ["EntryName"] = Name,
+                ["StepName"] = step.Name,
+                ["Attempt"] = 1,
+            });
+
+            engineLogger.LogInformation("Step started");
+
+            try
+            {
+                currentValue = step.Execute(input);
+                step.Produce(input, currentValue);
+                stopwatch.Stop();
+                traceSteps.Add(new ExecutionTraceStep(step.Name, ExecutionTraceStepStatus.Succeeded, stopwatch.Elapsed, null));
+                engineLogger.LogInformation("Step succeeded");
+            }
+            catch (Exception exception)
+            {
+                stopwatch.Stop();
+                traceSteps.Add(new ExecutionTraceStep(
+                    step.Name,
+                    ExecutionTraceStepStatus.Failed,
+                    stopwatch.Elapsed,
+                    WorkflowErrorCodes.StepExecutionFailed));
+                engineLogger.LogError(
+                    exception,
+                    "Step failed with error code {ErrorCode}",
+                    WorkflowErrorCodes.StepExecutionFailed);
+                engineLogger.LogError(
+                    exception,
+                    "Entry failed with error code {ErrorCode}",
+                    WorkflowErrorCodes.StepExecutionFailed);
+
+                return new WorkflowResult
+                {
+                    EntryName = Name,
+                    Succeeded = false,
+                    ErrorCode = WorkflowErrorCodes.StepExecutionFailed,
+                    ErrorMessage = exception.Message,
+                    Trace = new ExecutionTrace(traceSteps),
+                };
+            }
+        }
+
+        engineLogger.LogInformation("Entry succeeded");
+
+        return new WorkflowResult
+        {
+            EntryName = Name,
+            Succeeded = true,
+            Trace = new ExecutionTrace(traceSteps),
+        };
+    }
+
     private StepRegistration CurrentStep
     {
         get
@@ -123,21 +209,26 @@ public sealed class CompositeStep<TOut> : IStep<TOut>
 
 internal sealed class StepRegistration
 {
+    private readonly string name;
     private readonly Func<StepInput, object?> execute;
     private readonly IReadOnlyList<Action<StepInput, object?>> producers;
 
     private StepRegistration(
+        string name,
         Func<StepInput, object?> execute,
         IReadOnlyList<Action<StepInput, object?>> producers)
     {
+        this.name = name;
         this.execute = execute;
         this.producers = producers.ToArray();
     }
 
+    public string Name => name;
+
     public static StepRegistration Create<TStep, TOut>()
         where TStep : IStep<TOut>, new()
     {
-        return new StepRegistration(input => new TStep().Execute(input), []);
+        return new StepRegistration(typeof(TStep).Name, input => new TStep().Execute(input), []);
     }
 
     public object? Execute(StepInput input)
@@ -158,12 +249,12 @@ internal sealed class StepRegistration
 
         nextProducers[^1] = producer;
 
-        return new StepRegistration(execute, nextProducers);
+        return new StepRegistration(name, execute, nextProducers);
     }
 
     public StepRegistration ClearProducers()
     {
-        return new StepRegistration(execute, []);
+        return new StepRegistration(name, execute, []);
     }
 
     public void Produce(StepInput input, object? value)
