@@ -43,18 +43,6 @@ NuGet の公開先へ登録済みの安定版を導入する場合は、パッ�
 dotnet tool install --global Devo6.WorkFlow.Cli
 ```
 
-公開前版を導入する場合は、公開前版を含めて検索します。
-
-```bash
-dotnet tool install --global Devo6.WorkFlow.Cli --prerelease
-```
-
-## NuGet 自動公開
-
-`.github/workflows/publish-nuget.yml` は、公開版の登録、`master` への反映、手動実行で NuGet の公開先へ CLI ツールを公開します。公開前に `dotnet test`、`dotnet pack`、一時配置先への `dotnet tool install`、`engine` 起動確認を行います。
-
-公開にはリポジトリの自動実行で使う秘密情報 `NUGET_API_KEY` が必要です。値には NuGet の公開先で作成した API キーを設定してください。
-
 ## 最小例
 
 `main.csx`:
