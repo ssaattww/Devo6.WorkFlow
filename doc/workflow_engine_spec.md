@@ -306,6 +306,25 @@ Save:
 
 標準契約では、各 Step は `public sealed class Config` などの自分の Config 型を Step 型の内側に持つ。CompositeStep は `MainConfig` のような境界 Config 型を持ち、`MainConfig.Load` は `LoadStep.Config`、`MainConfig.Convert` は `ConvertStep.Config`、`MainConfig.Save` は `SaveStep.Config` を保持する。YAML の区画名は Step 実行順を定義しない。Step 実行順は `.csx` の `CompositeStep` 定義で決める。
 
+Step を別フォルダに分ける場合、各 Step フォルダにその Step Config 型だけを表す既定 Config YAML を置いてよい。たとえば `steps/load/appsettings.yaml` は `LoadStep.Config` の既定値、`steps/convert/appsettings.yaml` は `ConvertStep.Config` の既定値として扱う。
+
+実行時に `--config` へ渡す YAML は、CompositeStep 境界 Config 型に対応する root Config ファイルである。root Config は、Step 側の既定 Config YAML に対する部分上書きとして扱う。エンジンは最初の Step 実行前に、Step 側の既定 Config YAML、root Config の該当区画、CLI `--set` の順に値を重ねてから境界 Config 型へ変換する。
+
+root Config の例:
+
+```yaml
+Convert:
+  Prefix: "sample: "
+```
+
+この例では `steps/convert/appsettings.yaml` を `ConvertStep.Config` の既定値として読み、root Config の `Convert.Prefix` だけを上書きする。
+
+既定 Config YAML の規約 path は、Entry `.csx` の存在するディレクトリを基準に、`steps/{sectionPath}/appsettings.yaml` とする。`sectionPath` の `.` はディレクトリ区切りに変換し、各 path 要素は小文字と `-` の区切りに変換する。たとえば `Convert` は `steps/convert/appsettings.yaml`、`Text.Convert` は `steps/text/convert/appsettings.yaml` である。
+
+規約 path と異なる既定 Config YAML を使う場合は、`WithConfig<TConfig>(string sectionPath, string defaultConfigPath)` で Entry `.csx` からの相対 path を明示する。明示 path は規約 path より優先する。
+
+既存互換として、宣言済み Step Config 区画の値が YAML path だけの場合は、その YAML を既定 Config YAML として扱う。この書き方は部分上書きを含まない省略形であり、新規の例では Step 側の既定 Config YAML と root Config の部分上書きを分けて書くことを推奨する。
+
 ### 6.3 Config 読み込み
 
 標準 Config 読み込みは、エンジンの実行前処理として行う。
@@ -334,9 +353,11 @@ var Main = CompositeStep.Define("Main")
 
 `WithConfig<TConfig>()` は、Step 登録単位 Config がある場合は CompositeStep 境界 Config 型の宣言として扱う。
 
-`WithConfig<TConfig>(string sectionPath)` は、直前に登録した Step のメタ情報として Step Config 型と境界 Config 型上のプロパティ path を保持する。Step 専用引数は増やさない。
+`WithConfig<TConfig>(string sectionPath)` は、直前に登録した Step のメタ情報として Step Config 型と境界 Config 型上のプロパティ path を保持する。既定 Config YAML は規約 path から解決する。Step 専用引数は増やさない。
 
-CLI `run` は Entry `.csx` をロードした後、単一 `--config` YAML ファイル全体を境界 Config 型へ変換する。
+`WithConfig<TConfig>(string sectionPath, string defaultConfigPath)` は、直前に登録した Step のメタ情報として Step Config 型、境界 Config 型上のプロパティ path、既定 Config YAML path を保持する。`defaultConfigPath` は Entry `.csx` の存在するディレクトリを基準に解決する。
+
+CLI `run` は Entry `.csx` をロードした後、宣言済み Step Config ごとに既定 Config YAML を読み、`--config` の root YAML にある該当区画を部分上書きとして重ねる。その後、結合済み YAML 全体を境界 Config 型へ変換する。
 
 `run` は最初の Step を実行する前に、境界 Config 型への型変換、CLI override 適用、`DataAnnotations` と `IValidatableObject` の検証をすべて完了する。いずれか 1 つでも失敗した場合、最初の Step は実行しない。
 
@@ -346,7 +367,9 @@ Step 登録単位 Config があるのに `WithConfig<MainConfig>()` のような
 
 旧 `.WithConfig<TConfig>()` だけを使う Entry 全体 Config 互換 API は維持する。Step 登録単位 Config がない場合は従来どおり YAML 全体を `TConfig` に変換し、最初の Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。
 
-複数 Config ファイル統合、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は採用しない。
+任意の複数 `--config` 指定、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は採用しない。
+
+Step フォルダに置いた既定 Config YAML は、宣言済み Step Config の規約 path または明示 `defaultConfigPath` としてのみ読み込む。標準エンジンは未宣言 Step の Config を探索せず、複数 root Config の優先順位解決も行わない。
 
 Config 読み込み用 Step をユーザーが明示的に定義する方式は、標準外の拡張として許可する。
 
@@ -770,11 +793,14 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 5. `.csx` を `Dotnet.Script.Core` 経由でロードする
 6. `.csx` 上の CompositeStep 定義を取得する
 7. Entry の Step Config メタ情報を確認する
-8. 必要な場合は `--config` の YAML 全体を境界 Config 型または Entry 全体 Config 型へ変換する
-9. `--set` のプロパティ path override を Config に適用する
-10. `DataAnnotations` と `IValidatableObject` で Config を検証する
-11. 検証済み Config を対象 Step の実行直前に `StepContext` に登録する
-12. 指定された Step を実行する
+8. 必要な場合は `--config` の root YAML を読み込む
+9. Step 登録単位 Config では宣言済み Step Config ごとの既定 Config YAML を読み込む
+10. root YAML の宣言済み Step Config 区画を既定 Config YAML に部分上書きする
+11. 結合済み YAML 全体を境界 Config 型または Entry 全体 Config 型へ変換する
+12. `--set` のプロパティ path override を Config に適用する
+13. `DataAnnotations` と `IValidatableObject` で Config を検証する
+14. 検証済み Config を対象 Step の実行直前に `StepContext` に登録する
+15. 指定された Step を実行する
 
 ---
 
@@ -1119,6 +1145,10 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
     public CompositeStep<TOut> WithConfig<TConfig>(string sectionPath);
 
+    public CompositeStep<TOut> WithConfig<TConfig>(
+        string sectionPath,
+        string defaultConfigPath);
+
     public CompositeStep<TStepOut> Run<TStep, TStepOut>()
         where TStep : IStep<TStepOut>, new();
 
@@ -1153,10 +1183,14 @@ public sealed class StepConfigRegistration
     public string SectionPath { get; }
 
     public Type ConfigType { get; }
+
+    public string? DefaultConfigPath { get; }
 }
 ```
 
-`WithConfig<TConfig>(string sectionPath)` は直前に登録した Step に Step Config 型と境界 Config 型上のプロパティ path のメタ情報を設定する。`StepConfigRegistrations` は Entry 内の Step 登録順で保持する。
+`WithConfig<TConfig>(string sectionPath)` は直前に登録した Step に Step Config 型と境界 Config 型上のプロパティ path のメタ情報を設定する。既定 Config YAML は規約 path から解決する。`StepConfigRegistrations` は Entry 内の Step 登録順で保持する。
+
+`WithConfig<TConfig>(string sectionPath, string defaultConfigPath)` は、直前に登録した Step に Step Config 型、境界 Config 型上のプロパティ path、既定 Config YAML path のメタ情報を設定する。`DefaultConfigPath` が null ではない場合は規約 path より優先する。
 
 `WithConfig<TConfig>()` は、Step 登録単位 Config がある場合は CompositeStep 境界 Config 型メタ情報を設定する。Step 登録単位 Config がない場合は、互換 API として Entry 全体 Config 型メタ情報を設定する。1 つの Entry に設定できる Config 型は 1 つだけとする。
 
@@ -1321,8 +1355,15 @@ workflow-root/
 ├── build.csx
 ├── test.csx
 ├── steps/
-│   ├── load-step.csx
-│   └── save-step.csx
+│   ├── load/
+│   │   ├── load-step.csx
+│   │   └── appsettings.yaml
+│   ├── convert/
+│   │   ├── convert-step.csx
+│   │   └── appsettings.yaml
+│   └── save/
+│       ├── save-step.csx
+│       └── appsettings.yaml
 ├── shared/
 │   └── common.csx
 ├── config/
@@ -1336,6 +1377,10 @@ workflow-root/
 相対パスの基準は、原則として実行対象に指定した Entry `.csx` の存在するディレクトリとする。
 
 `#load` 内の相対パスは、`#load` を書いた `.csx` の存在するディレクトリを基準とする。
+
+`steps/` 配下の `appsettings.yaml` は、宣言済み Step Config の既定値として置ける。標準実行時に `--config` へ渡す Config は `config/appsettings.yaml` のような境界 Config 型に対応する root Config ファイルである。エンジンは宣言済み Step Config ごとに Step 側既定 Config YAML を読み込み、root Config の該当区画を部分上書きとして重ねてから境界 Config 型へ変換する。
+
+たとえば `WithConfig<LoadStep.Config>("Load")` は、Entry `.csx` の存在するディレクトリを基準に `steps/load/appsettings.yaml` を既定 Config YAML として読む。`WithConfig<ConvertStep.Config>("Text.Convert")` は `steps/text/convert/appsettings.yaml` を読む。規約パスと異なる既定 Config YAML を使う場合は、`WithConfig<TConfig>(sectionPath, defaultConfigPath)` で明示する。
 
 ### 15.4 トップレベルステートメント
 
@@ -1588,9 +1633,15 @@ CLI `run` では、Entry が Step 登録単位 Config API または Entry 全体
 
 `--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
 
-Step 登録単位 Config API では、`--config` の YAML 全体を CompositeStep 境界 Config 型に変換する。その後、`--set` を境界 Config 型のプロパティ path override として適用し、`DataAnnotations` と `IValidatableObject` を境界 Config 型から検証する。
+Step 登録単位 Config API では、宣言済み Step Config ごとに既定 Config YAML を読み込む。root YAML に該当区画が存在する場合は、既定 Config YAML に対する部分上書きとして適用する。その後、結合済み YAML 全体を CompositeStep 境界 Config 型に変換し、`--set` を境界 Config 型のプロパティ path override として適用し、`DataAnnotations` と `IValidatableObject` を境界 Config 型から検証する。
 
-宣言済み `sectionPath` が YAML に存在しない場合は、Config 型の生成や override 適用へ進まず、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
+宣言済み `sectionPath` が root YAML に存在しなくても、既定 Config YAML が存在する場合はその既定値だけで Step Config を生成できる。
+
+宣言済み `sectionPath` に対応する既定 Config YAML も root YAML 区画も存在しない場合は、Config 型の生成や override 適用へ進まず、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
+
+既定 Config YAML が存在するが読み込めない場合、または YAML として読み込めない場合は、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
+
+root YAML の宣言済み `sectionPath` が YAML path だけの場合は、既存互換の省略形として、その YAML を既定 Config YAML として扱う。
 
 Step 登録単位 Config があるのに CompositeStep 境界 Config 型が宣言されていない場合は、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
 
@@ -1899,7 +1950,9 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - Step 内 `Config` 型
 - CompositeStep 境界 Config 型を宣言する `WithConfig<TConfig>()`
 - Step 登録単位の `WithConfig<TConfig>(string sectionPath)` による Step Config 型と境界 Config プロパティ path メタ情報
-- 単一 `--config` YAML ファイル全体の境界 Config 型への読み込み
+- Step 登録単位の `WithConfig<TConfig>(string sectionPath, string defaultConfigPath)` による既定 Config YAML path メタ情報
+- 規約 path または明示 path からの Step 既定 Config YAML 読み込み
+- Step 既定 Config YAML、root Config 区画、CLI `--set` の順による上書き
 - CLI `run` の境界 Config 型変換、CLI override 適用、Config 検証
 - CLI `run` の `--set` プロパティ path override と Config 検証前適用
 - 対象 Step 実行直前の `StepContext.Set<TStep.Config>()` 登録
@@ -1924,7 +1977,7 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - 分岐実行
 - 統合実行
 - 未信頼 `.csx` の安全な実行
-- 複数 Config ファイル統合
+- 任意の複数 `--config` 指定
 - 標準 Config 読み込みによる永続的な名前付き Config 取得
 - Config 型自動推論
 - Step 型への Config 自動注入
@@ -2026,9 +2079,9 @@ retry の標準契約には以下を含めない。
 
 標準 Config 読み込みはエンジン実行前処理として提供する。
 
-Entry 側は `WithConfig<TBoundaryConfig>()` で CompositeStep 境界 Config 型を宣言し、Step 登録単位の `WithConfig<TConfig>(string sectionPath)` で Step Config 型と境界 Config 型上のプロパティ path を明示する。
+Entry 側は `WithConfig<TBoundaryConfig>()` で CompositeStep 境界 Config 型を宣言し、Step 登録単位の `WithConfig<TConfig>(string sectionPath)` で Step Config 型と境界 Config 型上のプロパティ path を明示する。既定 Config YAML が規約 path と異なる場合は、`WithConfig<TConfig>(string sectionPath, string defaultConfigPath)` で既定 Config YAML path も明示する。
 
-CLI `run` は `.csx` ロード後、Entry の境界 Config 型、Step Config メタ情報、`--config` の path を使って YAML 全体を境界 Config 型へ変換する。
+CLI `run` は `.csx` ロード後、Entry の境界 Config 型、Step Config メタ情報、`--config` の path を使って root YAML を読み込む。Step 登録単位 Config では、各 Step の既定 Config YAML を読み、root YAML の宣言済み Step Config 区画を部分上書きとして重ねてから YAML 全体を境界 Config 型へ変換する。
 
 宣言された境界 Config と Step Config はすべて最初の Step 実行前に読み込み、型変換、override 適用、`DataAnnotations` と `IValidatableObject` による検証まで完了する。
 
@@ -2040,7 +2093,9 @@ Step 登録単位 Config がない場合、既存の `WithConfig<TConfig>()` は
 
 `--set` は `EngineArguments.Settings` に保持し、標準 Config へも適用する。
 
-複数 Config ファイルの統合、標準 Config 読み込みによる永続的な名前付き Config 取得、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は標準 Config 契約には含めない。
+任意の複数 `--config` 指定、標準 Config 読み込みによる永続的な名前付き Config 取得、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は標準 Config 契約には含めない。
+
+Step 配下に置く既定 Config YAML は、Step Config 型の入力例または再利用素材として扱う。標準 Config 読み込みは未宣言 Step の YAML を探索しない。宣言済み Step Config に対しては、明示 `defaultConfigPath` があればそれを読み、なければ規約 path を読む。
 
 ### 21.3 CLI override の仕様
 
@@ -2048,10 +2103,13 @@ Step 登録単位 Config がない場合、既存の `WithConfig<TConfig>()` は
 
 適用順は以下とする。
 
-1. `--config` の YAML 全体を境界 Config 型へ変換する
-2. `--set` を境界 Config 型のプロパティ path override として適用する
-3. `DataAnnotations` と `IValidatableObject` を検証する
-4. 対象 Step の実行直前に、宣言済み `sectionPath` のプロパティ値を `StepContext` に登録する
+1. `--config` の root YAML を読み込む
+2. 宣言済み Step Config ごとの既定 Config YAML を読み込む
+3. root YAML の宣言済み Step Config 区画を既定 Config YAML に部分上書きする
+4. 結合済み YAML 全体を境界 Config 型へ変換する
+5. `--set` を境界 Config 型のプロパティ path override として適用する
+6. `DataAnnotations` と `IValidatableObject` を検証する
+7. 対象 Step の実行直前に、宣言済み `sectionPath` のプロパティ値を `StepContext` に登録する
 
 プロパティ path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は、境界 Config 型の `Convert.ToUpper` に対する override として扱う。対象 Step 実行直前には、`Convert` プロパティ値を `StepContext.Set<ConvertStep.Config>()` に登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
 
@@ -2071,7 +2129,7 @@ Step 登録単位 Config がない場合、既存の `WithConfig<TConfig>()` は
 
 `engine validate` は Config path の存在確認までを維持し、override の型検証は `engine run` で行う。
 
-複数 Config ファイル指定時の統合規則は標準 Config 契約には含めない。
+任意の複数 `--config` 指定時の統合規則は標準 Config 契約には含めない。
 
 Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を Entry 全体 Config 型へのプロパティ path override として扱う。
 

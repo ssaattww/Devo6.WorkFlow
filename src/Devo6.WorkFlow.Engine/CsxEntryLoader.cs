@@ -888,8 +888,10 @@ public sealed class CsxEntryLoader
 
             if (stepConfigRegistrations.Count > 0)
             {
+                string entryDirectory = ResolveEntryDirectory(options?.EngineArguments?.EntryPath, configPath);
                 IReadOnlyList<StepConfigValue> stepConfigs = StandardConfigLoader.LoadStepConfigs(
                     configPath,
+                    entryDirectory,
                     configType!,
                     stepConfigRegistrations,
                     options?.EngineArguments?.Settings);
@@ -907,6 +909,19 @@ public sealed class CsxEntryLoader
 
             return null;
         }
+    }
+
+    /// <summary>
+    /// Step 既定 Config YAML の相対パス解決に使う Entry .csx のディレクトリを取得します。
+    /// </summary>
+    /// <param name="entryPath">EngineArguments に保持された Entry .csx パス。</param>
+    /// <param name="configPath">代替として使う root Config YAML パス。</param>
+    /// <returns>Entry .csx のディレクトリ。Entry パスが空の場合は root Config YAML のディレクトリ。</returns>
+    private static string ResolveEntryDirectory(string? entryPath, string configPath)
+    {
+        string basePath = string.IsNullOrWhiteSpace(entryPath) ? configPath : entryPath;
+
+        return Path.GetDirectoryName(Path.GetFullPath(basePath)) ?? Directory.GetCurrentDirectory();
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using System.Collections;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Reflection;
+using System.Text;
 using YamlDotNet.RepresentationModel;
 using YamlDotNet.Serialization;
 
@@ -33,29 +34,32 @@ internal static class StandardConfigLoader
     }
 
     /// <summary>
-    /// Step 登録単位 Config metadata に基づいてすべての Step Config を読み込みます。
+    /// Step 登録単位 Config のメタ情報に基づいてすべての Step Config を読み込みます。
     /// </summary>
-    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="configPath">読み込む YAML ファイル パス。</param>
+    /// <param name="entryDirectory">Entry .csx が存在するディレクトリ。</param>
     /// <param name="boundaryConfigType">YAML 全体を変換する CompositeStep 境界 Config 型。</param>
-    /// <param name="registrations">Step 登録単位 Config metadata の一覧。</param>
+    /// <param name="registrations">Step 登録単位 Config のメタ情報一覧。</param>
     /// <param name="settings">raw CLI override。</param>
-    /// <returns>検証済みの Step Config instance 一覧。</returns>
+    /// <returns>検証済みの Step Config インスタンス一覧。</returns>
     internal static IReadOnlyList<StepConfigValue> LoadStepConfigs(
         string configPath,
+        string entryDirectory,
         Type boundaryConfigType,
         IReadOnlyList<StepConfigRegistration> registrations,
         IReadOnlyDictionary<string, string>? settings = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(configPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(entryDirectory);
         ArgumentNullException.ThrowIfNull(boundaryConfigType);
         ArgumentNullException.ThrowIfNull(registrations);
 
         EnsureSectionPathsAreUsable(registrations);
         string[] sectionPaths = registrations.Select(registration => registration.SectionPath).Distinct(StringComparer.Ordinal).ToArray();
         EnsureSettingsTargetDeclared(sectionPaths, settings);
-        EnsureSectionsExist(configPath, sectionPaths);
+        YamlNode configRoot = LoadStepConfigRoot(configPath, entryDirectory, registrations);
 
-        object boundaryConfig = Deserialize(configPath, boundaryConfigType);
+        object boundaryConfig = Deserialize(configRoot, boundaryConfigType);
         ApplySettings(boundaryConfig, settings);
         Validate(boundaryConfig);
 
@@ -78,10 +82,414 @@ internal static class StandardConfigLoader
     /// <returns>YAML から作成した標準 Config instance。</returns>
     private static object Deserialize(string configPath, Type configType)
     {
-        using StreamReader reader = File.OpenText(configPath);
+        return Deserialize(LoadConfigRoot(configPath, []), configType);
+    }
+
+    /// <summary>
+    /// YAML node を標準 Config 型の instance に変換します。
+    /// </summary>
+    /// <param name="rootNode">変換する YAML root node。</param>
+    /// <param name="configType">変換先の標準 Config 型。</param>
+    /// <returns>YAML から作成した標準 Config instance。</returns>
+    private static object Deserialize(YamlNode rootNode, Type configType)
+    {
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        var yaml = new YamlStream(new YamlDocument(rootNode));
+        yaml.Save(writer, assignAnchors: false);
+        using var reader = new StringReader(writer.ToString());
         object? config = Deserializer.Deserialize(reader, configType);
 
         return EnsureConfigInstance(config, configType);
+    }
+
+    /// <summary>
+    /// YAML file を読み込み、宣言済み Step Config 区画の YAML 断片参照を解決します。
+    /// </summary>
+    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="referenceSectionPaths">YAML 断片参照を許可する区画 path。</param>
+    /// <returns>YAML 断片参照を反映した root node。</returns>
+    private static YamlNode LoadConfigRoot(string configPath, IReadOnlyList<string> referenceSectionPaths)
+    {
+        string fullPath = Path.GetFullPath(configPath);
+        YamlNode rootNode = ReadYamlRoot(fullPath);
+        var loadingPaths = new HashSet<string>(StringComparer.Ordinal) { fullPath };
+
+        ResolveYamlFragmentReferences(
+            rootNode,
+            "",
+            Path.GetDirectoryName(fullPath)!,
+            referenceSectionPaths.ToHashSet(StringComparer.Ordinal),
+            loadingPaths);
+
+        return rootNode;
+    }
+
+    /// <summary>
+    /// Step 登録単位 Config 用に Step 側既定 YAML と root Config の区画を結合した YAML root node を作成します。
+    /// </summary>
+    /// <param name="configPath">読み込む root Config YAML ファイル パス。</param>
+    /// <param name="entryDirectory">Entry .csx が存在するディレクトリ。</param>
+    /// <param name="registrations">Step 登録単位 Config のメタ情報一覧。</param>
+    /// <returns>Step 側既定 YAML と root Config の区画を結合した YAML root node。</returns>
+    private static YamlNode LoadStepConfigRoot(
+        string configPath,
+        string entryDirectory,
+        IReadOnlyList<StepConfigRegistration> registrations)
+    {
+        string fullConfigPath = Path.GetFullPath(configPath);
+        string fullEntryDirectory = Path.GetFullPath(entryDirectory);
+        string rootConfigDirectory = Path.GetDirectoryName(fullConfigPath)!;
+        YamlNode rootNode = ReadYamlRoot(fullConfigPath);
+
+        foreach (StepConfigRegistration registration in registrations)
+        {
+            YamlNode? rootSectionNode = TryReadSectionNode(rootNode, registration.SectionPath);
+            YamlNode? mergedSectionNode = CreateMergedStepSection(
+                registration,
+                rootSectionNode,
+                fullEntryDirectory,
+                rootConfigDirectory);
+
+            if (mergedSectionNode is null)
+            {
+                throw new InvalidOperationException($"Config section was not found: {registration.SectionPath}");
+            }
+
+            SetSectionNode(rootNode, registration.SectionPath, mergedSectionNode);
+        }
+
+        return rootNode;
+    }
+
+    /// <summary>
+    /// 1 つの Step Config 区画について、既定 YAML、root 区画、既存互換の YAML パス スカラーを解決します。
+    /// </summary>
+    /// <param name="registration">解決対象の Step 登録単位 Config のメタ情報。</param>
+    /// <param name="rootSectionNode">root Config にある該当区画。存在しない場合は null。</param>
+    /// <param name="entryDirectory">Entry .csx が存在するディレクトリ。</param>
+    /// <param name="rootConfigDirectory">root Config YAML ファイルが存在するディレクトリ。</param>
+    /// <returns>境界 Config へ設定する区画 node。既定 YAML も root 区画もない場合は null。</returns>
+    private static YamlNode? CreateMergedStepSection(
+        StepConfigRegistration registration,
+        YamlNode? rootSectionNode,
+        string entryDirectory,
+        string rootConfigDirectory)
+    {
+        if (rootSectionNode is YamlScalarNode scalar && IsYamlFragmentPath(scalar.Value))
+        {
+            return LoadYamlFragment(
+                scalar.Value!,
+                rootConfigDirectory,
+                new HashSet<string>(StringComparer.Ordinal),
+                new HashSet<string>(StringComparer.Ordinal));
+        }
+
+        YamlNode? defaultNode = LoadStepDefaultNode(registration, entryDirectory);
+        if (defaultNode is null)
+        {
+            return rootSectionNode is null ? null : CloneYamlNode(rootSectionNode);
+        }
+
+        if (rootSectionNode is null)
+        {
+            return defaultNode;
+        }
+
+        return MergeYamlNodes(defaultNode, rootSectionNode);
+    }
+
+    /// <summary>
+    /// Step 登録単位 Config のメタ情報から明示パスまたは規約パスの既定 YAML node を読み込みます。
+    /// </summary>
+    /// <param name="registration">解決対象の Step 登録単位 Config のメタ情報。</param>
+    /// <param name="entryDirectory">Entry .csx が存在するディレクトリ。</param>
+    /// <returns>読み込んだ既定 YAML node。規約パスが存在しない場合は null。</returns>
+    private static YamlNode? LoadStepDefaultNode(StepConfigRegistration registration, string entryDirectory)
+    {
+        string defaultConfigPath = registration.DefaultConfigPath is null
+            ? ResolveConventionDefaultConfigPath(entryDirectory, registration.SectionPath)
+            : ResolveEntryRelativePath(entryDirectory, registration.DefaultConfigPath);
+
+        if (registration.DefaultConfigPath is null && !File.Exists(defaultConfigPath))
+        {
+            return null;
+        }
+
+        if (!File.Exists(defaultConfigPath))
+        {
+            throw new FileNotFoundException($"Step default config file was not found: {defaultConfigPath}", defaultConfigPath);
+        }
+
+        return ReadYamlRoot(defaultConfigPath);
+    }
+
+    /// <summary>
+    /// Entry .csx のディレクトリと宣言済み区画パスから規約の Step 既定 Config YAML パスを作成します。
+    /// </summary>
+    /// <param name="entryDirectory">Entry .csx が存在するディレクトリ。</param>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
+    /// <returns>規約で解決した Step 既定 Config YAML パス。</returns>
+    private static string ResolveConventionDefaultConfigPath(string entryDirectory, string sectionPath)
+    {
+        string[] pathSegments = SplitSectionPath(sectionPath)
+            .Select(ToKebabPathSegment)
+            .ToArray();
+
+        return Path.Combine([entryDirectory, "steps", .. pathSegments, "appsettings.yaml"]);
+    }
+
+    /// <summary>
+    /// Entry .csx のディレクトリから相対パスまたは絶対パスを解決します。
+    /// </summary>
+    /// <param name="entryDirectory">Entry .csx が存在するディレクトリ。</param>
+    /// <param name="path">解決するパス。</param>
+    /// <returns>絶対パスに変換したパス。</returns>
+    private static string ResolveEntryRelativePath(string entryDirectory, string path)
+    {
+        return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(entryDirectory, path));
+    }
+
+    /// <summary>
+    /// C# のプロパティ パスの 1 要素を小文字と区切り記号で構成したディレクトリ名へ変換します。
+    /// </summary>
+    /// <param name="segment">変換するプロパティ パス要素。</param>
+    /// <returns>規約パスで使うディレクトリ名。</returns>
+    private static string ToKebabPathSegment(string segment)
+    {
+        var builder = new StringBuilder();
+        for (int i = 0; i < segment.Length; i++)
+        {
+            char current = segment[i];
+            if (char.IsUpper(current)
+                && i > 0
+                && (char.IsLower(segment[i - 1])
+                    || char.IsDigit(segment[i - 1])
+                    || (i + 1 < segment.Length && char.IsLower(segment[i + 1]))))
+            {
+                builder.Append('-');
+            }
+
+            builder.Append(char.ToLowerInvariant(current));
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// root Config の区画を Step 側既定 YAML node へ部分上書きします。
+    /// </summary>
+    /// <param name="defaultNode">Step 側既定 YAML node。</param>
+    /// <param name="overrideNode">root Config の区画 node。</param>
+    /// <returns>上書き済み YAML node。</returns>
+    private static YamlNode MergeYamlNodes(YamlNode defaultNode, YamlNode overrideNode)
+    {
+        if (defaultNode is not YamlMappingNode defaultMapping || overrideNode is not YamlMappingNode overrideMapping)
+        {
+            return CloneYamlNode(overrideNode);
+        }
+
+        var merged = (YamlMappingNode)CloneYamlNode(defaultMapping);
+        foreach (KeyValuePair<YamlNode, YamlNode> overrideChild in overrideMapping.Children)
+        {
+            YamlNode? existingKey = FindMappingKey(merged, overrideChild.Key);
+            if (existingKey is null)
+            {
+                merged.Add(CloneYamlNode(overrideChild.Key), CloneYamlNode(overrideChild.Value));
+                continue;
+            }
+
+            merged.Children[existingKey] = MergeYamlNodes(merged.Children[existingKey], overrideChild.Value);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// mapping 内から指定 key と同じスカラー値を持つ key node を検索します。
+    /// </summary>
+    /// <param name="mapping">検索対象の YAML mapping。</param>
+    /// <param name="key">検索する key node。</param>
+    /// <returns>一致した key node。見つからない場合は null。</returns>
+    private static YamlNode? FindMappingKey(YamlMappingNode mapping, YamlNode key)
+    {
+        if (key is not YamlScalarNode scalarKey)
+        {
+            return null;
+        }
+
+        return mapping.Children.Keys.FirstOrDefault(candidate =>
+            candidate is YamlScalarNode scalarCandidate
+            && string.Equals(scalarCandidate.Value, scalarKey.Value, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// YAML node を結合処理用に複製します。
+    /// </summary>
+    /// <param name="node">複製する YAML node。</param>
+    /// <returns>元 node と同じ値を持つ別インスタンスの YAML node。</returns>
+    private static YamlNode CloneYamlNode(YamlNode node)
+    {
+        if (node is YamlScalarNode scalarNode)
+        {
+            return new YamlScalarNode(scalarNode.Value) { Style = scalarNode.Style };
+        }
+
+        if (node is YamlSequenceNode sequenceNode)
+        {
+            return CloneYamlSequence(sequenceNode);
+        }
+
+        if (node is YamlMappingNode mappingNode)
+        {
+            return CloneYamlMapping(mappingNode);
+        }
+
+        throw new InvalidOperationException($"Unsupported YAML node type: {node.GetType().FullName}");
+    }
+
+    /// <summary>
+    /// YAML の sequence node を再帰的に複製します。
+    /// </summary>
+    /// <param name="sequence">複製する YAML の sequence node。</param>
+    /// <returns>複製した YAML の sequence node。</returns>
+    private static YamlSequenceNode CloneYamlSequence(YamlSequenceNode sequence)
+    {
+        var clone = new YamlSequenceNode();
+        foreach (YamlNode child in sequence.Children)
+        {
+            clone.Add(CloneYamlNode(child));
+        }
+
+        return clone;
+    }
+
+    /// <summary>
+    /// YAML の mapping node を再帰的に複製します。
+    /// </summary>
+    /// <param name="mapping">複製する YAML の mapping node。</param>
+    /// <returns>複製した YAML の mapping node。</returns>
+    private static YamlMappingNode CloneYamlMapping(YamlMappingNode mapping)
+    {
+        var clone = new YamlMappingNode();
+        foreach (KeyValuePair<YamlNode, YamlNode> child in mapping.Children)
+        {
+            clone.Add(CloneYamlNode(child.Key), CloneYamlNode(child.Value));
+        }
+
+        return clone;
+    }
+
+    /// <summary>
+    /// YAML file の root node を読み取ります。
+    /// </summary>
+    /// <param name="configPath">読み取る YAML file path。</param>
+    /// <returns>読み取った YAML root node。</returns>
+    private static YamlNode ReadYamlRoot(string configPath)
+    {
+        var yaml = new YamlStream();
+        using StreamReader reader = File.OpenText(configPath);
+        yaml.Load(reader);
+
+        return yaml.Documents.Count == 0
+            ? new YamlMappingNode()
+            : yaml.Documents[0].RootNode;
+    }
+
+    /// <summary>
+    /// 宣言済み区画の値が YAML 断片 path の場合、その YAML root node へ差し替えます。
+    /// </summary>
+    /// <param name="node">検査対象の YAML node。</param>
+    /// <param name="currentPath">現在の property path。</param>
+    /// <param name="baseDirectory">相対 path の基準 directory。</param>
+    /// <param name="referenceSectionPaths">YAML 断片参照を許可する区画 path。</param>
+    /// <param name="loadingPaths">循環検出用の読み込み中 path。</param>
+    private static void ResolveYamlFragmentReferences(
+        YamlNode node,
+        string currentPath,
+        string baseDirectory,
+        IReadOnlySet<string> referenceSectionPaths,
+        HashSet<string> loadingPaths)
+    {
+        if (node is not YamlMappingNode mapping)
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<YamlNode, YamlNode> child in mapping.Children.ToArray())
+        {
+            if (child.Key is not YamlScalarNode keyNode || string.IsNullOrWhiteSpace(keyNode.Value))
+            {
+                continue;
+            }
+
+            string childPath = string.IsNullOrEmpty(currentPath) ? keyNode.Value : $"{currentPath}.{keyNode.Value}";
+            if (referenceSectionPaths.Contains(childPath)
+                && child.Value is YamlScalarNode valueNode
+                && IsYamlFragmentPath(valueNode.Value))
+            {
+                mapping.Children[child.Key] = LoadYamlFragment(valueNode.Value!, baseDirectory, referenceSectionPaths, loadingPaths);
+                continue;
+            }
+
+            ResolveYamlFragmentReferences(child.Value, childPath, baseDirectory, referenceSectionPaths, loadingPaths);
+        }
+    }
+
+    /// <summary>
+    /// YAML 断片 path を読み込みます。
+    /// </summary>
+    /// <param name="fragmentPath">YAML 断片 path。</param>
+    /// <param name="baseDirectory">相対 path の基準 directory。</param>
+    /// <param name="referenceSectionPaths">YAML 断片参照を許可する区画 path。</param>
+    /// <param name="loadingPaths">循環検出用の読み込み中 path。</param>
+    /// <returns>読み込んだ YAML root node。</returns>
+    private static YamlNode LoadYamlFragment(
+        string fragmentPath,
+        string baseDirectory,
+        IReadOnlySet<string> referenceSectionPaths,
+        HashSet<string> loadingPaths)
+    {
+        string resolvedPath = Path.GetFullPath(
+            Path.IsPathRooted(fragmentPath) ? fragmentPath : Path.Combine(baseDirectory, fragmentPath));
+
+        if (!File.Exists(resolvedPath))
+        {
+            throw new FileNotFoundException($"Config fragment file was not found: {resolvedPath}", resolvedPath);
+        }
+
+        if (!loadingPaths.Add(resolvedPath))
+        {
+            throw new InvalidOperationException($"Config fragment cycle was detected: {resolvedPath}");
+        }
+
+        try
+        {
+            YamlNode rootNode = ReadYamlRoot(resolvedPath);
+            ResolveYamlFragmentReferences(
+                rootNode,
+                "",
+                Path.GetDirectoryName(resolvedPath)!,
+                referenceSectionPaths,
+                loadingPaths);
+
+            return rootNode;
+        }
+        finally
+        {
+            loadingPaths.Remove(resolvedPath);
+        }
+    }
+
+    /// <summary>
+    /// scalar 値が YAML 断片 path として扱えるかどうかを判定します。
+    /// </summary>
+    /// <param name="value">判定する scalar 値。</param>
+    /// <returns>YAML 断片 path の場合は true。</returns>
+    private static bool IsYamlFragmentPath(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && (value.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase)
+                || value.EndsWith(".yml", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -102,23 +510,14 @@ internal static class StandardConfigLoader
     }
 
     /// <summary>
-    /// YAML file から境界 Config 型上の property path に対応する node を取得します。
+    /// YAML root node から境界 Config 型上のプロパティ パスに対応する node を取得します。
     /// </summary>
-    /// <param name="configPath">読み込む YAML file path。</param>
-    /// <param name="sectionPath">境界 Config 型上の property path。</param>
-    /// <returns>指定された property path の YAML node。</returns>
-    private static YamlNode ReadSectionNode(string configPath, string sectionPath)
+    /// <param name="rootNode">読み込み済み YAML root node。</param>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
+    /// <returns>指定されたプロパティ パスの YAML node。</returns>
+    private static YamlNode ReadSectionNode(YamlNode rootNode, string sectionPath)
     {
-        var yaml = new YamlStream();
-        using StreamReader reader = File.OpenText(configPath);
-        yaml.Load(reader);
-
-        if (yaml.Documents.Count == 0)
-        {
-            throw new InvalidOperationException($"Config section was not found: {sectionPath}");
-        }
-
-        YamlNode current = yaml.Documents[0].RootNode;
+        YamlNode current = rootNode;
         foreach (string segment in SplitSectionPath(sectionPath))
         {
             if (current is not YamlMappingNode mapping)
@@ -139,6 +538,79 @@ internal static class StandardConfigLoader
         }
 
         return current;
+    }
+
+    /// <summary>
+    /// YAML root node から境界 Config 型上のプロパティ パスに対応する node を取得します。
+    /// </summary>
+    /// <param name="rootNode">読み込み済み YAML root node。</param>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
+    /// <returns>指定されたプロパティ パスの YAML node。存在しない場合は null。</returns>
+    private static YamlNode? TryReadSectionNode(YamlNode rootNode, string sectionPath)
+    {
+        YamlNode current = rootNode;
+        foreach (string segment in SplitSectionPath(sectionPath))
+        {
+            if (current is not YamlMappingNode mapping)
+            {
+                return null;
+            }
+
+            KeyValuePair<YamlNode, YamlNode>? pair = mapping.Children
+                .FirstOrDefault(child => child.Key is YamlScalarNode scalar
+                    && string.Equals(scalar.Value, segment, StringComparison.Ordinal));
+
+            if (pair is null || pair.Value.Value is null)
+            {
+                return null;
+            }
+
+            current = pair.Value.Value;
+        }
+
+        return current;
+    }
+
+    /// <summary>
+    /// YAML root node の境界 Config プロパティ パスに対応する区画 node を設定します。
+    /// </summary>
+    /// <param name="rootNode">設定対象の YAML root node。</param>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
+    /// <param name="sectionNode">設定する区画 node。</param>
+    private static void SetSectionNode(YamlNode rootNode, string sectionPath, YamlNode sectionNode)
+    {
+        if (rootNode is not YamlMappingNode mapping)
+        {
+            throw new InvalidOperationException("Config root must be a mapping node.");
+        }
+
+        string[] segments = SplitSectionPath(sectionPath);
+        YamlMappingNode current = mapping;
+        for (int i = 0; i < segments.Length; i++)
+        {
+            bool isLast = i == segments.Length - 1;
+            YamlNode key = FindMappingKey(current, new YamlScalarNode(segments[i])) ?? new YamlScalarNode(segments[i]);
+            if (isLast)
+            {
+                current.Children[key] = sectionNode;
+                return;
+            }
+
+            if (!current.Children.TryGetValue(key, out YamlNode? child))
+            {
+                var next = new YamlMappingNode();
+                current.Add(key, next);
+                current = next;
+                continue;
+            }
+
+            if (child is not YamlMappingNode childMapping)
+            {
+                throw new InvalidOperationException($"Config section path cannot be created: {sectionPath}");
+            }
+
+            current = childMapping;
+        }
     }
 
     /// <summary>
@@ -171,15 +643,15 @@ internal static class StandardConfigLoader
     }
 
     /// <summary>
-    /// 宣言済み property path が YAML file に存在することを検査します。
+    /// 宣言済み property path が YAML root node に存在することを検査します。
     /// </summary>
-    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="rootNode">読み込み済み YAML root node。</param>
     /// <param name="sectionPaths">存在を確認する宣言済み property path の一覧。</param>
-    private static void EnsureSectionsExist(string configPath, IReadOnlyList<string> sectionPaths)
+    private static void EnsureSectionsExist(YamlNode rootNode, IReadOnlyList<string> sectionPaths)
     {
         foreach (string sectionPath in sectionPaths)
         {
-            _ = ReadSectionNode(configPath, sectionPath);
+            _ = ReadSectionNode(rootNode, sectionPath);
         }
     }
 

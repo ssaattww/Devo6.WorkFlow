@@ -43,17 +43,28 @@ NuGet の公開先へ登録済みの安定版を導入する場合は、パッ�
 dotnet tool install --global Devo6.WorkFlow.Cli
 ```
 
-公開前版を導入する場合は、公開前版を含めて検索します。
+## 複数フォルダの例
 
-```bash
-dotnet tool install --global Devo6.WorkFlow.Cli --prerelease
+`samples/multi-folder-composite/main.csx` は、別フォルダにある読み込み、変換、保存の Step を `#load` し、外側 `CompositeStep` の Step から内側 `CompositeStep` を実行します。
+
+```text
+samples/multi-folder-composite/
+  main.csx
+  appsettings.yaml
+  shared/contracts.csx
+  steps/load/appsettings.yaml
+  steps/load/load-text-step.csx
+  steps/convert/appsettings.yaml
+  steps/convert/convert-text-step.csx
+  steps/save/appsettings.yaml
+  steps/save/save-text-step.csx
 ```
 
-## NuGet 自動公開
+```bash
+engine run samples/multi-folder-composite/main.csx --config appsettings.yaml
+```
 
-`.github/workflows/publish-nuget.yml` は、公開版の登録、`master` への反映、手動実行で NuGet の公開先へ CLI ツールを公開します。公開前に `dotnet test`、`dotnet pack`、一時配置先への `dotnet tool install`、`engine` 起動確認を行います。
-
-公開にはリポジトリの自動実行で使う秘密情報 `NUGET_API_KEY` が必要です。値には NuGet の公開先で作成した API キーを設定してください。
+この例では、外側 `CompositeStep` が Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。`steps/load/appsettings.yaml`、`steps/convert/appsettings.yaml`、`steps/save/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Convert.Prefix` だけを部分上書きします。
 
 ## 最小例
 
@@ -160,7 +171,7 @@ Save:
 
 `MainConfig` は CompositeStep 境界 Config 型です。`Load`、`Convert`、`Save` は境界 Config 型上のプロパティ path です。`WithConfig<MainConfig>()` で境界 Config 型を宣言し、`WithConfig<LoadStep.Config>("Load")` のように Step ごとの Config 型と境界 Config 型上のプロパティ path を対応させます。
 
-実行時は、`--config` の YAML 全体を `MainConfig` へ変換します。その後、対象 Step の実行直前に `MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録します。`Convert` と `Save` も同じ規則です。
+実行時は、Step 側の既定 Config YAML、root Config の該当区画、CLI `--set` の順に値を重ねてから `MainConfig` へ変換します。その後、対象 Step の実行直前に `MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録します。`Convert` と `Save` も同じ規則です。
 
 ## 実行と検証
 
@@ -233,7 +244,7 @@ NuGet script パッケージは `dotnet-script` 互換の形式で読み込め�
 - YAML ワークフロー定義
 - Step 専用 Config 引数
 - Step 型への Config 自動注入
-- 複数 Config ファイル統合
+- 任意の複数 `--config` 指定
 - Config 型自動推論
 - `validate` での Config 型変換、`--set` 適用、Config 値検証
 - CLI の timeout オプション

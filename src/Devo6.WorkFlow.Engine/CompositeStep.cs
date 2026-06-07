@@ -192,27 +192,46 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     }
 
     /// <summary>
-    /// Entry が要求する標準 Config 型を metadata として設定します。
+    /// Entry が要求する標準 Config 型をメタ情報として設定します。
     /// </summary>
     /// <typeparam name="TConfig">StepContext に登録する標準 Config 型。</typeparam>
-    /// <returns>標準 Config 型 metadata を持つ composite entry。</returns>
+    /// <returns>標準 Config 型のメタ情報を持つ composite entry。</returns>
     public CompositeStep<TOut> WithConfig<TConfig>()
     {
         return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, steps, typeof(TConfig), StepConfigRegistrations);
     }
 
     /// <summary>
-    /// 直前に登録した Step に対応する Step 登録単位 Config 型と境界 Config 型上の property path を metadata として設定します。
+    /// 直前に登録した Step に対応する Step 登録単位 Config 型と境界 Config 型上のプロパティ パスをメタ情報として設定します。
     /// </summary>
     /// <typeparam name="TConfig">StepContext に登録する Step Config 型。</typeparam>
-    /// <param name="sectionPath">境界 Config 型上の property path。</param>
-    /// <returns>Step 登録単位 Config metadata を持つ composite entry。</returns>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
+    /// <returns>Step 登録単位 Config のメタ情報を持つ composite entry。</returns>
     public CompositeStep<TOut> WithConfig<TConfig>(string sectionPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sectionPath);
 
         StepConfigRegistration[] nextRegistrations = StepConfigRegistrations
-            .Append(new StepConfigRegistration(CurrentStep.StepType, sectionPath, typeof(TConfig), steps.Count - 1))
+            .Append(new StepConfigRegistration(CurrentStep.StepType, sectionPath, typeof(TConfig), steps.Count - 1, null))
+            .ToArray();
+
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, steps, ConfigType, nextRegistrations);
+    }
+
+    /// <summary>
+    /// 直前に登録した Step に対応する Step 登録単位 Config 型、境界 Config 型上のプロパティ パス、既定 Config YAML パスをメタ情報として設定します。
+    /// </summary>
+    /// <typeparam name="TConfig">StepContext に登録する Step Config 型。</typeparam>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
+    /// <param name="defaultConfigPath">Entry .csx のディレクトリから解決する Step 既定 Config YAML パス。</param>
+    /// <returns>明示した既定 Config YAML パスを含む Step 登録単位 Config のメタ情報を持つ composite entry。</returns>
+    public CompositeStep<TOut> WithConfig<TConfig>(string sectionPath, string defaultConfigPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sectionPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(defaultConfigPath);
+
+        StepConfigRegistration[] nextRegistrations = StepConfigRegistrations
+            .Append(new StepConfigRegistration(CurrentStep.StepType, sectionPath, typeof(TConfig), steps.Count - 1, defaultConfigPath))
             .ToArray();
 
         return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, steps, ConfigType, nextRegistrations);
@@ -784,27 +803,33 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 }
 
 /// <summary>
-/// Step 登録単位 Config の宣言 metadata を保持します。
+/// Step 登録単位 Config の宣言メタ情報を保持します。
 /// </summary>
 public sealed class StepConfigRegistration
 {
     /// <summary>
-    /// Step 登録単位 Config の宣言 metadata を初期化します。
+    /// Step 登録単位 Config の宣言メタ情報を初期化します。
     /// </summary>
     /// <param name="stepType">Config を使う Step 型。</param>
-    /// <param name="sectionPath">境界 Config 型上の property path。</param>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
     /// <param name="configType">StepContext へ登録する Config 型。</param>
     /// <param name="stepIndex">Config を登録する Step の登録順 index。</param>
-    internal StepConfigRegistration(Type stepType, string sectionPath, Type configType, int stepIndex)
+    /// <param name="defaultConfigPath">Entry .csx のディレクトリから解決する Step 既定 Config YAML パス。</param>
+    internal StepConfigRegistration(Type stepType, string sectionPath, Type configType, int stepIndex, string? defaultConfigPath)
     {
         ArgumentNullException.ThrowIfNull(stepType);
         ArgumentException.ThrowIfNullOrWhiteSpace(sectionPath);
         ArgumentNullException.ThrowIfNull(configType);
+        if (defaultConfigPath is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(defaultConfigPath);
+        }
 
         StepType = stepType;
         SectionPath = sectionPath;
         ConfigType = configType;
         StepIndex = stepIndex;
+        DefaultConfigPath = defaultConfigPath;
     }
 
     /// <summary>
@@ -813,7 +838,7 @@ public sealed class StepConfigRegistration
     public Type StepType { get; }
 
     /// <summary>
-    /// 境界 Config 型上の property path を取得します。
+    /// 境界 Config 型上のプロパティ パスを取得します。
     /// </summary>
     public string SectionPath { get; }
 
@@ -821,6 +846,11 @@ public sealed class StepConfigRegistration
     /// StepContext へ登録する Config 型を取得します。
     /// </summary>
     public Type ConfigType { get; }
+
+    /// <summary>
+    /// Entry .csx のディレクトリから解決する Step 既定 Config YAML パスを取得します。明示されていない場合は null を返します。
+    /// </summary>
+    public string? DefaultConfigPath { get; }
 
     /// <summary>
     /// Config を登録する Step の登録順 index を取得します。

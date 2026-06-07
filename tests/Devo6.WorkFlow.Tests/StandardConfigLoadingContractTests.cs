@@ -1,5 +1,6 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using System.Collections;
 using System.Diagnostics;
 using System.Reflection;
 
@@ -170,6 +171,274 @@ public sealed class StandardConfigLoadingContractTests
         Assert.Equal("input.txt", File.ReadAllText(Path.Combine(directory, "load-marker.txt")));
         Assert.Equal("False|input.txt", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
         Assert.Equal("cli.txt|input.txt", File.ReadAllText(Path.Combine(directory, "save-marker.txt")));
+    }
+
+    /// <summary>
+    /// 規約パスの Step 既定 Config、root Config の部分上書き、CLI 上書きの順に値が重なることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "Step 既定 Config は root 部分上書き後に --set で最終上書きできる")]
+    public async Task CliRunMergesConventionStepDefaultConfigWithRootOverridesAndSet()
+    {
+        string scriptPath = CreateDefaultStepConfigScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        WriteStepDefaultConfigFiles(directory, convertPrefix: "default: ", convertToUpper: true);
+        File.WriteAllText(
+            Path.Combine(directory, "appsettings.yaml"),
+            """
+            Convert:
+              Prefix: "root: "
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--config",
+            "appsettings.yaml",
+            "--set",
+            "Convert.ToUpper=false");
+
+        AssertSuccess(result);
+        Assert.Equal("default-input", File.ReadAllText(Path.Combine(directory, "load-marker.txt")));
+        Assert.Equal("False|root: |default-input", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
+        Assert.Equal("default-output|root: default-input", File.ReadAllText(Path.Combine(directory, "save-marker.txt")));
+    }
+
+    /// <summary>
+    /// root Config に宣言済み区画がなくても Step 既定 Config だけで実行できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "root Config に区画がなくても Step 既定 Config だけで実行できる")]
+    public async Task CliRunUsesStepDefaultConfigWhenRootSectionIsMissing()
+    {
+        string scriptPath = CreateDefaultStepConfigScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        WriteStepDefaultConfigFiles(directory, convertPrefix: "default: ", convertToUpper: true);
+        File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+
+        AssertSuccess(result);
+        Assert.Equal("True|default: |default-input", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
+        Assert.Equal("default-output|default: DEFAULT-INPUT", File.ReadAllText(Path.Combine(directory, "save-marker.txt")));
+    }
+
+    /// <summary>
+    /// 明示 defaultConfigPath オーバーロードが規約パスより優先されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "WithConfig の明示 defaultConfigPath は規約パスより優先される")]
+    public async Task CliRunUsesExplicitStepDefaultConfigPath()
+    {
+        string scriptPath = CreateDefaultStepConfigScript(useExplicitConvertDefaultConfigPath: true);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        WriteStepDefaultConfigFiles(directory, convertPrefix: "convention: ", convertToUpper: true);
+        Directory.CreateDirectory(Path.Combine(directory, "config"));
+        File.WriteAllText(
+            Path.Combine(directory, "config", "convert-default.yaml"),
+            """
+            Prefix: "explicit: "
+            ToUpper: false
+            """);
+        File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+
+        AssertSuccess(result);
+        Assert.Equal("False|explicit: |default-input", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
+        Assert.Equal("default-output|explicit: default-input", File.ReadAllText(Path.Combine(directory, "save-marker.txt")));
+    }
+
+    /// <summary>
+    /// root Config の宣言済み区画が YAML パスだけの既存形式でも実行できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "root Config の YAML パス形式は既存互換として動作する")]
+    public async Task CliRunKeepsScalarYamlSectionCompatibility()
+    {
+        string scriptPath = CreateDefaultStepConfigScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        WriteStepDefaultConfigFiles(directory, convertPrefix: "scalar: ", convertToUpper: false);
+        File.WriteAllText(
+            Path.Combine(directory, "appsettings.yaml"),
+            """
+            Load: steps/load/appsettings.yaml
+            Convert: steps/convert/appsettings.yaml
+            Save: steps/save/appsettings.yaml
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+
+        AssertSuccess(result);
+        Assert.Equal("False|scalar: |default-input", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
+        Assert.Equal("default-output|scalar: default-input", File.ReadAllText(Path.Combine(directory, "save-marker.txt")));
+    }
+
+    /// <summary>
+    /// 外側 CompositeStep から同じ StepInput で実行した内側 CompositeStep が Step Config を取得できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "内側 CompositeStep の Step も外側で読み込んだ Step Config を取得できる")]
+    public async Task CliRunPassesMergedStepConfigToNestedCompositeStep()
+    {
+        string scriptPath = CreateNestedCompositeStepConfigScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "inner"));
+        File.WriteAllText(
+            Path.Combine(directory, "steps", "inner", "appsettings.yaml"),
+            """
+            Prefix: "default: "
+            ToUpper: true
+            """);
+        File.WriteAllText(
+            Path.Combine(directory, "appsettings.yaml"),
+            """
+            Inner:
+              Prefix: "root: "
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--config",
+            "appsettings.yaml",
+            "--set",
+            "Inner.ToUpper=false");
+
+        AssertSuccess(result);
+        Assert.Equal("False|root: |nested", File.ReadAllText(Path.Combine(directory, "nested-inner-marker.txt")));
+    }
+
+    /// <summary>
+    /// LoadStepConfigs が Step 側既定 Config YAML の入れ子マッピングを root Config で再帰的に部分上書きすることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "LoadStepConfigs は入れ子マッピングを root Config で再帰的に部分上書きする")]
+    public void LoadStepConfigsRecursivelyMergesNestedMappingOverrides()
+    {
+        string directory = CreateConfigDirectory();
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "convert"));
+        File.WriteAllText(
+            Path.Combine(directory, "steps", "convert", "appsettings.yaml"),
+            """
+            Format:
+              Prefix: "default-prefix"
+              Suffix: "default-suffix"
+              Details:
+                Locale: "ja-JP"
+                Trim: true
+            Items:
+              - default-a
+              - default-b
+            Mode: "default-mode"
+            """);
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(
+            configPath,
+            """
+            Convert:
+              Format:
+                Prefix: "root-prefix"
+                Details:
+                  Trim: false
+            """);
+        StepConfigRegistration registration = CreateStepConfigRegistration("Convert", typeof(MergedStepConfig));
+
+        MergedStepConfig config = LoadOnlyStepConfig<MergedStepConfig>(configPath, directory, typeof(UnitBoundaryConfig), [registration]);
+
+        Assert.Equal("root-prefix", config.Format.Prefix);
+        Assert.Equal("default-suffix", config.Format.Suffix);
+        Assert.Equal("ja-JP", config.Format.Details.Locale);
+        Assert.False(config.Format.Details.Trim);
+        Assert.Equal(["default-a", "default-b"], config.Items);
+        Assert.Equal("default-mode", config.Mode);
+    }
+
+    /// <summary>
+    /// LoadStepConfigs が配列と単一値を root Config 側の値で丸ごと置換することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "LoadStepConfigs は配列と単一値を root Config 側の値で置換する")]
+    public void LoadStepConfigsReplacesSequencesAndScalarsWithRootValues()
+    {
+        string directory = CreateConfigDirectory();
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "convert"));
+        File.WriteAllText(
+            Path.Combine(directory, "steps", "convert", "appsettings.yaml"),
+            """
+            Format:
+              Prefix: "default-prefix"
+              Suffix: "default-suffix"
+              Details:
+                Locale: "ja-JP"
+                Trim: true
+            Items:
+              - default-a
+              - default-b
+            Mode: "default-mode"
+            """);
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(
+            configPath,
+            """
+            Convert:
+              Items:
+                - root-only
+              Mode: "root-mode"
+            """);
+        StepConfigRegistration registration = CreateStepConfigRegistration("Convert", typeof(MergedStepConfig));
+
+        MergedStepConfig config = LoadOnlyStepConfig<MergedStepConfig>(configPath, directory, typeof(UnitBoundaryConfig), [registration]);
+
+        Assert.Equal(["root-only"], config.Items);
+        Assert.Equal("root-mode", config.Mode);
+        Assert.Equal("default-prefix", config.Format.Prefix);
+        Assert.Equal("default-suffix", config.Format.Suffix);
+    }
+
+    /// <summary>
+    /// LoadStepConfigs が root 区画も Step 側既定 YAML もない場合に区画欠落として失敗することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "LoadStepConfigs は root 区画も既定 YAML もない場合に区画欠落で失敗する")]
+    public void LoadStepConfigsFailsWhenRootSectionAndDefaultYamlAreMissing()
+    {
+        string directory = CreateConfigDirectory();
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(configPath, "{}" + Environment.NewLine);
+        StepConfigRegistration registration = CreateStepConfigRegistration("Convert", typeof(MergedStepConfig));
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            LoadStepConfigsViaReflection(configPath, directory, typeof(UnitBoundaryConfig), [registration]));
+
+        Assert.Equal("Config section was not found: Convert", exception.Message);
+    }
+
+    /// <summary>
+    /// LoadStepConfigs の規約パス変換が Text.Convert を steps/text/convert/appsettings.yaml として読むことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "LoadStepConfigs は Text.Convert の規約パスから Step 既定 Config を読む")]
+    public void LoadStepConfigsUsesConventionPathForNestedSectionPath()
+    {
+        string directory = CreateConfigDirectory();
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "text", "convert"));
+        File.WriteAllText(
+            Path.Combine(directory, "steps", "text", "convert", "appsettings.yaml"),
+            """
+            Format:
+              Prefix: "convention-prefix"
+              Suffix: "convention-suffix"
+              Details:
+                Locale: "en-US"
+                Trim: true
+            Items:
+              - convention-item
+            Mode: "convention-mode"
+            """);
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(configPath, "{}" + Environment.NewLine);
+        StepConfigRegistration registration = CreateStepConfigRegistration("Text.Convert", typeof(MergedStepConfig));
+
+        MergedStepConfig config = LoadOnlyStepConfig<MergedStepConfig>(configPath, directory, typeof(NestedBoundaryConfig), [registration]);
+
+        Assert.Equal("convention-prefix", config.Format.Prefix);
+        Assert.Equal("convention-suffix", config.Format.Suffix);
+        Assert.Equal("en-US", config.Format.Details.Locale);
+        Assert.True(config.Format.Details.Trim);
+        Assert.Equal(["convention-item"], config.Items);
+        Assert.Equal("convention-mode", config.Mode);
     }
 
     /// <summary>
@@ -1100,6 +1369,312 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
+    /// Step 側既定 Config YAML の結合契約を検査する共通 .csx を作成します。
+    /// </summary>
+    /// <param name="useExplicitConvertDefaultConfigPath">変換 Step だけ明示 defaultConfigPath オーバーロードを使うかどうか。</param>
+    /// <returns>作成した Entry .csx パス。</returns>
+    private static string CreateDefaultStepConfigScript(bool useExplicitConvertDefaultConfigPath = false)
+    {
+        string convertConfigCall = useExplicitConvertDefaultConfigPath
+            ? ".WithConfig<ConvertStep.Config>(\"Convert\", \"config/convert-default.yaml\")"
+            : ".WithConfig<ConvertStep.Config>(\"Convert\")";
+
+        return CreateScript(
+            $$"""
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            /// <summary>
+            /// Step 既定 Config 結合検査用の境界 Config です。
+            /// </summary>
+            public sealed class MainConfig
+            {
+                /// <summary>
+                /// 読み込み Step の Config を取得または設定します。
+                /// </summary>
+                public LoadStep.Config Load { get; set; } = new();
+
+                /// <summary>
+                /// 変換 Step の Config を取得または設定します。
+                /// </summary>
+                public ConvertStep.Config Convert { get; set; } = new();
+
+                /// <summary>
+                /// 保存 Step の Config を取得または設定します。
+                /// </summary>
+                public SaveStep.Config Save { get; set; } = new();
+            }
+
+            /// <summary>
+            /// 読み込み結果を保持します。
+            /// </summary>
+            public sealed class LoadResult
+            {
+                /// <summary>
+                /// 読み込んだ文字列を取得または設定します。
+                /// </summary>
+                public string Text { get; set; } = "";
+            }
+
+            /// <summary>
+            /// 変換入力を保持します。
+            /// </summary>
+            public sealed class ConvertInput
+            {
+                /// <summary>
+                /// 変換対象の文字列を取得または設定します。
+                /// </summary>
+                public string Text { get; set; } = "";
+            }
+
+            /// <summary>
+            /// 変換結果を保持します。
+            /// </summary>
+            public sealed class ConvertResult
+            {
+                /// <summary>
+                /// 変換後の文字列を取得または設定します。
+                /// </summary>
+                public string Text { get; set; } = "";
+            }
+
+            /// <summary>
+            /// 保存入力を保持します。
+            /// </summary>
+            public sealed class SaveInput
+            {
+                /// <summary>
+                /// 保存対象の文字列を取得または設定します。
+                /// </summary>
+                public string Text { get; set; } = "";
+            }
+
+            /// <summary>
+            /// Config の Path プロパティを読み込み結果として返す Step です。
+            /// </summary>
+            public sealed class LoadStep : IStep<LoadResult>
+            {
+                /// <summary>
+                /// 読み込み Step の Config です。
+                /// </summary>
+                public sealed class Config
+                {
+                    /// <summary>
+                    /// 読み込み元を表す文字列を取得または設定します。
+                    /// </summary>
+                    public string Path { get; set; } = "";
+                }
+
+                /// <summary>
+                /// Config の Path プロパティを確認用ファイルに記録して返します。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>読み込み結果。</returns>
+                public LoadResult Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    Config config = input.Context.Get<Config>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "load-marker.txt"), config.Path);
+
+                    return new LoadResult { Text = config.Path };
+                }
+            }
+
+            /// <summary>
+            /// Prefix プロパティと ToUpper プロパティに従って文字列を変換する Step です。
+            /// </summary>
+            public sealed class ConvertStep : IStep<ConvertResult>
+            {
+                /// <summary>
+                /// 変換 Step の Config です。
+                /// </summary>
+                public sealed class Config
+                {
+                    /// <summary>
+                    /// 変換後の文字列に付与する接頭辞を取得または設定します。
+                    /// </summary>
+                    public string Prefix { get; set; } = "";
+
+                    /// <summary>
+                    /// 入力文字列を大文字へ変換するかどうかを取得または設定します。
+                    /// </summary>
+                    public bool ToUpper { get; set; }
+                }
+
+                /// <summary>
+                /// Config を反映した変換結果を確認用ファイルに記録して返します。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>変換結果。</returns>
+                public ConvertResult Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    Config config = input.Context.Get<Config>();
+                    ConvertInput convertInput = input.Get<ConvertInput>();
+                    string body = config.ToUpper ? convertInput.Text.ToUpperInvariant() : convertInput.Text;
+                    string text = config.Prefix + body;
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "convert-marker.txt"), $"{config.ToUpper}|{config.Prefix}|{convertInput.Text}");
+
+                    return new ConvertResult { Text = text };
+                }
+            }
+
+            /// <summary>
+            /// 変換結果と保存 Config を確認用ファイルに記録する Step です。
+            /// </summary>
+            public sealed class SaveStep : IStep<Unit>
+            {
+                /// <summary>
+                /// 保存 Step の Config です。
+                /// </summary>
+                public sealed class Config
+                {
+                    /// <summary>
+                    /// 保存先を表す文字列を取得または設定します。
+                    /// </summary>
+                    public string Path { get; set; } = "";
+                }
+
+                /// <summary>
+                /// 保存先と保存内容を確認用ファイルに記録します。
+                /// </summary>
+                /// <param name="input">Step 入力。</param>
+                /// <returns>Unit 値。</returns>
+                public Unit Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    Config config = input.Context.Get<Config>();
+                    SaveInput saveInput = input.Get<SaveInput>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "save-marker.txt"), $"{config.Path}|{saveInput.Text}");
+
+                    return Unit.Value;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<LoadStep, LoadResult>()
+                    .WithConfig<MainConfig>()
+                    .WithConfig<LoadStep.Config>("Load")
+                    .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
+                .Run<ConvertStep, ConvertResult>()
+                    {{convertConfigCall}}
+                    .Produce<SaveInput>(x => new SaveInput { Text = x.Text })
+                .Run<SaveStep, Unit>()
+                    .WithConfig<SaveStep.Config>("Save")
+                    .Discard();
+            """);
+    }
+
+    /// <summary>
+    /// 規約パスに Step ごとの既定 Config YAML を作成します。
+    /// </summary>
+    /// <param name="directory">Entry .csx があるディレクトリ。</param>
+    /// <param name="convertPrefix">変換 Step 既定 Config の接頭辞。</param>
+    /// <param name="convertToUpper">変換 Step 既定 Config の大文字変換設定。</param>
+    private static void WriteStepDefaultConfigFiles(string directory, string convertPrefix, bool convertToUpper)
+    {
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "load"));
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "convert"));
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "save"));
+        File.WriteAllText(Path.Combine(directory, "steps", "load", "appsettings.yaml"), "Path: default-input" + Environment.NewLine);
+        File.WriteAllText(
+            Path.Combine(directory, "steps", "convert", "appsettings.yaml"),
+            $"Prefix: \"{convertPrefix}\"{Environment.NewLine}ToUpper: {convertToUpper.ToString().ToLowerInvariant()}{Environment.NewLine}");
+        File.WriteAllText(Path.Combine(directory, "steps", "save", "appsettings.yaml"), "Path: default-output" + Environment.NewLine);
+    }
+
+    /// <summary>
+    /// 内側 CompositeStep が外側で読み込んだ Step Config を取得する契約を検査する .csx を作成します。
+    /// </summary>
+    /// <returns>作成した Entry .csx パス。</returns>
+    private static string CreateNestedCompositeStepConfigScript()
+    {
+        return CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            /// <summary>
+            /// 内側 CompositeStep 用 Config を束ねる境界 Config です。
+            /// </summary>
+            public sealed class MainConfig
+            {
+                /// <summary>
+                /// 内側 Step の Config を取得または設定します。
+                /// </summary>
+                public InnerTransformStep.Config Inner { get; set; } = new();
+            }
+
+            /// <summary>
+            /// 内側 CompositeStep を同じ StepInput で実行する外側 Step です。
+            /// </summary>
+            public sealed class InvokeInnerCompositeStep : IStep<Unit>
+            {
+                /// <summary>
+                /// 同じ StepInput と StepContext を使って内側 CompositeStep を実行します。
+                /// </summary>
+                /// <param name="input">外側 CompositeStep から受け取った Step 入力。</param>
+                /// <returns>Unit 値。</returns>
+                public Unit Execute(StepInput input)
+                {
+                    CompositeStep<string> inner = CompositeStep.Define("Inner")
+                        .Run<InnerTransformStep, string>()
+                            .StoreAs();
+                    inner.Execute(input);
+
+                    return Unit.Value;
+                }
+            }
+
+            /// <summary>
+            /// 外側 CompositeStep が読み込んだ Config を内側 CompositeStep 内で取得する Step です。
+            /// </summary>
+            public sealed class InnerTransformStep : IStep<string>
+            {
+                /// <summary>
+                /// 内側 Step が参照する Config です。
+                /// </summary>
+                public sealed class Config
+                {
+                    /// <summary>
+                    /// 変換後の文字列に付与する接頭辞を取得または設定します。
+                    /// </summary>
+                    public string Prefix { get; set; } = "";
+
+                    /// <summary>
+                    /// 入力文字列を大文字へ変換するかどうかを取得または設定します。
+                    /// </summary>
+                    public bool ToUpper { get; set; }
+                }
+
+                /// <summary>
+                /// StepContext から Config を取得し、結合済み値を確認用ファイルへ記録します。
+                /// </summary>
+                /// <param name="input">内側 CompositeStep から受け取った Step 入力。</param>
+                /// <returns>Config を反映した文字列。</returns>
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    Config config = input.Context.Get<Config>();
+                    string body = config.ToUpper ? "nested".ToUpperInvariant() : "nested";
+                    string text = config.Prefix + body;
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "nested-inner-marker.txt"), $"{config.ToUpper}|{config.Prefix}|{body}");
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<InvokeInnerCompositeStep, Unit>()
+                    .WithConfig<MainConfig>()
+                    .WithConfig<InnerTransformStep.Config>("Inner")
+                    .Discard();
+            """);
+    }
+
+    /// <summary>
     /// prefix 関係の Step Config property path を宣言する .csx を作成します。
     /// </summary>
     /// <returns>作成した Entry .csx path。</returns>
@@ -1274,6 +1849,88 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
+    /// Config 読み込み検査用の一時ディレクトリを作成します。
+    /// </summary>
+    /// <returns>作成した一時ディレクトリのパス。</returns>
+    private static string CreateConfigDirectory()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "devo6-workflow-standard-config-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+
+        return directory;
+    }
+
+    /// <summary>
+    /// internal コンストラクターを使って StepConfigRegistration を作成します。
+    /// </summary>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
+    /// <param name="configType">StepContext へ登録する Config 型。</param>
+    /// <returns>作成した StepConfigRegistration。</returns>
+    private static StepConfigRegistration CreateStepConfigRegistration(string sectionPath, Type configType)
+    {
+        ConstructorInfo constructor = typeof(StepConfigRegistration).GetConstructor(
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            [typeof(Type), typeof(string), typeof(Type), typeof(int), typeof(string)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("StepConfigRegistration constructor was not found.");
+
+        return (StepConfigRegistration)constructor.Invoke([typeof(ConfigMetadataStep), sectionPath, configType, 0, null]);
+    }
+
+    /// <summary>
+    /// StandardConfigLoader.LoadStepConfigs を反射で呼び出し、単一 Step Config を取得します。
+    /// </summary>
+    /// <typeparam name="TConfig">取得する Step Config 型。</typeparam>
+    /// <param name="configPath">読み込む root Config YAML のパス。</param>
+    /// <param name="entryDirectory">Entry .csx が存在する扱いのディレクトリ。</param>
+    /// <param name="boundaryConfigType">境界 Config 型。</param>
+    /// <param name="registrations">Step Config 登録メタ情報。</param>
+    /// <returns>読み込まれた Step Config インスタンス。</returns>
+    private static TConfig LoadOnlyStepConfig<TConfig>(
+        string configPath,
+        string entryDirectory,
+        Type boundaryConfigType,
+        IReadOnlyList<StepConfigRegistration> registrations)
+    {
+        object stepConfigValue = Assert.Single(LoadStepConfigsViaReflection(configPath, entryDirectory, boundaryConfigType, registrations));
+        object? config = stepConfigValue.GetType().GetProperty("Config", BindingFlags.Instance | BindingFlags.Public)?.GetValue(stepConfigValue);
+
+        return Assert.IsType<TConfig>(config);
+    }
+
+    /// <summary>
+    /// StandardConfigLoader.LoadStepConfigs を公開 API 追加なしで反射呼び出しします。
+    /// </summary>
+    /// <param name="configPath">読み込む root Config YAML のパス。</param>
+    /// <param name="entryDirectory">Entry .csx が存在する扱いのディレクトリ。</param>
+    /// <param name="boundaryConfigType">境界 Config 型。</param>
+    /// <param name="registrations">Step Config 登録メタ情報。</param>
+    /// <returns>反射で取得した StepConfigValue の一覧。</returns>
+    private static IReadOnlyList<object> LoadStepConfigsViaReflection(
+        string configPath,
+        string entryDirectory,
+        Type boundaryConfigType,
+        IReadOnlyList<StepConfigRegistration> registrations)
+    {
+        Type loaderType = typeof(CompositeStep).Assembly.GetType("Devo6.WorkFlow.Engine.StandardConfigLoader", throwOnError: true)
+            ?? throw new InvalidOperationException("StandardConfigLoader type was not found.");
+        MethodInfo method = loaderType.GetMethod("LoadStepConfigs", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("StandardConfigLoader.LoadStepConfigs method was not found.");
+
+        try
+        {
+            object? result = method.Invoke(null, [configPath, entryDirectory, boundaryConfigType, registrations, null]);
+
+            return ((IEnumerable)(result ?? throw new InvalidOperationException("LoadStepConfigs returned null."))).Cast<object>().ToArray();
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException is not null)
+        {
+            throw exception.InnerException;
+        }
+    }
+
+    /// <summary>
     /// solution file を持つ repository root を探索します。
     /// </summary>
     /// <returns>repository root path。</returns>
@@ -1298,6 +1955,97 @@ public sealed class StandardConfigLoadingContractTests
     /// 公開 API metadata 検査で使う Config 型です。
     /// </summary>
     private sealed class ApiConfig;
+
+    /// <summary>
+    /// 単体寄り Step Config 結合検査で使う境界 Config 型です。
+    /// </summary>
+    private sealed class UnitBoundaryConfig
+    {
+        /// <summary>
+        /// 変換 Step の Config を取得または設定します。
+        /// </summary>
+        public MergedStepConfig Convert { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 入れ子区画指定の規約パス検査で使う境界 Config 型です。
+    /// </summary>
+    private sealed class NestedBoundaryConfig
+    {
+        /// <summary>
+        /// Text グループの Config を取得または設定します。
+        /// </summary>
+        public TextBoundaryConfig Text { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Text グループ配下の Step Config を保持します。
+    /// </summary>
+    private sealed class TextBoundaryConfig
+    {
+        /// <summary>
+        /// 変換 Step の Config を取得または設定します。
+        /// </summary>
+        public MergedStepConfig Convert { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Step 側既定 Config YAML と root Config の結合結果を検査する Config 型です。
+    /// </summary>
+    private sealed class MergedStepConfig
+    {
+        /// <summary>
+        /// 表示形式の入れ子 Config を取得または設定します。
+        /// </summary>
+        public FormatStepConfig Format { get; set; } = new();
+
+        /// <summary>
+        /// 配列の置換を検査する項目一覧を取得または設定します。
+        /// </summary>
+        public List<string> Items { get; set; } = new();
+
+        /// <summary>
+        /// 単一値の置換を検査するモードを取得または設定します。
+        /// </summary>
+        public string Mode { get; set; } = "";
+    }
+
+    /// <summary>
+    /// 入れ子マッピングの再帰結合を検査する Config 型です。
+    /// </summary>
+    private sealed class FormatStepConfig
+    {
+        /// <summary>
+        /// 接頭辞を取得または設定します。
+        /// </summary>
+        public string Prefix { get; set; } = "";
+
+        /// <summary>
+        /// 接尾辞を取得または設定します。
+        /// </summary>
+        public string Suffix { get; set; } = "";
+
+        /// <summary>
+        /// 詳細設定を取得または設定します。
+        /// </summary>
+        public FormatDetailsConfig Details { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 入れ子マッピングのさらに内側の再帰結合を検査する Config 型です。
+    /// </summary>
+    private sealed class FormatDetailsConfig
+    {
+        /// <summary>
+        /// ロケール値を取得または設定します。
+        /// </summary>
+        public string Locale { get; set; } = "";
+
+        /// <summary>
+        /// トリム設定を取得または設定します。
+        /// </summary>
+        public bool Trim { get; set; }
+    }
 
     /// <summary>
     /// 公開 API metadata 検査で使う最小 Step です。
