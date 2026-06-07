@@ -1,5 +1,18 @@
 # `Devo6.WorkFlow`
 
+[![検査](https://github.com/ssaattww/Devo6.WorkFlow/actions/workflows/pr-xunit-tests.yml/badge.svg)](https://github.com/ssaattww/Devo6.WorkFlow/actions/workflows/pr-xunit-tests.yml)
+[![公開](https://github.com/ssaattww/Devo6.WorkFlow/actions/workflows/publish-nuget.yml/badge.svg)](https://github.com/ssaattww/Devo6.WorkFlow/actions/workflows/publish-nuget.yml)
+
+**CLI ツール用パッケージ**
+[![NuGet 版](https://img.shields.io/nuget/v/Devo6.WorkFlow.Cli)](https://www.nuget.org/packages/Devo6.WorkFlow.Cli/)
+[![NuGet 導入数](https://img.shields.io/nuget/dt/Devo6.WorkFlow.Cli)](https://www.nuget.org/packages/Devo6.WorkFlow.Cli/)
+
+**参照用パッケージ**
+[![NuGet 版](https://img.shields.io/nuget/v/Devo6.WorkFlow.Engine)](https://www.nuget.org/packages/Devo6.WorkFlow.Engine/)
+[![NuGet 導入数](https://img.shields.io/nuget/dt/Devo6.WorkFlow.Engine)](https://www.nuget.org/packages/Devo6.WorkFlow.Engine/)
+
+---
+
 `Devo6.WorkFlow` は、C# script だけでワークフローを定義して実行するエンジンです。利用者は `.csx` に Step 型、入出力型、Config 型、実行入口の `CompositeStep` を書きます。YAML は実行時 Config の入力であり、ワークフロー定義には使いません。
 
 Step は `IStep<TOut>` または `IAsyncStep<TOut>` を実装します。Step 間の値は `Produce` や `StoreAs` で明示的に渡し、Step は必要な値を `StepInput` から取得します。Config は Step 専用引数ではなく、対象 Step の実行直前に `StepContext` へ登録されます。

@@ -15,6 +15,10 @@
     <Authors>Devo6</Authors>
     <Description>Devo6 WorkFlow command-line tool for running and validating csx workflows.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/ssaattww/Devo6.WorkFlow</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ssaattww/Devo6.WorkFlow</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup>

@@ -83,9 +83,7 @@ public sealed class ProjectSkeletonTests
     [Fact(DisplayName = "CLI プロジェクトはツール用パッケージとして設定されている")]
     public void CliProjectIsConfiguredAsDotnetToolPackage()
     {
-        XDocument project = XDocument.Load(Path.Combine(
-            RepositoryRoot,
-            "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"));
+        XDocument project = LoadCliProject();
 
         Assert.Equal("Exe", GetProjectProperty(project, "OutputType"));
         Assert.Equal("true", GetProjectProperty(project, "IsPackable"));
@@ -93,6 +91,7 @@ public sealed class ProjectSkeletonTests
         Assert.Equal("engine", GetProjectProperty(project, "ToolCommandName"));
         Assert.Equal("Devo6.WorkFlow.Cli", GetProjectProperty(project, "PackageId"));
         Assert.Equal("README.md", GetProjectProperty(project, "PackageReadmeFile"));
+        AssertPackageRepositoryMetadata(project);
     }
 
     /// <summary>
@@ -107,7 +106,24 @@ public sealed class ProjectSkeletonTests
         Assert.Equal("true", GetProjectProperty(project, "IsPackable"));
         Assert.Equal("Devo6.WorkFlow.Engine", GetProjectProperty(project, "PackageId"));
         Assert.Equal("README.md", GetProjectProperty(project, "PackageReadmeFile"));
+        AssertPackageRepositoryMetadata(project);
         Assert.Equal("all", abstractionsReference.Attribute("PrivateAssets")?.Value);
+    }
+
+    /// <summary>
+    /// README に検査状況と NuGet パッケージの badge があることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "README は検査状況と NuGet パッケージの badge を表示する")]
+    public void ReadmeDisplaysStatusAndNuGetBadges()
+    {
+        string readme = File.ReadAllText(Path.Combine(RepositoryRoot, "README.md"));
+
+        Assert.Contains("actions/workflows/pr-xunit-tests.yml/badge.svg", readme);
+        Assert.Contains("actions/workflows/publish-nuget.yml/badge.svg", readme);
+        Assert.Contains("img.shields.io/nuget/v/Devo6.WorkFlow.Cli", readme);
+        Assert.Contains("img.shields.io/nuget/dt/Devo6.WorkFlow.Cli", readme);
+        Assert.Contains("img.shields.io/nuget/v/Devo6.WorkFlow.Engine", readme);
+        Assert.Contains("img.shields.io/nuget/dt/Devo6.WorkFlow.Engine", readme);
     }
 
     /// <summary>
@@ -156,6 +172,11 @@ public sealed class ProjectSkeletonTests
                 .Cast<string>();
 
             Assert.DoesNotContain("Devo6.WorkFlow.Abstractions", dependencyIds);
+            Assert.Equal("https://github.com/ssaattww/Devo6.WorkFlow", nuspec.Root?
+                .Element(ns + "metadata")?
+                .Element(ns + "repository")?
+                .Attribute("url")?
+                .Value);
         }
         finally
         {
@@ -196,6 +217,17 @@ public sealed class ProjectSkeletonTests
     }
 
     /// <summary>
+    /// CLI プロジェクトファイルを読み込みます。
+    /// </summary>
+    /// <returns>読み込み済みプロジェクトファイル。</returns>
+    private static XDocument LoadCliProject()
+    {
+        return XDocument.Load(Path.Combine(
+            RepositoryRoot,
+            "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"));
+    }
+
+    /// <summary>
     /// プロジェクトファイルから指定した MSBuild プロパティの値を取得します。
     /// </summary>
     /// <param name="project">読み込み済みプロジェクトファイル。</param>
@@ -207,6 +239,18 @@ public sealed class ProjectSkeletonTests
             .Descendants(propertyName)
             .Select(element => element.Value)
             .Single();
+    }
+
+    /// <summary>
+    /// パッケージのリポジトリ metadata が設定されていることを検査します。
+    /// </summary>
+    /// <param name="project">読み込み済みプロジェクトファイル。</param>
+    private static void AssertPackageRepositoryMetadata(XDocument project)
+    {
+        Assert.Equal("https://github.com/ssaattww/Devo6.WorkFlow", GetProjectProperty(project, "PackageProjectUrl"));
+        Assert.Equal("https://github.com/ssaattww/Devo6.WorkFlow", GetProjectProperty(project, "RepositoryUrl"));
+        Assert.Equal("git", GetProjectProperty(project, "RepositoryType"));
+        Assert.Equal("MIT", GetProjectProperty(project, "PackageLicenseExpression"));
     }
 
     /// <summary>
