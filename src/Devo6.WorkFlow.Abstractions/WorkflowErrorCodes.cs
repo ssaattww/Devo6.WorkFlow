@@ -46,6 +46,16 @@ public static class WorkflowErrorCodes
     public const string ScriptNugetRestoreFailed = "SCRIPT_NUGET_RESTORE_FAILED";
 
     /// <summary>
+    /// NuGet lock file が必要な script で見つからなかったことを示します。
+    /// </summary>
+    public const string ScriptNugetLockMissing = "SCRIPT_NUGET_LOCK_MISSING";
+
+    /// <summary>
+    /// NuGet lock file と script の NuGet 依存関係が一致しなかったことを示します。
+    /// </summary>
+    public const string ScriptNugetLockMismatch = "SCRIPT_NUGET_LOCK_MISMATCH";
+
+    /// <summary>
     /// Indicates that the loaded script used an incompatible workflow API identity.
     /// </summary>
     public const string ScriptApiIdentityMismatch = "SCRIPT_API_IDENTITY_MISMATCH";

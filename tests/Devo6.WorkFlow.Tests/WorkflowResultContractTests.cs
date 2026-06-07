@@ -74,6 +74,8 @@ public sealed class WorkflowResultContractTests
         Assert.Equal("SCRIPT_LOAD_CYCLE_DETECTED", WorkflowErrorCodes.ScriptLoadCycleDetected);
         Assert.Equal("SCRIPT_REFERENCE_NOT_ALLOWED", WorkflowErrorCodes.ScriptReferenceNotAllowed);
         Assert.Equal("SCRIPT_NUGET_RESTORE_FAILED", WorkflowErrorCodes.ScriptNugetRestoreFailed);
+        Assert.Equal("SCRIPT_NUGET_LOCK_MISSING", WorkflowErrorCodes.ScriptNugetLockMissing);
+        Assert.Equal("SCRIPT_NUGET_LOCK_MISMATCH", WorkflowErrorCodes.ScriptNugetLockMismatch);
         Assert.Equal("SCRIPT_API_IDENTITY_MISMATCH", WorkflowErrorCodes.ScriptApiIdentityMismatch);
         Assert.Equal("STEP_INPUT_NOT_FOUND", WorkflowErrorCodes.StepInputNotFound);
         Assert.Equal("STEP_INPUT_TYPE_MISMATCH", WorkflowErrorCodes.StepInputTypeMismatch);

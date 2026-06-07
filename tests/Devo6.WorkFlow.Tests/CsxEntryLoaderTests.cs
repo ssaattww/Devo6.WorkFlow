@@ -9,6 +9,31 @@ namespace Devo6.WorkFlow.Tests;
 public sealed class CsxEntryLoaderTests
 {
     /// <summary>
+    /// 標準 NuGet lock file 名を表します。
+    /// </summary>
+    private const string DefaultNuGetLockFileName = "devo6.nuget.lock.yaml";
+
+    /// <summary>
+    /// 標準 fixture の target framework を表します。
+    /// </summary>
+    private const string DefaultTargetFramework = "net8.0";
+
+    /// <summary>
+    /// 標準 fixture の runtime identifier を表します。
+    /// </summary>
+    private const string DefaultRuntimeIdentifier = "linux-x64";
+
+    /// <summary>
+    /// 標準 fixture の Dotnet.Script.Core version を表します。
+    /// </summary>
+    private const string DefaultDotnetScriptCoreVersion = "2.0.1";
+
+    /// <summary>
+    /// 標準 fixture の package source 一覧を表します。
+    /// </summary>
+    private static readonly string[] DefaultPackageSources = ["https://api.nuget.org/v3/index.json"];
+
+    /// <summary>
     /// Verifies that the default Main entry can be loaded from a sample .csx file and executed successfully.
     /// </summary>
     [Fact(DisplayName = "sample csx から既定 Entry 名 Main の CompositeStep を取得して実行できる")]
@@ -463,30 +488,34 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that an explicitly allowed NuGet reference can restore and expose package types to the workflow script.
+    /// 許可された NuGet 参照が lock file と fake provider だけで実行できることを確認します。
     /// </summary>
-    [Fact(DisplayName = "許可された NuGet 参照は package 型を使って実行できる")]
-    public void 許可されたNuGet参照はPackage型を使って実行できる()
+    [Fact(DisplayName = "許可された NuGet 参照は lock file と fake provider で実行できる")]
+    public void AllowedNuGetReferenceCanExecuteWithLockFileAndFakeProvider()
     {
         string scriptPath = CreateScript(
             """
             #r "nuget: NodaTime, 3.1.11"
             using Devo6.WorkFlow.Abstractions;
             using Devo6.WorkFlow.Engine;
-            using NodaTime;
 
             public sealed class JsonStep : IStep<string>
             {
-                public string Execute(StepInput input) => new LocalDate(2024, 1, 2).Year.ToString();
+                public string Execute(StepInput input) => "locked";
             }
 
             var Main = CompositeStep.Define("Main")
                 .Run<JsonStep, string>()
                     .StoreAs();
             """);
+        WriteDefaultLockFile(scriptPath, "NodaTime", "3.1.11");
         var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
         {
             AllowedNuGetReferences = [new CsxNuGetReference("NodaTime", "3.1.11")],
+            NuGetDependencyGraphProvider = new FakeNuGetDependencyGraphProvider(
+                new CsxNuGetDependencyGraph(
+                    [new CsxResolvedNuGetDependency("NodaTime", "3.1.11", isDirect: true)],
+                    resolutionMetadata: CreateDefaultResolutionMetadata())),
         });
 
         WorkflowResult result = loader.Execute(scriptPath);
@@ -537,5 +566,64 @@ public sealed class CsxEntryLoaderTests
     private static string CreateWorkflowDirectory()
     {
         return Path.Combine(Path.GetTempPath(), "devo6-workflow-tests", Guid.NewGuid().ToString("N"));
+    }
+
+    /// <summary>
+    /// 標準名の NuGet lock file fixture を作成します。
+    /// </summary>
+    private static void WriteDefaultLockFile(string scriptPath, string packageId, string version)
+    {
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string lockPath = Path.Combine(directory, DefaultNuGetLockFileName);
+        File.WriteAllText(
+            lockPath,
+            $$"""
+            version: 1
+            entry: main.csx
+            targetFramework: {{DefaultTargetFramework}}
+            runtimeIdentifier: {{DefaultRuntimeIdentifier}}
+            packageSources:
+              - {{DefaultPackageSources[0]}}
+            dotnetScriptCoreVersion: {{DefaultDotnetScriptCoreVersion}}
+            directReferences:
+              - packageId: {{packageId}}
+                version: {{version}}
+            resolvedDependencies:
+              - packageId: {{packageId}}
+                version: {{version}}
+                direct: true
+            """);
+    }
+
+    /// <summary>
+    /// fake provider が返す標準の NuGet 解決 metadata を作成します。
+    /// </summary>
+    private static CsxNuGetResolutionMetadata CreateDefaultResolutionMetadata()
+    {
+        return new CsxNuGetResolutionMetadata(
+            DefaultTargetFramework,
+            DefaultRuntimeIdentifier,
+            DefaultPackageSources,
+            DefaultDotnetScriptCoreVersion);
+    }
+
+    /// <summary>
+    /// 外部通信を使わずに固定 graph を返す NuGet dependency graph provider です。
+    /// </summary>
+    /// <param name="graph">返却する固定 NuGet dependency graph。</param>
+    private sealed class FakeNuGetDependencyGraphProvider(CsxNuGetDependencyGraph graph) : ICsxNuGetDependencyGraphProvider
+    {
+        /// <summary>
+        /// 固定された NuGet dependency graph を返します。
+        /// </summary>
+        /// <param name="directReferences">script から読んだ直接 NuGet 参照。</param>
+        /// <param name="request">dependency graph 解決 request。</param>
+        /// <returns>固定された NuGet dependency graph。</returns>
+        public CsxNuGetDependencyGraph Resolve(
+            IReadOnlyList<CsxNuGetReference> directReferences,
+            CsxNuGetDependencyGraphRequest request)
+        {
+            return graph;
+        }
     }
 }

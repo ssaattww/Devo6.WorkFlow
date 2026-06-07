@@ -663,6 +663,8 @@ public enum FailurePolicy
 - Step 実行時例外
 - `.csx` のロード失敗
 - NuGet 解決失敗
+- NuGet ロックファイルの欠落
+- NuGet ロックファイルと参照または解決済み依存関係の不一致
 - `#load` 解決失敗
 
 Entry が標準 Config 型を要求している場合の `--config` 未指定と、存在しない Config ファイルは `CONFIG_NOT_FOUND` とする。
@@ -1193,7 +1195,40 @@ Step 実行、`StepInput` 構築、Config 保持、検証、ログ、実行結�
 | 浮動バージョン | 初期版では禁止 |
 | パッケージ参照元 | 既定の参照元または明示許可された参照元のみ許可 |
 
-NuGet 復元は `Dotnet.Script.Core` の仕組みを利用してよい。
+NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` の仕組みを利用する。
+
+エンジン側では `dotnet restore` の起動、一時 `.csproj` の生成、`project.assets.json` の解析、実行時 assembly 解決を再実装しない。
+
+T27 の NuGet ロックファイルは `#r "nuget: package, version"` の再現性を対象とする。
+
+`#load "nuget: ..."` は T28 の対象であり、T27 では引き続き拒否する。
+
+ロックファイルは Entry `.csx` の workflow root に置く YAML とし、ファイル名は `devo6.nuget.lock.yaml` とする。
+
+ロックファイルには以下を記録する。
+
+- 直接参照 (`directReferences`)
+- 解決済み依存関係 (`resolvedDependencies`)
+- 対象 (`targetFramework`)
+- 実行時識別子 (`runtimeIdentifier`)
+- パッケージ参照元 (`packageSources`)
+- `Dotnet.Script.Core` version
+
+絶対実行時 assembly path は実行環境に依存するため、ロックファイルには記録しない。
+
+ロック検証の順序は以下とする。
+
+1. 許可外 NuGet 参照と浮動バージョンを拒否する
+2. NuGet 参照がある場合、復元前に `devo6.nuget.lock.yaml` の欠落を拒否する
+3. 直接参照のパッケージ ID と version がロックファイルと一致しない場合、復元前に拒否する
+4. `Dotnet.Script.Core` による依存関係解決を行う
+5. 解決済み依存関係をロックファイルと比較する
+
+リポジトリ側はロックファイルの読み書き、欠落、不一致、許可済み直接参照の完全一致、解決済み依存関係の比較だけを薄く持つ。
+
+通常の `dotnet test` が外部通信に依存しないよう、依存関係 provider は注入できる設計にする。
+
+本番 provider は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` を使い、検査 provider は固定データを返す。
 
 ただし、NuGet 参照は実行できるコードを増やすため、信頼済みワークフローでのみ使う。
 
@@ -1218,6 +1253,10 @@ Script 側で公開 API assembly の別コピーが読み込まれた場合、�
 - エンジンのバージョン
 
 いずれかが変わった場合、該当キャッシュは無効化する。
+
+`Dotnet.Script.DependencyModel.Context.CachedRestorer` は復元結果を再利用するための性能キャッシュであり、T27 の利用者向け NuGet ロックファイルではない。
+
+`script.csproj.cache` や `project.assets.json` をリポジトリの公開ロックファイル仕様として扱わない。
 
 ### 16.6 信頼境界
 
@@ -1267,6 +1306,9 @@ engine validate main.csx --config appsettings.yaml
 - `#load` の循環
 - `#r` の許可判定
 - NuGet 参照の許可判定
+- NuGet ロックファイルの欠落
+- NuGet ロックファイルと直接参照の不一致
+- NuGet ロックファイルと解決済み依存関係の不一致
 - `.csx` のコンパイル
 - `IStep<TOut>` または `IAsyncStep<TOut>` 実装の確認
 - `StepInput` と `StepContext` の API 互換
@@ -1404,6 +1446,8 @@ SCRIPT_COMPILE_FAILED
 SCRIPT_LOAD_FAILED
 SCRIPT_LOAD_CYCLE_DETECTED
 SCRIPT_REFERENCE_NOT_ALLOWED
+SCRIPT_NUGET_LOCK_MISSING
+SCRIPT_NUGET_LOCK_MISMATCH
 SCRIPT_NUGET_RESTORE_FAILED
 SCRIPT_API_IDENTITY_MISMATCH
 STEP_INPUT_NOT_FOUND
@@ -1429,6 +1473,12 @@ timeout と外部キャンセルの両方が観測される場合は、外部キ
 retry で全試行が失敗した場合も、retry 専用エラーコードは追加せず `STEP_EXECUTION_FAILED` を使う。
 
 `Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とし、既存の Step 失敗として扱う。
+
+NuGet ロックファイルが必要な workflow root に存在しない場合は `SCRIPT_NUGET_LOCK_MISSING` とする。
+
+ロックファイルと直接参照、またはロックファイルと解決済み依存関係が一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする。
+
+`Dotnet.Script.Core` による NuGet 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする。
 
 trace 値を `System.Text.Json` で直列化できない場合でも、T26 の既定動作では workflow を失敗させない。
 
@@ -1581,6 +1631,7 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - 並列実行
 - 分岐実行
 - 統合実行
+- NuGet ロックファイル
 - `#load "nuget: ..."`
 - 未信頼 `.csx` の安全な実行
 - 複数 Config
@@ -1616,6 +1667,10 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - NuGet ロックファイル
 - `#load "nuget: ..."`
 - Step 名の名前空間化
+
+NuGet ロックファイルは T27 で、`#r "nuget: package, version"` の再現性を扱う。
+
+`#load "nuget: ..."` は T28 で扱い、T27 のロックファイル採用時点では対象外のままとする。
 
 ---
 
@@ -1793,6 +1848,20 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 T26 では秘匿値の自動検出、属性による秘匿、プロパティ単位秘匿、trace 永続化形式、CLI 出力形式、大きさ上限、厳格失敗動作は決めない。
 
 `TRACE_SERIALIZATION_FAILED` は将来の trace 外部保存や厳格動作用として残し、T26 の既定 workflow 失敗には使わない。
+
+### 21.6 csx 依存の再現性
+
+P10 では、NuGet 参照の再現性を T27 と T28 に分けて扱う。
+
+T27 では `#r "nuget: package, version"` の NuGet ロックファイルを採用する。
+
+T28 では `#load "nuget: ..."` を扱う。
+
+T27 の NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
+
+エンジン側は利用者向けの `devo6.nuget.lock.yaml` と、許可済み直接参照、解決済み依存関係、`targetFramework`、実行時識別子、パッケージ参照元、`Dotnet.Script.Core` version の比較を担当する。
+
+通常の検査では固定データを返す依存関係 provider を使い、外部 NuGet source への通信を必須にしない。
 
 ---
 
