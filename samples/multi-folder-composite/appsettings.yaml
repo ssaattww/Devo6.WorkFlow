@@ -1,7 +1,3 @@
-Load:
-  Path: input/source.txt
-Convert:
-  Prefix: "converted: "
-  ToUpper: true
-Save:
-  Path: output/result.txt
+Load: steps/load/appsettings.yaml
+Convert: steps/convert/appsettings.yaml
+Save: steps/save/appsettings.yaml

@@ -25,10 +25,7 @@ public sealed class SampleWorkflowTests
         string configPath = Path.Combine(sampleDirectory, "appsettings.yaml");
         string outputPath = Path.Combine(sampleDirectory, "output/result.txt");
 
-        if (Directory.Exists(Path.GetDirectoryName(outputPath)!))
-        {
-            Directory.Delete(Path.GetDirectoryName(outputPath)!, recursive: true);
-        }
+        DeleteOutputDirectory(outputPath);
 
         WorkflowResult result = new CsxEntryLoader().Execute(
             entryPath,
@@ -45,26 +42,54 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
-    /// 複数フォルダの Step ごとに置いた YAML 断片が実行用 Config と一致することを検査します。
+    /// 結合した Step YAML 断片に CLI override を適用できることを検査します。
     /// </summary>
-    [Fact(DisplayName = "複数フォルダの Step YAML 断片は実行用 Config と一致する")]
-    public void MultiFolderCompositeSampleYamlFragmentsMatchRuntimeConfig()
+    [Fact(DisplayName = "結合した Step YAML 断片へ CLI override を適用できる")]
+    public void MultiFolderCompositeSampleMergedYamlFragmentsCanBeOverridden()
+    {
+        string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
+        string entryPath = Path.Combine(sampleDirectory, "main.csx");
+        string configPath = Path.Combine(sampleDirectory, "appsettings.yaml");
+        string outputPath = Path.Combine(sampleDirectory, "output/result.txt");
+
+        DeleteOutputDirectory(outputPath);
+
+        WorkflowResult result = new CsxEntryLoader().Execute(
+            entryPath,
+            options: new WorkflowExecutionOptions(engineArguments: new EngineArguments
+            {
+                EntryPath = entryPath,
+                ConfigPath = configPath,
+                Settings = new Dictionary<string, string>
+                {
+                    ["Convert.ToUpper"] = "false",
+                },
+            }));
+
+        Assert.True(
+            result.Succeeded,
+            $"エラーコード: {result.ErrorCode}{Environment.NewLine}エラー: {result.ErrorMessage}");
+        Assert.Equal("converted: hello from multi folder composite", File.ReadAllText(outputPath));
+    }
+
+    /// <summary>
+    /// 実行用 Config が複数フォルダの Step YAML 断片を参照していることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "実行用 Config は複数フォルダの Step YAML 断片を参照する")]
+    public void MultiFolderCompositeSampleRuntimeConfigReferencesYamlFragments()
     {
         string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
         string rootConfigPath = Path.Combine(sampleDirectory, "appsettings.yaml");
 
         Assert.Equal(
-            ReadYamlScalar(rootConfigPath, "Load", "Path"),
-            ReadYamlScalar(Path.Combine(sampleDirectory, "steps/load/appsettings.yaml"), "Path"));
+            "steps/load/appsettings.yaml",
+            ReadYamlScalar(rootConfigPath, "Load"));
         Assert.Equal(
-            ReadYamlScalar(rootConfigPath, "Convert", "Prefix"),
-            ReadYamlScalar(Path.Combine(sampleDirectory, "steps/convert/appsettings.yaml"), "Prefix"));
+            "steps/convert/appsettings.yaml",
+            ReadYamlScalar(rootConfigPath, "Convert"));
         Assert.Equal(
-            ReadYamlScalar(rootConfigPath, "Convert", "ToUpper"),
-            ReadYamlScalar(Path.Combine(sampleDirectory, "steps/convert/appsettings.yaml"), "ToUpper"));
-        Assert.Equal(
-            ReadYamlScalar(rootConfigPath, "Save", "Path"),
-            ReadYamlScalar(Path.Combine(sampleDirectory, "steps/save/appsettings.yaml"), "Path"));
+            "steps/save/appsettings.yaml",
+            ReadYamlScalar(rootConfigPath, "Save"));
     }
 
     /// <summary>
@@ -86,6 +111,19 @@ public sealed class SampleWorkflowTests
         }
 
         throw new InvalidOperationException("リポジトリルートを特定できませんでした。");
+    }
+
+    /// <summary>
+    /// サンプルの出力ディレクトリを削除します。
+    /// </summary>
+    /// <param name="outputPath">出力ファイル path。</param>
+    private static void DeleteOutputDirectory(string outputPath)
+    {
+        string outputDirectory = Path.GetDirectoryName(outputPath)!;
+        if (Directory.Exists(outputDirectory))
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
     }
 
     /// <summary>

@@ -53,9 +53,10 @@ internal static class StandardConfigLoader
         EnsureSectionPathsAreUsable(registrations);
         string[] sectionPaths = registrations.Select(registration => registration.SectionPath).Distinct(StringComparer.Ordinal).ToArray();
         EnsureSettingsTargetDeclared(sectionPaths, settings);
-        EnsureSectionsExist(configPath, sectionPaths);
+        YamlNode configRoot = LoadConfigRoot(configPath, sectionPaths);
+        EnsureSectionsExist(configRoot, sectionPaths);
 
-        object boundaryConfig = Deserialize(configPath, boundaryConfigType);
+        object boundaryConfig = Deserialize(configRoot, boundaryConfigType);
         ApplySettings(boundaryConfig, settings);
         Validate(boundaryConfig);
 
@@ -78,10 +79,159 @@ internal static class StandardConfigLoader
     /// <returns>YAML から作成した標準 Config instance。</returns>
     private static object Deserialize(string configPath, Type configType)
     {
-        using StreamReader reader = File.OpenText(configPath);
+        return Deserialize(LoadConfigRoot(configPath, []), configType);
+    }
+
+    /// <summary>
+    /// YAML node を標準 Config 型の instance に変換します。
+    /// </summary>
+    /// <param name="rootNode">変換する YAML root node。</param>
+    /// <param name="configType">変換先の標準 Config 型。</param>
+    /// <returns>YAML から作成した標準 Config instance。</returns>
+    private static object Deserialize(YamlNode rootNode, Type configType)
+    {
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        var yaml = new YamlStream(new YamlDocument(rootNode));
+        yaml.Save(writer, assignAnchors: false);
+        using var reader = new StringReader(writer.ToString());
         object? config = Deserializer.Deserialize(reader, configType);
 
         return EnsureConfigInstance(config, configType);
+    }
+
+    /// <summary>
+    /// YAML file を読み込み、宣言済み Step Config 区画の YAML 断片参照を解決します。
+    /// </summary>
+    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="referenceSectionPaths">YAML 断片参照を許可する区画 path。</param>
+    /// <returns>YAML 断片参照を反映した root node。</returns>
+    private static YamlNode LoadConfigRoot(string configPath, IReadOnlyList<string> referenceSectionPaths)
+    {
+        string fullPath = Path.GetFullPath(configPath);
+        YamlNode rootNode = ReadYamlRoot(fullPath);
+        var loadingPaths = new HashSet<string>(StringComparer.Ordinal) { fullPath };
+
+        ResolveYamlFragmentReferences(
+            rootNode,
+            "",
+            Path.GetDirectoryName(fullPath)!,
+            referenceSectionPaths.ToHashSet(StringComparer.Ordinal),
+            loadingPaths);
+
+        return rootNode;
+    }
+
+    /// <summary>
+    /// YAML file の root node を読み取ります。
+    /// </summary>
+    /// <param name="configPath">読み取る YAML file path。</param>
+    /// <returns>読み取った YAML root node。</returns>
+    private static YamlNode ReadYamlRoot(string configPath)
+    {
+        var yaml = new YamlStream();
+        using StreamReader reader = File.OpenText(configPath);
+        yaml.Load(reader);
+
+        return yaml.Documents.Count == 0
+            ? new YamlMappingNode()
+            : yaml.Documents[0].RootNode;
+    }
+
+    /// <summary>
+    /// 宣言済み区画の値が YAML 断片 path の場合、その YAML root node へ差し替えます。
+    /// </summary>
+    /// <param name="node">検査対象の YAML node。</param>
+    /// <param name="currentPath">現在の property path。</param>
+    /// <param name="baseDirectory">相対 path の基準 directory。</param>
+    /// <param name="referenceSectionPaths">YAML 断片参照を許可する区画 path。</param>
+    /// <param name="loadingPaths">循環検出用の読み込み中 path。</param>
+    private static void ResolveYamlFragmentReferences(
+        YamlNode node,
+        string currentPath,
+        string baseDirectory,
+        IReadOnlySet<string> referenceSectionPaths,
+        HashSet<string> loadingPaths)
+    {
+        if (node is not YamlMappingNode mapping)
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<YamlNode, YamlNode> child in mapping.Children.ToArray())
+        {
+            if (child.Key is not YamlScalarNode keyNode || string.IsNullOrWhiteSpace(keyNode.Value))
+            {
+                continue;
+            }
+
+            string childPath = string.IsNullOrEmpty(currentPath) ? keyNode.Value : $"{currentPath}.{keyNode.Value}";
+            if (referenceSectionPaths.Contains(childPath)
+                && child.Value is YamlScalarNode valueNode
+                && IsYamlFragmentPath(valueNode.Value))
+            {
+                mapping.Children[child.Key] = LoadYamlFragment(valueNode.Value!, baseDirectory, referenceSectionPaths, loadingPaths);
+                continue;
+            }
+
+            ResolveYamlFragmentReferences(child.Value, childPath, baseDirectory, referenceSectionPaths, loadingPaths);
+        }
+    }
+
+    /// <summary>
+    /// YAML 断片 path を読み込みます。
+    /// </summary>
+    /// <param name="fragmentPath">YAML 断片 path。</param>
+    /// <param name="baseDirectory">相対 path の基準 directory。</param>
+    /// <param name="referenceSectionPaths">YAML 断片参照を許可する区画 path。</param>
+    /// <param name="loadingPaths">循環検出用の読み込み中 path。</param>
+    /// <returns>読み込んだ YAML root node。</returns>
+    private static YamlNode LoadYamlFragment(
+        string fragmentPath,
+        string baseDirectory,
+        IReadOnlySet<string> referenceSectionPaths,
+        HashSet<string> loadingPaths)
+    {
+        string resolvedPath = Path.GetFullPath(
+            Path.IsPathRooted(fragmentPath) ? fragmentPath : Path.Combine(baseDirectory, fragmentPath));
+
+        if (!File.Exists(resolvedPath))
+        {
+            throw new FileNotFoundException($"Config fragment file was not found: {resolvedPath}", resolvedPath);
+        }
+
+        if (!loadingPaths.Add(resolvedPath))
+        {
+            throw new InvalidOperationException($"Config fragment cycle was detected: {resolvedPath}");
+        }
+
+        try
+        {
+            YamlNode rootNode = ReadYamlRoot(resolvedPath);
+            ResolveYamlFragmentReferences(
+                rootNode,
+                "",
+                Path.GetDirectoryName(resolvedPath)!,
+                referenceSectionPaths,
+                loadingPaths);
+
+            return rootNode;
+        }
+        finally
+        {
+            loadingPaths.Remove(resolvedPath);
+        }
+    }
+
+    /// <summary>
+    /// scalar 値が YAML 断片 path として扱えるかどうかを判定します。
+    /// </summary>
+    /// <param name="value">判定する scalar 値。</param>
+    /// <returns>YAML 断片 path の場合は true。</returns>
+    private static bool IsYamlFragmentPath(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && (value.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase)
+                || value.EndsWith(".yml", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -102,23 +252,14 @@ internal static class StandardConfigLoader
     }
 
     /// <summary>
-    /// YAML file から境界 Config 型上の property path に対応する node を取得します。
+    /// YAML root node から境界 Config 型上の property path に対応する node を取得します。
     /// </summary>
-    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="rootNode">読み込み済み YAML root node。</param>
     /// <param name="sectionPath">境界 Config 型上の property path。</param>
     /// <returns>指定された property path の YAML node。</returns>
-    private static YamlNode ReadSectionNode(string configPath, string sectionPath)
+    private static YamlNode ReadSectionNode(YamlNode rootNode, string sectionPath)
     {
-        var yaml = new YamlStream();
-        using StreamReader reader = File.OpenText(configPath);
-        yaml.Load(reader);
-
-        if (yaml.Documents.Count == 0)
-        {
-            throw new InvalidOperationException($"Config section was not found: {sectionPath}");
-        }
-
-        YamlNode current = yaml.Documents[0].RootNode;
+        YamlNode current = rootNode;
         foreach (string segment in SplitSectionPath(sectionPath))
         {
             if (current is not YamlMappingNode mapping)
@@ -171,15 +312,15 @@ internal static class StandardConfigLoader
     }
 
     /// <summary>
-    /// 宣言済み property path が YAML file に存在することを検査します。
+    /// 宣言済み property path が YAML root node に存在することを検査します。
     /// </summary>
-    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="rootNode">読み込み済み YAML root node。</param>
     /// <param name="sectionPaths">存在を確認する宣言済み property path の一覧。</param>
-    private static void EnsureSectionsExist(string configPath, IReadOnlyList<string> sectionPaths)
+    private static void EnsureSectionsExist(YamlNode rootNode, IReadOnlyList<string> sectionPaths)
     {
         foreach (string sectionPath in sectionPaths)
         {
-            _ = ReadSectionNode(configPath, sectionPath);
+            _ = ReadSectionNode(rootNode, sectionPath);
         }
     }
 

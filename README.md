@@ -64,6 +64,8 @@ samples/multi-folder-composite/
 engine run samples/multi-folder-composite/main.csx --config appsettings.yaml
 ```
 
+この例の `appsettings.yaml` は、`Load`、`Convert`、`Save` の各区画で Step フォルダ内の YAML 断片を参照します。実行時は参照先を結合してから境界 Config 型へ変換します。
+
 ## 最小例
 
 `main.csx`:
@@ -242,7 +244,7 @@ NuGet script パッケージは `dotnet-script` 互換の形式で読み込め�
 - YAML ワークフロー定義
 - Step 専用 Config 引数
 - Step 型への Config 自動注入
-- 複数 Config ファイル統合
+- 任意の複数 `--config` 指定
 - Config 型自動推論
 - `validate` での Config 型変換、`--set` 適用、Config 値検証
 - CLI の timeout オプション
