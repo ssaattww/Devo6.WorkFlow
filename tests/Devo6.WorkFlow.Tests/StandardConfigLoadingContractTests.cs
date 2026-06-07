@@ -1,5 +1,6 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using System.Collections;
 using System.Diagnostics;
 using System.Reflection;
 
@@ -301,6 +302,143 @@ public sealed class StandardConfigLoadingContractTests
 
         AssertSuccess(result);
         Assert.Equal("False|root: |nested", File.ReadAllText(Path.Combine(directory, "nested-inner-marker.txt")));
+    }
+
+    /// <summary>
+    /// LoadStepConfigs が Step 側既定 Config YAML の入れ子マッピングを root Config で再帰的に部分上書きすることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "LoadStepConfigs は入れ子マッピングを root Config で再帰的に部分上書きする")]
+    public void LoadStepConfigsRecursivelyMergesNestedMappingOverrides()
+    {
+        string directory = CreateConfigDirectory();
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "convert"));
+        File.WriteAllText(
+            Path.Combine(directory, "steps", "convert", "appsettings.yaml"),
+            """
+            Format:
+              Prefix: "default-prefix"
+              Suffix: "default-suffix"
+              Details:
+                Locale: "ja-JP"
+                Trim: true
+            Items:
+              - default-a
+              - default-b
+            Mode: "default-mode"
+            """);
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(
+            configPath,
+            """
+            Convert:
+              Format:
+                Prefix: "root-prefix"
+                Details:
+                  Trim: false
+            """);
+        StepConfigRegistration registration = CreateStepConfigRegistration("Convert", typeof(MergedStepConfig));
+
+        MergedStepConfig config = LoadOnlyStepConfig<MergedStepConfig>(configPath, directory, typeof(UnitBoundaryConfig), [registration]);
+
+        Assert.Equal("root-prefix", config.Format.Prefix);
+        Assert.Equal("default-suffix", config.Format.Suffix);
+        Assert.Equal("ja-JP", config.Format.Details.Locale);
+        Assert.False(config.Format.Details.Trim);
+        Assert.Equal(["default-a", "default-b"], config.Items);
+        Assert.Equal("default-mode", config.Mode);
+    }
+
+    /// <summary>
+    /// LoadStepConfigs が配列と単一値を root Config 側の値で丸ごと置換することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "LoadStepConfigs は配列と単一値を root Config 側の値で置換する")]
+    public void LoadStepConfigsReplacesSequencesAndScalarsWithRootValues()
+    {
+        string directory = CreateConfigDirectory();
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "convert"));
+        File.WriteAllText(
+            Path.Combine(directory, "steps", "convert", "appsettings.yaml"),
+            """
+            Format:
+              Prefix: "default-prefix"
+              Suffix: "default-suffix"
+              Details:
+                Locale: "ja-JP"
+                Trim: true
+            Items:
+              - default-a
+              - default-b
+            Mode: "default-mode"
+            """);
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(
+            configPath,
+            """
+            Convert:
+              Items:
+                - root-only
+              Mode: "root-mode"
+            """);
+        StepConfigRegistration registration = CreateStepConfigRegistration("Convert", typeof(MergedStepConfig));
+
+        MergedStepConfig config = LoadOnlyStepConfig<MergedStepConfig>(configPath, directory, typeof(UnitBoundaryConfig), [registration]);
+
+        Assert.Equal(["root-only"], config.Items);
+        Assert.Equal("root-mode", config.Mode);
+        Assert.Equal("default-prefix", config.Format.Prefix);
+        Assert.Equal("default-suffix", config.Format.Suffix);
+    }
+
+    /// <summary>
+    /// LoadStepConfigs が root 区画も Step 側既定 YAML もない場合に区画欠落として失敗することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "LoadStepConfigs は root 区画も既定 YAML もない場合に区画欠落で失敗する")]
+    public void LoadStepConfigsFailsWhenRootSectionAndDefaultYamlAreMissing()
+    {
+        string directory = CreateConfigDirectory();
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(configPath, "{}" + Environment.NewLine);
+        StepConfigRegistration registration = CreateStepConfigRegistration("Convert", typeof(MergedStepConfig));
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            LoadStepConfigsViaReflection(configPath, directory, typeof(UnitBoundaryConfig), [registration]));
+
+        Assert.Equal("Config section was not found: Convert", exception.Message);
+    }
+
+    /// <summary>
+    /// LoadStepConfigs の規約パス変換が Text.Convert を steps/text/convert/appsettings.yaml として読むことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "LoadStepConfigs は Text.Convert の規約パスから Step 既定 Config を読む")]
+    public void LoadStepConfigsUsesConventionPathForNestedSectionPath()
+    {
+        string directory = CreateConfigDirectory();
+        Directory.CreateDirectory(Path.Combine(directory, "steps", "text", "convert"));
+        File.WriteAllText(
+            Path.Combine(directory, "steps", "text", "convert", "appsettings.yaml"),
+            """
+            Format:
+              Prefix: "convention-prefix"
+              Suffix: "convention-suffix"
+              Details:
+                Locale: "en-US"
+                Trim: true
+            Items:
+              - convention-item
+            Mode: "convention-mode"
+            """);
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(configPath, "{}" + Environment.NewLine);
+        StepConfigRegistration registration = CreateStepConfigRegistration("Text.Convert", typeof(MergedStepConfig));
+
+        MergedStepConfig config = LoadOnlyStepConfig<MergedStepConfig>(configPath, directory, typeof(NestedBoundaryConfig), [registration]);
+
+        Assert.Equal("convention-prefix", config.Format.Prefix);
+        Assert.Equal("convention-suffix", config.Format.Suffix);
+        Assert.Equal("en-US", config.Format.Details.Locale);
+        Assert.True(config.Format.Details.Trim);
+        Assert.Equal(["convention-item"], config.Items);
+        Assert.Equal("convention-mode", config.Mode);
     }
 
     /// <summary>
@@ -1711,6 +1849,88 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
+    /// Config 読み込み検査用の一時ディレクトリを作成します。
+    /// </summary>
+    /// <returns>作成した一時ディレクトリのパス。</returns>
+    private static string CreateConfigDirectory()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "devo6-workflow-standard-config-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+
+        return directory;
+    }
+
+    /// <summary>
+    /// internal コンストラクターを使って StepConfigRegistration を作成します。
+    /// </summary>
+    /// <param name="sectionPath">境界 Config 型上のプロパティ パス。</param>
+    /// <param name="configType">StepContext へ登録する Config 型。</param>
+    /// <returns>作成した StepConfigRegistration。</returns>
+    private static StepConfigRegistration CreateStepConfigRegistration(string sectionPath, Type configType)
+    {
+        ConstructorInfo constructor = typeof(StepConfigRegistration).GetConstructor(
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            [typeof(Type), typeof(string), typeof(Type), typeof(int), typeof(string)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("StepConfigRegistration constructor was not found.");
+
+        return (StepConfigRegistration)constructor.Invoke([typeof(ConfigMetadataStep), sectionPath, configType, 0, null]);
+    }
+
+    /// <summary>
+    /// StandardConfigLoader.LoadStepConfigs を反射で呼び出し、単一 Step Config を取得します。
+    /// </summary>
+    /// <typeparam name="TConfig">取得する Step Config 型。</typeparam>
+    /// <param name="configPath">読み込む root Config YAML のパス。</param>
+    /// <param name="entryDirectory">Entry .csx が存在する扱いのディレクトリ。</param>
+    /// <param name="boundaryConfigType">境界 Config 型。</param>
+    /// <param name="registrations">Step Config 登録メタ情報。</param>
+    /// <returns>読み込まれた Step Config インスタンス。</returns>
+    private static TConfig LoadOnlyStepConfig<TConfig>(
+        string configPath,
+        string entryDirectory,
+        Type boundaryConfigType,
+        IReadOnlyList<StepConfigRegistration> registrations)
+    {
+        object stepConfigValue = Assert.Single(LoadStepConfigsViaReflection(configPath, entryDirectory, boundaryConfigType, registrations));
+        object? config = stepConfigValue.GetType().GetProperty("Config", BindingFlags.Instance | BindingFlags.Public)?.GetValue(stepConfigValue);
+
+        return Assert.IsType<TConfig>(config);
+    }
+
+    /// <summary>
+    /// StandardConfigLoader.LoadStepConfigs を公開 API 追加なしで反射呼び出しします。
+    /// </summary>
+    /// <param name="configPath">読み込む root Config YAML のパス。</param>
+    /// <param name="entryDirectory">Entry .csx が存在する扱いのディレクトリ。</param>
+    /// <param name="boundaryConfigType">境界 Config 型。</param>
+    /// <param name="registrations">Step Config 登録メタ情報。</param>
+    /// <returns>反射で取得した StepConfigValue の一覧。</returns>
+    private static IReadOnlyList<object> LoadStepConfigsViaReflection(
+        string configPath,
+        string entryDirectory,
+        Type boundaryConfigType,
+        IReadOnlyList<StepConfigRegistration> registrations)
+    {
+        Type loaderType = typeof(CompositeStep).Assembly.GetType("Devo6.WorkFlow.Engine.StandardConfigLoader", throwOnError: true)
+            ?? throw new InvalidOperationException("StandardConfigLoader type was not found.");
+        MethodInfo method = loaderType.GetMethod("LoadStepConfigs", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("StandardConfigLoader.LoadStepConfigs method was not found.");
+
+        try
+        {
+            object? result = method.Invoke(null, [configPath, entryDirectory, boundaryConfigType, registrations, null]);
+
+            return ((IEnumerable)(result ?? throw new InvalidOperationException("LoadStepConfigs returned null."))).Cast<object>().ToArray();
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException is not null)
+        {
+            throw exception.InnerException;
+        }
+    }
+
+    /// <summary>
     /// solution file を持つ repository root を探索します。
     /// </summary>
     /// <returns>repository root path。</returns>
@@ -1735,6 +1955,97 @@ public sealed class StandardConfigLoadingContractTests
     /// 公開 API metadata 検査で使う Config 型です。
     /// </summary>
     private sealed class ApiConfig;
+
+    /// <summary>
+    /// 単体寄り Step Config 結合検査で使う境界 Config 型です。
+    /// </summary>
+    private sealed class UnitBoundaryConfig
+    {
+        /// <summary>
+        /// 変換 Step の Config を取得または設定します。
+        /// </summary>
+        public MergedStepConfig Convert { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 入れ子区画指定の規約パス検査で使う境界 Config 型です。
+    /// </summary>
+    private sealed class NestedBoundaryConfig
+    {
+        /// <summary>
+        /// Text グループの Config を取得または設定します。
+        /// </summary>
+        public TextBoundaryConfig Text { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Text グループ配下の Step Config を保持します。
+    /// </summary>
+    private sealed class TextBoundaryConfig
+    {
+        /// <summary>
+        /// 変換 Step の Config を取得または設定します。
+        /// </summary>
+        public MergedStepConfig Convert { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Step 側既定 Config YAML と root Config の結合結果を検査する Config 型です。
+    /// </summary>
+    private sealed class MergedStepConfig
+    {
+        /// <summary>
+        /// 表示形式の入れ子 Config を取得または設定します。
+        /// </summary>
+        public FormatStepConfig Format { get; set; } = new();
+
+        /// <summary>
+        /// 配列の置換を検査する項目一覧を取得または設定します。
+        /// </summary>
+        public List<string> Items { get; set; } = new();
+
+        /// <summary>
+        /// 単一値の置換を検査するモードを取得または設定します。
+        /// </summary>
+        public string Mode { get; set; } = "";
+    }
+
+    /// <summary>
+    /// 入れ子マッピングの再帰結合を検査する Config 型です。
+    /// </summary>
+    private sealed class FormatStepConfig
+    {
+        /// <summary>
+        /// 接頭辞を取得または設定します。
+        /// </summary>
+        public string Prefix { get; set; } = "";
+
+        /// <summary>
+        /// 接尾辞を取得または設定します。
+        /// </summary>
+        public string Suffix { get; set; } = "";
+
+        /// <summary>
+        /// 詳細設定を取得または設定します。
+        /// </summary>
+        public FormatDetailsConfig Details { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 入れ子マッピングのさらに内側の再帰結合を検査する Config 型です。
+    /// </summary>
+    private sealed class FormatDetailsConfig
+    {
+        /// <summary>
+        /// ロケール値を取得または設定します。
+        /// </summary>
+        public string Locale { get; set; } = "";
+
+        /// <summary>
+        /// トリム設定を取得または設定します。
+        /// </summary>
+        public bool Trim { get; set; }
+    }
 
     /// <summary>
     /// 公開 API metadata 検査で使う最小 Step です。
