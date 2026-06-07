@@ -66,9 +66,9 @@ var Main = CompositeStep.Define("Main")
 
 ### 3.1 逐次実行
 
-初期版では、Step は定義順に逐次実行する。
+Step は定義順に逐次実行する。
 
-以下は初期版では対象外とする。
+以下は逐次実行モデルには含めない。
 
 - 並列実行
 - 分岐実行
@@ -258,12 +258,12 @@ public sealed class ConvertStep : IStep<ConvertResult>
 {
     public ConvertResult Execute(StepInput input)
     {
-        AppConfig config = input.Context.Get<AppConfig>();
+        ConvertConfig config = input.Context.Get<ConvertConfig>();
         ConvertInput convertInput = input.Get<ConvertInput>();
 
         return new ConvertResult
         {
-            ConvertedText = config.Convert.ToUpper
+            ConvertedText = config.ToUpper
                 ? convertInput.Text.ToUpperInvariant()
                 : convertInput.Text
         };
@@ -283,49 +283,160 @@ Config ファイルの標準形式は YAML とする。
 
 Config ファイルの相対パスは、Entry `.csx` の存在するディレクトリを基準に解決する。
 
-例:
+`appsettings.yaml` の例:
 
 ```yaml
-load:
-  path: ./input.txt
+Load:
+  Path: ./input.txt
 
-convert:
-  toUpper: true
+Convert:
+  ToUpper: true
+  Mode: Normal
 
-save:
-  path: ./output.txt
+Save:
+  Path: ./output.txt
 ```
+
+`Load`、`Convert`、`Save` は各 Step 用の Config 区画である。
+
+これらの区画は、Step 登録単位で宣言された Config 型に対応する。`Load` は `LoadConfig`、`Convert` は `ConvertConfig`、`Save` は `SaveConfig` として読み込む。YAML の区画名は Step 実行順を定義しない。Step 実行順は `.csx` の `CompositeStep` 定義で決める。
 
 ### 6.3 Config 読み込み
 
 標準 Config 読み込みは、エンジンの実行前処理として行う。
 
-Entry 側は、標準 Config 型を `CompositeStep.Define("Main").WithConfig<AppConfig>()` で明示する。
+推奨契約では、Entry 側は Step 登録単位で Config 型と YAML 区画 path を明示する。
 
-`WithConfig<TConfig>()` は Entry のメタ情報として Config 型を保持する。Step 専用引数は増やさない。
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .WithConfig<LoadConfig>("Load")
+        .Produce<ConvertInput>(x => new ConvertInput
+        {
+            Text = x.Text
+        })
+    .Run<ConvertStep, ConvertResult>()
+        .WithConfig<ConvertConfig>("Convert")
+        .Produce<SaveInput>(x => new SaveInput
+        {
+            Content = x.ConvertedText
+        })
+    .Run<SaveStep, Unit>()
+        .WithConfig<SaveConfig>("Save")
+        .Discard();
+```
 
-CLI `run` は Entry `.csx` をロードした後、Entry の Config 型メタ情報と `--config` の path を使って YAML を型付き Config に変換する。
+`WithConfig<TConfig>(string sectionPath)` は、直前に登録した Step のメタ情報として Config 型と YAML 区画 path を保持する。Step 専用引数は増やさない。
 
-変換に成功した Config は、最初の Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。
+CLI `run` は Entry `.csx` をロードした後、宣言されたすべての Step Config を単一 `--config` YAML ファイルから読み込む。
 
-T23 では単一 Config 型のみを扱う。複数 Config、名前付き Config、Config 型自動推論は対象外とする。
+`run` は最初の Step を実行する前に、宣言済み Step Config の YAML 区画選択、型変換、CLI override 適用、`DataAnnotations` と `IValidatableObject` の検証をすべて完了する。いずれか 1 つでも失敗した場合、最初の Step は実行しない。
 
-Config 読み込み用 Step をユーザーが明示的に定義する方式も、標準外の拡張として許可する。
+実行時は、対象 Step の実行直前に、その Step 用の検証済み Config を `StepContext.Set<TConfig>(config)` で登録する。
 
-Config 読み込み Step を使用する場合は、ワークフローの先頭またはまとまりの先頭で一度だけ行うことを想定する。
+同じ Config 型を複数 Step で別区画として使う場合も、標準契約では対象 Step の実行直前に `StepContext.Set<TConfig>()` へ登録する。後続 Step では次の Step 用 Config によって同じ型の値が上書きされうる。永続的に名前付き取得したい場合は、利用者が Config 型を別型に分ける。
 
-### 6.4 Config を StepContext に格納する例
+既存の `WithConfig<TConfig>()` は互換 API として残し、Entry 全体 Config 型を宣言する。互換 API は YAML 全体を 1 つの `TConfig` に変換し、最初の Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。利用者向け文書に出す推奨例は Step 登録単位の明示 Config API とする。
+
+同じ Entry で Step 登録単位 Config API と Entry 全体 Config 互換 API を併用する規則は標準契約に含めない。
+
+複数 Config ファイル統合、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は採用しない。
+
+Config 読み込み用 Step をユーザーが明示的に定義する方式は、標準外の拡張として許可する。
+
+Config 読み込み Step を使用する場合は、標準 Config 読み込み、CLI override、実行前 Config 検証の対象外とする。
+
+### 6.4 標準 Config の定義と取得
+
+```csharp
+public sealed class LoadConfig
+{
+    public string Path { get; set; } = "";
+}
+
+public sealed class ConvertConfig
+{
+    public bool ToUpper { get; set; }
+
+    public string Mode { get; set; } = "";
+}
+
+public sealed class SaveConfig
+{
+    public string Path { get; set; } = "";
+}
+```
+
+各 Step は `StepContext.Get<TConfig>()` で自分の Config 型を取得する。
+
+| Step | Config 区画 | 参照例 |
+| --- | --- | --- |
+| `LoadStep` | `Load` | `input.Context.Get<LoadConfig>().Path` |
+| `ConvertStep` | `Convert` | `input.Context.Get<ConvertConfig>().ToUpper`, `input.Context.Get<ConvertConfig>().Mode` |
+| `SaveStep` | `Save` | `input.Context.Get<SaveConfig>().Path` |
+
+```csharp
+public sealed class LoadStep : IStep<LoadResult>
+{
+    public LoadResult Execute(StepInput input)
+    {
+        LoadConfig config = input.Context.Get<LoadConfig>();
+
+        string text = File.ReadAllText(config.Path);
+
+        return new LoadResult
+        {
+            Text = text,
+            FilePath = config.Path
+        };
+    }
+}
+
+public sealed class ConvertStep : IStep<ConvertResult>
+{
+    public ConvertResult Execute(StepInput input)
+    {
+        ConvertConfig config = input.Context.Get<ConvertConfig>();
+        ConvertInput convertInput = input.Get<ConvertInput>();
+
+        return new ConvertResult
+        {
+            ConvertedText = config.ToUpper
+                ? convertInput.Text.ToUpperInvariant()
+                : convertInput.Text,
+            Mode = config.Mode
+        };
+    }
+}
+
+public sealed class SaveStep : IStep<Unit>
+{
+    public Unit Execute(StepInput input)
+    {
+        SaveConfig config = input.Context.Get<SaveConfig>();
+        SaveInput saveInput = input.Get<SaveInput>();
+
+        File.WriteAllText(config.Path, saveInput.Content);
+
+        return Unit.Value;
+    }
+}
+```
+
+対応関係は Step 登録時の `WithConfig<TConfig>(sectionPath)` と Step 実装の `StepContext.Get<TConfig>()` で明示する。Step ごとの Config 専用引数や、Step 型に対する Config 自動注入は追加しない。
+
+`Convert` 区画の複数プロパティを使う場合も、Step は同じ `ConvertConfig` から必要な値だけを読む。
 
 ```csharp
 public sealed class ConvertStep : IStep<ConvertResult>
 {
     public ConvertResult Execute(StepInput input)
     {
-        AppConfig config = input.Context.Get<AppConfig>();
+        ConvertConfig config = input.Context.Get<ConvertConfig>();
 
         return new ConvertResult
         {
-            Mode = config.Convert.Mode
+            Mode = config.Mode
         };
     }
 }
@@ -335,25 +446,27 @@ Entry 側の宣言例:
 
 ```csharp
 var Main = CompositeStep.Define("Main")
-    .WithConfig<AppConfig>()
-    .Run<ConvertStep, ConvertResult>();
+    .Run<ConvertStep, ConvertResult>()
+        .WithConfig<ConvertConfig>("Convert");
 ```
+
+Step は Config 専用引数を受け取らない。標準 Config は対象 Step の実行直前に `StepContext` へ登録され、Step は `StepContext.Get<TConfig>()` で取得する。
 
 ### 6.5 CLI による Config 指定
 
 エンジン起動時に Config ファイルを指定できる。
 
 ```bash
-engine run main.csx --config appsettings.yaml
+engine run main.csx --config config/appsettings.yaml
 ```
 
 `--config` は Config ファイルパスとして `EngineArguments` に保持する。
 
-Entry が `WithConfig<TConfig>()` を使っている場合、CLI `run` は `--config` の YAML を `TConfig` に変換し、Step 実行前に `StepContext` に登録する。
+Entry が Step 登録単位 Config または Entry 全体 Config 互換 API を使っている場合、CLI `run` は `--config` の YAML を各 Config 型に変換し、Step 実行前に検証する。
 
-`--config` 未指定で、Entry が `WithConfig<TConfig>()` を使っていない場合は既存どおり成功する。
+`--config` 未指定で、Entry が Config API を使っていない場合は既存どおり成功する。
 
-`--config` 未指定で、Entry が `WithConfig<TConfig>()` を使っている場合は、Step 実行前に `CONFIG_NOT_FOUND` で失敗する。利用者へ早く原因を返すためである。
+`--config` 未指定で、Entry が Config API を使っている場合は、Step 実行前に `CONFIG_NOT_FOUND` で失敗する。利用者へ早く原因を返すためである。
 
 ### 6.6 CLI による Config 上書き
 
@@ -362,22 +475,29 @@ CLI 引数で Config の一部を上書きできることを要件とする。
 例:
 
 ```bash
-engine run main.csx --config appsettings.yaml --set Convert.ToUpper=false
+engine run main.csx --config config/appsettings.yaml --set Convert.ToUpper=false
+engine run main.csx --config config/appsettings.yaml --set Save.Path=./override.txt
 ```
 
-`--set` は、標準 Config に対するプロパティ path override として扱う。
+`--set` は、宣言された YAML 区画 path に対するプロパティ path override として扱う。
 
-書式は `--set key=value` とする。CLI 解析層は最初の `=` より前を key、最初の `=` 以降を値として保持する。値の中の `=` は許可する。
+書式は `--set Key=value` とする。CLI 解析層は最初の `=` より前を key、最初の `=` 以降を値として保持する。値の中の `=` は許可する。
 
 CLI 解析層で `--set` に値がない場合、`key=value` になっていない場合、または key が空の場合は、Config 型を見ない CLI 解析エラーとして終了コード 2 で失敗する。
 
-key は C# の公開プロパティ名を `.` でたどる。プロパティ名は大小文字を区別する完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
+Step 登録単位 Config では、key の先頭は宣言済みの YAML 区画 path と一致しなければならない。区画 path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は `Convert` 区画への override として扱い、区画接頭辞 `Convert` を剥がした `ToUpper=false` を `ConvertConfig.ToUpper` に適用する。`ConvertExtra.ToUpper` は `Convert` 区画に一致しない。
+
+同一 Entry 内の宣言済み区画 path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済み区画に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
+
+区画接頭辞を剥がした後の key は C# の公開プロパティ名を `.` でたどる。プロパティ名は大小文字を区別する完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
+
+Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を `TConfig` のプロパティ path として扱い、区画接頭辞の剥がしは行わない。
 
 入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
 
-配列またはリストは、`Items[0].Name=value` のように既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は初期範囲外とする。添字が範囲外、負数、または数値でない場合は `CONFIG_LOAD_FAILED` とする。
+配列またはリストは、区画接頭辞を剥がした後に `Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は標準 Config override には含めない。添字が範囲外、負数、または数値でない場合は `CONFIG_LOAD_FAILED` とする。
 
-型変換は override 対象プロパティの型に対して行う。初期範囲では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。型変換に失敗した場合は `CONFIG_LOAD_FAILED` とする。
+型変換は override 対象プロパティの型に対して行う。標準契約では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。型変換に失敗した場合は `CONFIG_LOAD_FAILED` とする。
 
 複数 override は、同一 key について最後の指定を有効にする。これは `EngineArguments.Settings` の既存 `Dictionary` 契約と合わせる。
 
@@ -518,14 +638,14 @@ public sealed class LoadStep : IStep<LoadResult>
 {
     public LoadResult Execute(StepInput input)
     {
-        AppConfig config = input.Context.Get<AppConfig>();
+        LoadConfig config = input.Context.Get<LoadConfig>();
 
-        string text = File.ReadAllText(config.Load.Path);
+        string text = File.ReadAllText(config.Path);
 
         return new LoadResult
         {
             Text = text,
-            FilePath = config.Load.Path
+            FilePath = config.Path
         };
     }
 }
@@ -539,11 +659,11 @@ public sealed class ConvertStep : IStep<ConvertResult>
     public ConvertResult Execute(StepInput input)
     {
         ConvertInput convertInput = input.Get<ConvertInput>();
-        AppConfig config = input.Context.Get<AppConfig>();
+        ConvertConfig config = input.Context.Get<ConvertConfig>();
 
         return new ConvertResult
         {
-            ConvertedText = config.Convert.ToUpper
+            ConvertedText = config.ToUpper
                 ? convertInput.Text.ToUpperInvariant()
                 : convertInput.Text
         };
@@ -618,11 +738,11 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 4. `StepInput` に `StepContext` を含める
 5. `.csx` を `Dotnet.Script.Core` 経由でロードする
 6. `.csx` 上の CompositeStep 定義を取得する
-7. Entry の Config 型メタ情報を確認する
-8. 必要な場合は `--config` の YAML を型付き Config に変換する
-9. `--set` のプロパティ path override を型付き Config に適用する
+7. Entry の Step Config メタ情報を確認する
+8. 必要な場合は `--config` の YAML 区画を型付き Config に変換する
+9. `--set` の区画接頭辞付きプロパティ path override を型付き Config に適用する
 10. `DataAnnotations` と `IValidatableObject` で Config を検証する
-11. 検証済み Config を `StepContext` に登録する
+11. 検証済み Config を対象 Step の実行直前に `StepContext` に登録する
 12. 指定された Step を実行する
 
 ---
@@ -633,11 +753,11 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 
 Step 実行中に例外が発生した場合、エンジンは失敗として扱う。
 
-初期版では、デフォルト動作は停止とする。
+既定動作は停止とする。
 
 ### 11.2 FailurePolicy
 
-将来的に Step 単位で失敗時の挙動を定義できるようにする。
+Step 単位の失敗時動作を拡張する場合は、次の列挙型を使う。
 
 ```csharp
 public enum FailurePolicy
@@ -647,7 +767,7 @@ public enum FailurePolicy
 }
 ```
 
-初期版で `Continue` を実装するかは未確定。
+`Continue` の実行継続動作は標準実行契約には含めない。
 
 ### 11.3 エラー対象
 
@@ -673,7 +793,7 @@ Entry が標準 Config 型を要求している場合の `--config` 未指定と
 
 ### 11.4 retry と timeout
 
-T22 では Step 本体の通常例外に対する retry を実装する。
+Step 本体の通常例外に対する retry を提供する。
 
 retry は `WorkflowExecutionOptions.Retry` で指定する。
 
@@ -683,9 +803,9 @@ retry は `WorkflowExecutionOptions.Retry` で指定する。
 
 例えば `MaxAttempts = 3` は、対象 Step を最大 3 回実行することを意味する。
 
-T22 の retry は全 Step 一律の指定に限定する。
+retry は全 Step 一律の指定に限定する。
 
-Step 別 retry、待機時間制御、例外型による絞り込み、CLI 指定、Config 指定は T22 の対象外とする。
+Step 別 retry、待機時間制御、例外型による絞り込み、CLI 指定、Config 指定は標準 retry 契約には含めない。
 
 retry 対象は Step 本体の通常例外に限定する。
 
@@ -713,13 +833,13 @@ timeout と外部キャンセルは retry 対象外とする。
 
 timeout は `STEP_TIMEOUT`、外部キャンセルは `STEP_CANCELED` として扱い、どちらも retry を止める。
 
-timeout と外部キャンセルの両方が観測される場合は、T21 と同じく外部キャンセルを優先して `STEP_CANCELED` とする。
+timeout と外部キャンセルの両方が観測される場合は、外部キャンセルを優先して `STEP_CANCELED` とする。
 
 各試行の timeout は、試行開始時に作成した Step 単位の timeout 用 `CancellationTokenSource` で判定する。
 
 timeout または外部キャンセルで失敗した Step は `Produce`、`StoreAs`、`Discard` を実行せず、値を `StepInput` に残さない。
 
-実行中 Step の強制停止、workflow 全体 timeout は T22 の対象外とする。
+実行中 Step の強制停止、workflow 全体 timeout は標準実行契約には含めない。
 
 ---
 
@@ -727,7 +847,7 @@ timeout または外部キャンセルで失敗した Step は `Produce`、`Stor
 
 ### 12.1 方針
 
-T20 では、既存の同期 Step API を維持したまま、非同期 Step 用の明示 API を追加する。
+既存の同期 Step API を維持したまま、非同期 Step 用の明示 API を提供する。
 
 既存の `IStep<TOut>` は同期 Step の契約として維持する。
 
@@ -788,7 +908,7 @@ public interface IStep<TOut>
 }
 ```
 
-この案は既存の `IStep<TOut>` 実装を破壊するため、T20 では採用しない。
+この案は既存の `IStep<TOut>` 実装を破壊するため、採用しない。
 
 ---
 
@@ -870,23 +990,24 @@ var Main = CompositeStep.Define("Main")
 
 `RunAsync` で登録された Step は、非同期待機後の戻り値を `Produce`、`StoreAs`、`Discard` の対象にする。
 
-### 13.4 Config を StepContext に置く例
+### 13.4 Step 登録単位 Config の例
 
 ```csharp
 var Main = CompositeStep.Define("Main")
-    .Run<LoadConfigStep, Unit>()
-        .Discard()
     .Run<LoadStep, LoadResult>()
+        .WithConfig<LoadConfig>("Load")
         .Produce<ConvertInput>(x => new ConvertInput
         {
             Text = x.Text
         })
     .Run<ConvertStep, ConvertResult>()
+        .WithConfig<ConvertConfig>("Convert")
         .Produce<SaveInput>(x => new SaveInput
         {
             Content = x.ConvertedText
         })
     .Run<SaveStep, Unit>()
+        .WithConfig<SaveConfig>("Save")
         .Discard();
 ```
 
@@ -964,6 +1085,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 {
     public CompositeStep<TOut> WithConfig<TConfig>();
 
+    public CompositeStep<TOut> WithConfig<TConfig>(string sectionPath);
+
     public CompositeStep<TStepOut> Run<TStep, TStepOut>()
         where TStep : IStep<TStepOut>, new();
 
@@ -982,21 +1105,34 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
     public Type? ConfigType { get; }
 
+    public IReadOnlyList<StepConfigRegistration> StepConfigRegistrations { get; }
+
     public string Name { get; }
 
     public string? NamespaceName { get; }
 
     public string QualifiedName { get; }
 }
+
+public sealed class StepConfigRegistration
+{
+    public Type StepType { get; }
+
+    public string SectionPath { get; }
+
+    public Type ConfigType { get; }
+}
 ```
 
-`WithConfig<TConfig>()` は Entry に標準 Config 型メタ情報を設定する。T23 では 1 つの Entry に設定できる Config 型は 1 つだけとする。
+`WithConfig<TConfig>(string sectionPath)` は直前に登録した Step に標準 Config 型と YAML 区画 path のメタ情報を設定する。`StepConfigRegistrations` は Entry 内の Step 登録順で保持する。
+
+`WithConfig<TConfig>()` は互換 API として Entry 全体 Config 型メタ情報を設定する。1 つの Entry に設定できる Entry 全体 Config 型は 1 つだけとする。
 
 `CompositeStep.Define("Build", namespaceName: "Deploy")` は、短い名前 `Build`、名前空間 `Deploy`、完全修飾名 `Deploy.Build` を持つ Entry を定義する。
 
 `CompositeStep.Define("Build")` は従来互換のため名前空間なしの Entry を定義し、完全修飾名は短い名前と同じ `Build` とする。
 
-`WithConfig<TConfig>()`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()`、`Produce`、`StoreAs`、`Discard` など、`CompositeStep<TOut>` を返す連鎖呼び出しの後も、名前空間メタ情報と完全修飾名は維持する。
+`WithConfig<TConfig>()`、`WithConfig<TConfig>(string sectionPath)`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()`、`Produce`、`StoreAs`、`Discard` など、`CompositeStep<TOut>` を返す連鎖呼び出しの後も、名前空間メタ情報と完全修飾名は維持する。
 
 ### 14.5 `WorkflowExecutionOptions`
 
@@ -1045,11 +1181,11 @@ public sealed class RetryOptions
 
 `Retry.MaxAttempts` は初回を含む最大試行回数であり、`MaxAttempts = 3` は最大 3 回の Step 本体実行を表す。
 
-T22 では `Retry` を CLI オプションまたは Config から直接指定しない。
+`Retry` は CLI オプションまたは Config から直接指定しない。
 
-標準 Config 型は `WorkflowExecutionOptions` ではなく、Entry の `CompositeStep` メタ情報から取得する。
+標準 Config 型と YAML 区画 path は `WorkflowExecutionOptions` ではなく、Entry の `CompositeStep` メタ情報から取得する。
 
-CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `ConfigType`、`EngineArguments.ConfigPath`、`EngineArguments.Settings` を使って標準 Config を読み込む。
+CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `StepConfigRegistrations`、`EngineArguments.ConfigPath`、`EngineArguments.Settings` を使って Step 登録単位 Config を読み込む。Entry 全体 Config 互換 API を使う場合は、互換メタ情報の `ConfigType` を使う。
 
 `EngineArguments.Settings` は元の文字列を保持する。標準 Config に適用された後も、Step は CLI 指定値そのものを参照できる。
 
@@ -1101,10 +1237,11 @@ engine run main.csx --entry Deploy.Build
 
 ```csharp
 var Main = CompositeStep.Define("Main")
-    .WithConfig<AppConfig>()
     .Run<LoadStep, LoadResult>()
+        .WithConfig<LoadConfig>("Load")
         .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
     .Run<ConvertStep, ConvertResult>()
+        .WithConfig<ConvertConfig>("Convert")
         .StoreAs();
 
 var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
@@ -1173,7 +1310,7 @@ Entry `.csx` と外部 `.csx` のトップレベルステートメントは、St
 
 検証時にも `.csx` のロードや評価が必要になるため、トップレベルでファイル削除、外部通信、環境変更などの副作用を起こしてはならない。
 
-初期版では、副作用のあるトップレベルステートメントを完全には検出しない。
+副作用のあるトップレベルステートメントを完全には検出しない。
 
 利用者は、同期処理を `IStep<TOut>.Execute` 内に置く。
 
@@ -1193,7 +1330,7 @@ Step 実行、`StepInput` 構築、Config 保持、検証、ログ、実行結�
 
 ### 16.2 `#load` 解決
 
-初期版では、ローカルファイルの `#load` に対応する。
+ローカルファイルの `#load` に対応する。
 
 ```csharp
 #load "./build.csx"
@@ -1206,13 +1343,11 @@ Step 実行、`StepInput` 構築、Config 保持、検証、ログ、実行結�
 | --- | --- |
 | 相対パス基準 | `#load` を書いた `.csx` のディレクトリ |
 | パス正規化 | `..` とシンボリックリンクを解決した正規パス |
-| root 制限 | 初期版では `workflow-root` 配下のみ許可 |
+| root 制限 | `workflow-root` 配下のみ許可 |
 | 循環読み込み | 検出して検証エラー |
 | 重複読み込み | 同一正規パスは 1 回だけ読み込む |
 
-`#load "nuget: ..."` は初期版では対象外とする。
-
-T28 では、`dotnet-script` 互換の NuGet script パッケージ読み込みに対応する。
+`dotnet-script` 互換の NuGet script パッケージ読み込みに対応する。
 
 ```csharp
 #load "nuget: Simple.Targets.Csx, 6.0.0"
@@ -1226,7 +1361,7 @@ NuGet script パッケージのパッケージ内 `.csx` 探索、`contentFiles`
 
 エンジン側では NuGet キャッシュの配置、パッケージ内 `contentFiles` 選択規則、`project.assets.json` 解析、実行時 assembly 解決を再実装しない。
 
-T28 の provider 契約は、`RuntimeDependency.Scripts` 相当のパッケージ script 解決情報、または最終コンパイル時に `NuGetSourceReferenceResolver` へ渡せる script 解決情報を返せる必要がある。
+provider 契約は、`RuntimeDependency.Scripts` 相当のパッケージ script 解決情報、または最終コンパイル時に `NuGetSourceReferenceResolver` へ渡せる script 解決情報を返せる必要がある。
 
 `#load "nuget: ..."` のディレクティブを source に残す経路では、最終コンパイルに `NuGetSourceReferenceResolver` が有効な `ScriptOptions` または同等の `ScriptCompilationContext` を使う。
 
@@ -1246,7 +1381,7 @@ NuGet script 読み込みの重複は、同一パッケージ ID、解決済み 
 
 ### 16.3 `#r` と NuGet 参照
 
-初期版では、以下を明示許可された場合に限り対応する。
+以下を明示許可された場合に限り対応する。
 
 ```csharp
 #r "System.Text.Json"
@@ -1261,22 +1396,20 @@ NuGet script 読み込みの重複は、同一パッケージ ID、解決済み 
 | assembly 名参照 | 許可一覧に登録された名前のみ許可 |
 | ファイル参照 | 許可一覧に登録されたディレクトリ配下のみ許可 |
 | NuGet 参照 | 許可一覧に登録されたパッケージ ID とバージョンのみ許可 |
-| 浮動バージョン | 初期版では禁止 |
+| 浮動バージョン | 禁止 |
 | パッケージ参照元 | 既定の参照元または明示許可された参照元のみ許可 |
 
 NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` の仕組みを利用する。
 
 エンジン側では `dotnet restore` の起動、一時 `.csproj` の生成、`project.assets.json` の解析、実行時 assembly 解決を再実装しない。
 
-T27 の NuGet ロックファイルは `#r "nuget: package, version"` の再現性を対象とする。
+NuGet ロックファイルは `#r "nuget: package, version"` と `#load "nuget: package, version"` の再現性を対象とする。
 
-`#load "nuget: ..."` は T28 の対象であり、T27 では引き続き拒否する。
+`#load "nuget: package, version"` も NuGet 直接参照として扱い、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
 
-T28 では `#load "nuget: package, version"` も NuGet 直接参照として扱い、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
+`directReferences` はディレクティブ種別を区別しないパッケージ ID、version、参照元の正規化集合とし、`#r` と `#load` の両方から得た直接 NuGet パッケージ参照を含める。
 
-T28 の `directReferences` はディレクティブ種別を区別しないパッケージ ID、version、参照元の正規化集合とし、`#r` と `#load` の両方から得た直接 NuGet パッケージ参照を含める。
-
-`#load "nuget: ..."` はパッケージ内 script を実行可能 source として取り込むが、T28 では新しい許可一覧を増やさず、NuGet `#r` と同じ許可済みパッケージ ID と version の規則を適用する。
+`#load "nuget: ..."` はパッケージ内 script を実行可能 source として取り込むが、新しい許可一覧を増やさず、NuGet `#r` と同じ許可済みパッケージ ID と version の規則を適用する。
 
 ロックファイルは Entry `.csx` の workflow root に置く YAML とし、ファイル名は `devo6.nuget.lock.yaml` とする。
 
@@ -1306,7 +1439,7 @@ T28 の `directReferences` はディレクティブ種別を区別しないパ�
 
 本番 provider は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` を使い、検査 provider は固定データを返す。
 
-T28 の通常検査では偽 provider などの固定データを使い、外部 NuGet source への通信を必須にしない。
+通常検査では偽 provider などの固定データを使い、外部 NuGet source への通信を必須にしない。
 
 必要な場合だけ、ローカルの NuGet 参照元を使う追加検証を分けて用意する。
 
@@ -1314,7 +1447,7 @@ T28 の通常検査では偽 provider などの固定データを使い、外部
 
 ### 16.4 AssemblyLoadContext
 
-初期版では、ワークフロー単位で `AssemblyLoadContext` を分離してよい。
+ワークフロー単位で `AssemblyLoadContext` を分離してよい。
 
 エンジンが公開する API の assembly はホスト側と共有する。
 
@@ -1335,17 +1468,17 @@ Script 側で公開 API assembly の別コピーが読み込まれた場合、�
 
 いずれかが変わった場合、該当キャッシュは無効化する。
 
-`Dotnet.Script.DependencyModel.Context.CachedRestorer` は復元結果を再利用するための性能キャッシュであり、T27 の利用者向け NuGet ロックファイルではない。
+`Dotnet.Script.DependencyModel.Context.CachedRestorer` は復元結果を再利用するための性能キャッシュであり、利用者向け NuGet ロックファイルではない。
 
 `script.csproj.cache` や `project.assets.json` をリポジトリの公開ロックファイル仕様として扱わない。
 
 ### 16.6 信頼境界
 
-初期版では、`.csx` は信頼済みワークフローのみを実行対象とする。
+`.csx` は信頼済みワークフローのみを実行対象とする。
 
 未信頼ユーザーがアップロードした `.csx` を、このエンジンで直接実行してはならない。
 
-初期版では以下を提供しない。
+以下は提供しない。
 
 - 完全なサンドボックス
 - プロセス分離
@@ -1406,7 +1539,7 @@ Entry 解決と重複検証は、Entry `.csx` と `#load` 先を読み込んだ�
 
 完全修飾名が重複する場合は、指定 Entry の有無にかかわらず `DUPLICATE_STEP_NAME` として失敗する。
 
-T23 の `validate` は Config path の存在確認までを必須とする。Config 型変換と Config 値検証は `validate` の必須対象外であり、後続で扱う。
+`validate` は Config path の存在確認までを必須とする。Config 型変換、`--set` の override 適用、Config 値検証は `validate` では行わず、`run` 時に行う。
 
 ### 17.3 StepInput 検証
 
@@ -1418,17 +1551,23 @@ T23 の `validate` は Config path の存在確認までを必須とする。Con
 
 ### 17.4 Config 検証
 
-CLI `run` では、Entry が `WithConfig<TConfig>()` を使う場合に標準 Config 読み込みを行う。
+CLI `run` では、Entry が Step 登録単位 Config API または Entry 全体 Config 互換 API を使う場合に標準 Config 読み込みを行う。
 
 `--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
 
-`--config` の YAML は `TConfig` に型変換する。その後、`--set` を標準 Config に適用し、`DataAnnotations` と `IValidatableObject` を検証する。
+Step 登録単位 Config API では、`--config` の YAML から宣言済みの区画 path を選択し、各 Step の `TConfig` に型変換する。その後、該当区画接頭辞を剥がした `--set` を各 Config に適用し、`DataAnnotations` と `IValidatableObject` を検証する。
 
-検証に成功した Config は、Step 専用引数ではなく `StepContext` に登録する。
+宣言済み区画 path が YAML に存在しない場合は、Config 型の生成や override 適用へ進まず、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
+
+宣言済み Step Config はすべて最初の Step 実行前に検証する。1 つでも検証に失敗した場合、最初の Step は実行せず `CONFIG_LOAD_FAILED` とする。
+
+検証に成功した Config は、Step 専用引数ではなく対象 Step の実行直前に `StepContext` に登録する。
 
 検証に失敗した Config は `StepContext` に登録してはならない。
 
-空 Config は Config 型を生成でき、検証に通れば成功とする。検証に失敗した場合は `CONFIG_LOAD_FAILED` とする。
+宣言済み区画が YAML 上に存在し、その区画が空または `{}` の場合は、Config 型を生成でき、検証に通れば成功とする。検証に失敗した場合は `CONFIG_LOAD_FAILED` とする。
+
+Entry 全体 Config 互換 API では、従来どおり YAML 全体を `TConfig` に型変換し、`--set` key 全体を `TConfig` へ適用してから検証する。
 
 ユーザーが定義した Config 読み込み Step を使う場合は、その Step 内で型変換と検証を行う。
 
@@ -1438,7 +1577,7 @@ Step の戻り値が `null` であり、`TOut` が null を許さない型であ
 
 Step 出力に `DataAnnotations` または `IValidatableObject` が使われている場合、エンジンは検証対象にできる。
 
-初期版では、Step 出力検証を標準で有効にするかは実装時に選択できる。
+Step 出力の `DataAnnotations` と `IValidatableObject` による自動検証は標準実行契約には含めない。
 
 ただし、検証を無効にした場合でも、`Produce` の選択関数が失敗した場合は Step 失敗として扱う。
 
@@ -1572,7 +1711,7 @@ NuGet ロックファイルが必要な workflow root に存在しない場合�
 
 `Dotnet.Script.Core` による NuGet 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする。
 
-T28 の `#load "nuget: ..."` では、未許可 NuGet、浮動 version、`dotnet-script` 互換でない文法を `SCRIPT_REFERENCE_NOT_ALLOWED` とする。
+`#load "nuget: ..."` では、未許可 NuGet、浮動 version、`dotnet-script` 互換でない文法を `SCRIPT_REFERENCE_NOT_ALLOWED` とする。
 
 `devo6.nuget.lock.yaml` が欠落している場合は、復元を試みる前に `SCRIPT_NUGET_LOCK_MISSING` を返す。
 
@@ -1580,9 +1719,9 @@ T28 の `#load "nuget: ..."` では、未許可 NuGet、浮動 version、`dotnet
 
 復元後の解決済み依存関係または `metadata` の不一致は `SCRIPT_NUGET_LOCK_MISMATCH` とする。
 
-trace 値を `System.Text.Json` で直列化できない場合でも、T26 の既定動作では workflow を失敗させない。
+trace 値を `System.Text.Json` で直列化できない場合でも、既定動作では workflow を失敗させない。
 
-`TRACE_SERIALIZATION_FAILED` は、将来の trace 外部保存や厳格動作で workflow 失敗を選ぶ場合のために残す。T26 の既定 workflow 失敗には使わない。
+`TRACE_SERIALIZATION_FAILED` は、trace 外部保存や厳格動作で workflow 失敗を選ぶ拡張用に残す。既定 workflow 失敗には使わない。
 
 ### 18.3 ログ
 
@@ -1596,7 +1735,7 @@ trace 値を `System.Text.Json` で直列化できない場合でも、T26 の�
 
 ログの `EntryName` は `WorkflowResult.EntryName` と同じ完全修飾名とする。
 
-ログの `StepName` は従来どおり、実行された Step 型名を基本とする。T29 では個々の Step 型名を名前空間付き Entry 名へ変換しない。
+ログの `StepName` は従来どおり、実行された Step 型名を基本とする。個々の Step 型名を名前空間付き Entry 名へ変換しない。
 
 ログ出力では文字列連結ではなく、構造化ログを使う。
 
@@ -1623,9 +1762,9 @@ Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した 
 | ログ | 実行中の観測と障害調査 |
 | ExecutionTrace | 実行結果として保存できる構造化履歴 |
 
-初期版では、`StepInput`、Config、Step 出力の値そのものは既定では保存しない。
+`StepInput`、Config、Step 出力の値そのものは既定では保存しない。
 
-T26 では、値を含む trace の基礎単位を「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
+値を含む trace の基礎単位は「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
 
 既存の `Produce`、名前付き `Produce`、`StoreAs` は値を trace に保存しない。
 
@@ -1650,7 +1789,7 @@ public sealed record ExecutionTraceStep(
 
 `Attempt` は 1 から始まる実試行番号とする。
 
-T26 では `ExecutionTraceStep` に `ProducedValues` を追加する。
+`ExecutionTraceStep` は `ProducedValues` を持つ。
 
 ```csharp
 public IReadOnlyList<ExecutionTraceValue> ProducedValues { get; init; }
@@ -1682,7 +1821,7 @@ timeout が発生した場合、対象 Step の trace は `ExecutionTraceStepSta
 
 timeout または外部キャンセルの後に実行しなかった後続 Step は trace に追加しない。
 
-T21 では `TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加しない。
+`TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加しない。
 
 Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の `ProducedValues` は空である。
 
@@ -1692,11 +1831,11 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 
 ---
 
-## 19. 初期実装範囲
+## 19. 標準実装範囲
 
-### 19.1 初期版で扱う範囲
+### 19.1 標準範囲
 
-初期版では以下を扱う。
+標準実装は以下を扱う。
 
 - `.csx` での名前付き `CompositeStep` 定義
 - 既定 Entry 名 `Main`
@@ -1720,15 +1859,25 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - `ExecuteWorkflowAsync` の外部 `CancellationToken` と timeout 用の `CancellationToken` の合成
 - timeout と外部キャンセルの失敗結果化
 - retry 試行ごとのログと trace
-- T23 の標準 Config 読み込み
-- T24 の CLI override による標準 Config 上書き
-- Entry の `WithConfig<TConfig>()` による単一 Config 型メタ情報
-- CLI `run` の `--config` YAML 型変換と `StepContext` 登録
-- CLI `run` の `--set` プロパティ path override と Config 検証前適用
+- 標準 Config 読み込み
+- CLI override による標準 Config 上書き
+- Step 登録単位の `WithConfig<TConfig>(string sectionPath)` による Config 型と YAML 区画 path メタ情報
+- 単一 `--config` YAML ファイル内の複数区画読み込み
+- CLI `run` の宣言済み Step Config 型変換、CLI override 適用、Config 検証
+- CLI `run` の `--set` 区画接頭辞剥がしと Config 検証前適用
+- 対象 Step 実行直前の `StepContext.Set<TConfig>()` 登録
+- Entry の `WithConfig<TConfig>()` による Entry 全体 Config 互換 API
+- `engine validate` での Config path 存在確認
+- 値を含む `ExecutionTrace`
+- `TraceValueCapture.Serialized` と `TraceValueCapture.Redacted`
+- NuGet ロックファイルによる直接参照と解決済み依存関係の再現性検証
+- `#load "nuget: PackageId, Version"` による NuGet script パッケージ読み込み
+- Entry の短い名前、名前空間名、完全修飾名
+- `--entry Deploy.Build` のような完全修飾 Entry 指定
 
-### 19.2 初期版で扱わない範囲
+### 19.2 標準契約外の未実装・未採用範囲
 
-初期版、T23、および T24 では以下を扱わない。
+以下は実装済みではない、または意図的に採用していない契約である。
 
 - 独立した Flow 概念
 - YAML ワークフロー定義
@@ -1737,16 +1886,14 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - 並列実行
 - 分岐実行
 - 統合実行
-- NuGet ロックファイル
-- `#load "nuget: ..."`
 - 未信頼 `.csx` の安全な実行
-- 複数 Config
-- 名前付き Config
+- 複数 Config ファイル統合
+- 標準 Config 読み込みによる永続的な名前付き Config 取得
 - Config 型自動推論
+- Step 型への Config 自動注入
 - `--set` による配列全体またはリスト全体の置換
 - `--set` による配列またはリストの自動拡張
-- `engine validate` での override 型検証
-- 値を含む `ExecutionTrace`
+- `engine validate` での Config 型変換、override 型検証、Config 値検証
 - CLI の timeout オプション
 - CLI の retry オプション
 - Config による retry 指定
@@ -1757,31 +1904,11 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - workflow 全体 timeout
 - timeout またはキャンセル専用の trace 状態
 
-### 19.3 次フェーズ候補
-
-次フェーズ候補は以下とする。
-
-- CLI の timeout オプション
-- CLI の retry オプション
-- Config による retry 指定
-- Step 別 retry 方針
-- retry 待機時間制御
-- retry の例外型による絞り込み
-- workflow 全体 timeout
-- timeout またはキャンセル専用の trace 状態
-- 値を含む `ExecutionTrace`
-- NuGet ロックファイル
-- `#load "nuget: ..."`
-
-NuGet ロックファイルは T27 で、`#r "nuget: package, version"` の再現性を扱う。
-
-`#load "nuget: ..."` は T28 で扱い、T27 のロックファイル採用時点では対象外のままとする。
-
 ---
 
 ## 20. 明確に禁止すること
 
-初期設計では以下を禁止する。
+本設計では以下を禁止する。
 
 ```text
 ・Flow という独立概念を作ること
@@ -1790,20 +1917,20 @@ NuGet ロックファイルは T27 で、`#r "nuget: package, version"` の再�
 ・Step に StepContext 専用引数を追加すること
 ・Step 間の入出力を自動推論すること
 ・上流出力を自動的に下流入力へ変換すること
-・Config を Step ごとに自動注入すること
+・Config を Step 専用引数または Step 型プロパティへ自動注入すること
 ・並列実行すること
-・分岐、統合を初期版に含めること
+・分岐、統合を逐次実行モデルに含めること
 ```
 
 ---
 
-## 21. 未確定事項
+## 21. 補足設計詳細
 
-以下は今後決める必要がある。
+以下は実装済みの標準契約を補足する詳細である。
 
 ### 21.1 非同期 API
 
-T20 では以下を採用する。
+非同期 API は以下を採用する。
 
 - `IAsyncStep<TOut>` を追加する
 - 既存 `IStep<TOut>` は維持する
@@ -1813,7 +1940,7 @@ T20 では以下を採用する。
 - 非同期ワークフロー実行 API として `ExecuteWorkflowAsync` を追加する
 - 非同期 Step の `ExecuteAsync` には `CancellationToken` を渡す
 
-T21 では以下を採用する。
+timeout と外部キャンセルは以下を採用する。
 
 - `WorkflowExecutionOptions` に `TimeSpan? StepTimeout` を追加する
 - `StepTimeout` の既定値は `null` とし、timeout を設定しない
@@ -1826,14 +1953,14 @@ T21 では以下を採用する。
 - 同期 Step 実行中は強制中断しない
 - 同期 Step 完了後にキャンセルが要求済みであれば、後続 Step を開始しない
 
-T21 では以下を扱わない。
+timeout と外部キャンセルの標準契約には以下を含めない。
 
 - CLI の timeout オプション
 - 実行中 Step の強制停止
 - workflow 全体 timeout
 - timeout またはキャンセル専用の trace 状態
 
-T22 では以下を採用する。
+retry は以下を採用する。
 
 - `WorkflowExecutionOptions` に `RetryOptions? Retry` を追加する
 - `RetryOptions` に `int MaxAttempts` を追加する
@@ -1850,7 +1977,7 @@ T22 では以下を採用する。
 - ログのスコープの `Attempt` は実試行番号にする
 - retry 予定と最終失敗を構造化ログで記録する
 
-T22 では以下を扱わない。
+retry の標準契約には以下を含めない。
 
 - CLI の retry オプション
 - Config による retry 指定
@@ -1860,42 +1987,55 @@ T22 では以下を扱わない。
 
 ### 21.2 Config 読み込み責務
 
-T23 では、標準 Config 読み込みをエンジン実行前処理として提供する。
+標準 Config 読み込みはエンジン実行前処理として提供する。
 
-Entry 側は `WithConfig<TConfig>()` で単一 Config 型を明示する。
+Entry 側は Step 登録単位の `WithConfig<TConfig>(string sectionPath)` で Config 型と YAML 区画 path を明示する。
 
-CLI `run` は `.csx` ロード後、Entry の Config 型メタ情報と `--config` の path を使って YAML を型付き Config に変換し、Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。
+CLI `run` は `.csx` ロード後、Entry の Step Config メタ情報と `--config` の path を使って YAML 区画を型付き Config に変換する。
 
-`--set` は T23 では `EngineArguments.Settings` に保持するだけで、標準 Config には反映しない。
+宣言された Step Config はすべて最初の Step 実行前に読み込み、型変換、override 適用、`DataAnnotations` と `IValidatableObject` による検証まで完了する。
 
-複数 Config ファイルの統合、名前付き Config、Config 型自動推論は今後の課題とする。
+対象 Step の実行直前に、検証済み Config を `StepContext.Set<TConfig>(config)` で登録する。同じ Config 型を別区画で複数回使う場合、後続 Step の Config が同じ型の値を上書きしうる。
+
+既存の `WithConfig<TConfig>()` は Entry 全体 Config 互換 API として残す。
+
+`--set` は `EngineArguments.Settings` に保持し、標準 Config へも適用する。
+
+複数 Config ファイルの統合、標準 Config 読み込みによる永続的な名前付き Config 取得、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は標準 Config 契約には含めない。
 
 ### 21.3 CLI override の仕様
 
-T24 では、`--set` を標準 Config に対するプロパティ path override として扱う。
+`--set` は Step 登録単位 Config に対する YAML 区画 path 接頭辞付きのプロパティ path override として扱う。
 
 適用順は以下とする。
 
-1. `--config` の YAML を `TConfig` に変換する
-2. `--set` を Config に適用する
-3. `DataAnnotations` と `IValidatableObject` を検証する
-4. 検証済み Config を `StepContext` に登録する
+1. `--config` の YAML から宣言済み区画 path を選択する
+2. 区画 YAML を Step 登録の `TConfig` に変換する
+3. `--set` の区画接頭辞を剥がして Config に適用する
+4. `DataAnnotations` と `IValidatableObject` を検証する
+5. 対象 Step の実行直前に検証済み Config を `StepContext` に登録する
 
-プロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名の照合は実行環境の言語設定に依存しない `StringComparison.Ordinal` 相当の完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
+区画 path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は、宣言済み区画 path `Convert` に対する override として扱う。適用時は接頭辞 `Convert` を剥がし、`ToUpper=false` を `ConvertConfig.ToUpper` に適用する。`ConvertExtra.ToUpper` は `Convert` 区画に一致しない。
+
+同一 Entry 内の宣言済み区画 path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済み区画に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
+
+区画接頭辞を剥がした後のプロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名の照合は実行環境の言語設定に依存しない `StringComparison.Ordinal` 相当の完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
 
 入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
 
-配列またはリストは、`Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は扱わない。
+配列またはリストは、区画接頭辞を剥がした後に `Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は標準 Config override には含めない。
 
-型変換は override 対象プロパティの型に対して行う。初期範囲では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。
+型変換は override 対象プロパティの型に対して行う。標準契約では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。
 
 同一 key の複数 override は後勝ちとする。
 
 無効書式、存在しないプロパティ、型変換失敗、配列またはリストの添字不正は `CONFIG_LOAD_FAILED` とする。ただし、CLI 解析層で `--set` の値がない、`key=value` になっていない、または key が空の場合は CLI 解析エラーとして終了コード 2 で失敗する。
 
-`engine validate` は T24 では Config path の存在確認までを維持し、override の型検証は `engine run` で行う。
+`engine validate` は Config path の存在確認までを維持し、override の型検証は `engine run` で行う。
 
-複数 Config ファイル指定時の統合規則は T24 では扱わない。
+複数 Config ファイル指定時の統合規則は標準 Config 契約には含めない。
+
+Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を Entry 全体 Config 型へのプロパティ path override として扱う。
 
 ### 21.4 Produce 後の値の寿命
 
@@ -1917,9 +2057,9 @@ T24 では、`--set` を標準 Config に対するプロパティ path override 
 
 `ExecutionTrace` に `StepInput`、Config、Step 出力全体の値は既定では保存しない。
 
-初期版では、値そのものは保存せず、Step 名、状態、所要時間、エラーコードを優先する。
+既定では値そのものを保存せず、Step 名、状態、所要時間、エラーコードを優先する。
 
-T26 では、`ExecutionTrace` の trace 値の基礎単位を「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
+`ExecutionTrace` の trace 値の基礎単位は「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
 
 失敗した試行、timeout、外部キャンセルにより `Produce` または `StoreAs` の値登録処理が実行されなかった値は、登録済み値として扱わない。
 
@@ -1950,23 +2090,23 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 
 値生成処理の失敗または重複登録失敗では当該 Step を失敗 trace とし、値一覧は空にする。部分的に成功した値も失敗 trace へ保存しない。
 
-T26 では秘匿値の自動検出、属性による秘匿、プロパティ単位秘匿、trace 永続化形式、CLI 出力形式、大きさ上限、厳格失敗動作は決めない。
+秘匿値の自動検出、属性による秘匿、プロパティ単位秘匿、trace 永続化形式、CLI 出力形式、大きさ上限、厳格失敗動作は標準 trace 契約には含めない。
 
-`TRACE_SERIALIZATION_FAILED` は将来の trace 外部保存や厳格動作用として残し、T26 の既定 workflow 失敗には使わない。
+`TRACE_SERIALIZATION_FAILED` は trace 外部保存や厳格動作用として残し、既定 workflow 失敗には使わない。
 
 ### 21.6 csx 依存の再現性
 
-P10 では、NuGet 参照の再現性を T27 と T28 に分けて扱う。
+NuGet 参照の再現性は、利用者向けの `devo6.nuget.lock.yaml` で扱う。
 
-T27 では `#r "nuget: package, version"` の NuGet ロックファイルを採用する。
+`#r "nuget: package, version"` は NuGet ロックファイルの直接参照として扱う。
 
-T28 では `#load "nuget: ..."` を扱う。
+`#load "nuget: ..."` は NuGet script パッケージ読み込みとして扱う。
 
-T27 の NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
+NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
 
 エンジン側は利用者向けの `devo6.nuget.lock.yaml` と、許可済み直接参照、解決済み依存関係、`targetFramework`、実行時識別子、パッケージ参照元、`Dotnet.Script.Core` version の比較を担当する。
 
-T28 では、`dotnet-script` 互換の `#load "nuget: PackageId, Version"` を採用し、パッケージ内 path をディレクティブに追加する独自仕様は採用しない。
+`dotnet-script` 互換の `#load "nuget: PackageId, Version"` を採用し、パッケージ内 path をディレクティブに追加する独自仕様は採用しない。
 
 `#load "nuget: ..."` から得た直接参照も、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
 
@@ -1978,7 +2118,7 @@ NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解�
 
 ### 21.7 Step 名の名前空間化
 
-T29 では、Entry として公開される `CompositeStep` に短い名前と任意の名前空間名を持たせる。
+Entry として公開される `CompositeStep` は短い名前と任意の名前空間名を持つ。
 
 採用する API は `CompositeStep.Define("Build", namespaceName: "Deploy")` とする。`CompositeStep.Define("Build")` は従来互換の名前空間なし Entry とする。
 
@@ -1994,11 +2134,11 @@ CLI は既存の `--entry` オプションを維持し、`--entry Deploy.Build` 
 
 `WorkflowResult.EntryName`、CLI 成功出力、ログスコープの `EntryName` は完全修飾名を記録する。`ExecutionTraceStep.StepName` とログスコープの `StepName` は従来どおり Step 型名を基本とする。
 
-`WithConfig<TConfig>()`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()` 後も、短い名前、名前空間名、完全修飾名は維持する。
+`WithConfig<TConfig>()`、`WithConfig<TConfig>(string sectionPath)`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()` 後も、短い名前、名前空間名、完全修飾名は維持する。
 
-T29 の実装では、追加または変更する API、ヘルパー、テストメソッドの関数名は英語にする。XMLコメントは日本語とし、パブリック以外の関数、コンストラクタ、プロパティ、レコードのプロパティ、入れ子型もコメント対象とする。T30/T31 で標準化する前提だが、T29 で追加または変更する箇所はこの前提で進める。
+追加または変更する API、ヘルパー、テストメソッドの関数名は英語にする。XMLコメントは日本語とし、パブリック以外の関数、コンストラクタ、プロパティ、レコードのプロパティ、入れ子型もコメント対象とする。
 
-T29 では検査先行で、少なくとも以下を確認する。
+少なくとも以下を検査する。
 
 - `CompositeStep.Define("Build", namespaceName: "Deploy")` が短い名前、名前空間名、完全修飾名 `Deploy.Build` を持つ
 - `CompositeStep.Define("Build")` が完全修飾名 `Build` を持ち、既存互換を維持する
@@ -2011,7 +2151,7 @@ T29 では検査先行で、少なくとも以下を確認する。
 - 名前空間なしの `Build` がなく、`Deploy.Build` と `Test.Build` がある状態で短い `--entry Build` を指定すると `ENTRY_STEP_NOT_FOUND` になる
 - CLI の `run` と `validate` が `--entry Deploy.Build` を透過し、成功時に `Succeeded: Deploy.Build` を出す
 - `#load` 先で定義された `Deploy.Build` を `--entry Deploy.Build` で解決できる
-- `WithConfig<TConfig>()`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()` 後も名前空間メタ情報が維持される
+- `WithConfig<TConfig>()`、`WithConfig<TConfig>(string sectionPath)`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()` 後も名前空間メタ情報が維持される
 
 ---
 

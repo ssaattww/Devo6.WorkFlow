@@ -15,4 +15,5 @@
 | P9 | 完了 | 値の寿命と trace 拡張。 | T25-T26 が検査先行で実装、`Produce` 後の値寿命と値を含む `ExecutionTrace` が秘匿と失敗時挙動を含めて確認される。 | T25-T26 完了、`tasks-status.md` T25-T26、`reports/t25-produce-value-lifetime-final-rereview-20260607095000.md`、`reports/t26-trace-values-final-rereview-20260607131000.md` |
 | P10 | 完了 | csx 依存の再現性強化。 | T27-T28 が検査先行で実装、NuGet ロックファイルと `#load "nuget: ..."` が外部通信依存を避けた検査で確認される。 | T27-T28 完了、`tasks-status.md` T27-T28、`reports/t27-nuget-lock-final-rereview-20260607165000.md`、`reports/t28-nuget-load-final-rereview-20260607210000.md` |
 | P11 | 完了 | Step 名管理の拡張。 | T29 が検査先行で実装、Step 名の名前空間化と CLI 指定、重複検証が確認される。 | T29 完了、`tasks-status.md` T29、`reports/t29-step-namespace-final-review-20260607234000.md` |
-| P12 | 未着手 | 利用者文書とコード標準の整備。 | T30-T31 が検査先行で実施され、`README.md`、英語関数名、日本語の C# 文書注釈、すべての関数とプロパティの説明文が確認される。 | `tasks-status.md` T30-T31 |
+| P11.5 | 進行中 | Step 単位 Config の再設計。 | T32-T33 が検査先行で実施され、Step 登録単位の Config 型と YAML 区画 path、`--set` 区画接頭辞つき override、実行前読み込みと検証失敗時の停止が確認される。 | T32 完了、T33 未着手、`tasks-status.md` T32-T33、`reports/t30-step-config-redesign-impact-20260608010000.md`、`reports/t32-step-config-design-rereview-20260608015000.md` |
+| P12 | 保留中 | 利用者文書とコード標準の整備。 | P11.5 完了後に T30-T31 が検査先行で実施され、`README.md`、英語関数名、日本語の C# 文書注釈、すべての関数とプロパティの説明文が確認される。 | `tasks-status.md` T30-T31、`reports/t30-step-config-redesign-impact-20260608010000.md` |
