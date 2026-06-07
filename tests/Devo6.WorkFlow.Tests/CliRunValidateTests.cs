@@ -455,6 +455,8 @@ public sealed class CliRunValidateTests
                 "run",
                 "--project",
                 Path.Combine(RepositoryRoot, "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"),
+                "--configuration",
+                GetCurrentBuildConfiguration(),
                 "--no-build",
                 "--",
             },
@@ -512,6 +514,27 @@ public sealed class CliRunValidateTests
         }
 
         throw new InvalidOperationException("repository root を特定できませんでした。");
+    }
+
+    /// <summary>
+    /// 現在の検査実行ディレクトリからビルド構成名を取得します。
+    /// </summary>
+    /// <returns>検出したビルド構成名。</returns>
+    private static string GetCurrentBuildConfiguration()
+    {
+        DirectoryInfo? current = new(AppContext.BaseDirectory);
+
+        while (current is not null)
+        {
+            if (current.Parent?.Name == "bin")
+            {
+                return current.Name;
+            }
+
+            current = current.Parent;
+        }
+
+        return "Debug";
     }
 
     /// <summary>
