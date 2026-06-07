@@ -45,7 +45,7 @@ dotnet tool install --global Devo6.WorkFlow.Cli
 
 ## 複数フォルダの例
 
-`samples/multi-folder-composite/main.csx` は、別フォルダにある読み込み、変換、保存の Step を `#load` し、1 つの `CompositeStep` として実行します。
+`samples/multi-folder-composite/main.csx` は、別フォルダにある読み込み、変換、保存の Step を `#load` し、外側 `CompositeStep` の Step から内側 `CompositeStep` を実行します。
 
 ```text
 samples/multi-folder-composite/
@@ -64,7 +64,7 @@ samples/multi-folder-composite/
 engine run samples/multi-folder-composite/main.csx --config appsettings.yaml
 ```
 
-この例の `appsettings.yaml` は、`Load`、`Convert`、`Save` の各区画で Step フォルダ内の YAML 断片を参照します。実行時は参照先を結合してから境界 Config 型へ変換します。
+この例では、外側 `CompositeStep` が Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。`steps/load/appsettings.yaml`、`steps/convert/appsettings.yaml`、`steps/save/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Convert.Prefix` だけを部分上書きします。
 
 ## 最小例
 
@@ -171,7 +171,7 @@ Save:
 
 `MainConfig` は CompositeStep 境界 Config 型です。`Load`、`Convert`、`Save` は境界 Config 型上のプロパティ path です。`WithConfig<MainConfig>()` で境界 Config 型を宣言し、`WithConfig<LoadStep.Config>("Load")` のように Step ごとの Config 型と境界 Config 型上のプロパティ path を対応させます。
 
-実行時は、`--config` の YAML 全体を `MainConfig` へ変換します。その後、対象 Step の実行直前に `MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録します。`Convert` と `Save` も同じ規則です。
+実行時は、Step 側の既定 Config YAML、root Config の該当区画、CLI `--set` の順に値を重ねてから `MainConfig` へ変換します。その後、対象 Step の実行直前に `MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録します。`Convert` と `Save` も同じ規則です。
 
 ## 実行と検証
 

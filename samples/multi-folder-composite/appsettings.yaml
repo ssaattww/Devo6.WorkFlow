@@ -1,3 +1,2 @@
-Load: steps/load/appsettings.yaml
-Convert: steps/convert/appsettings.yaml
-Save: steps/save/appsettings.yaml
+Convert:
+  Prefix: "converted: "

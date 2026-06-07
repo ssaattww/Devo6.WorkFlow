@@ -27,14 +27,34 @@ public sealed class MainConfig
     public SaveTextStep.Config Save { get; set; } = new();
 }
 
+/// <summary>
+/// 同じ StepInput を使って内側のテキスト処理 CompositeStep を実行する Step です。
+/// </summary>
+public sealed class RunTextPipelineStep : IStep<Unit>
+{
+    /// <summary>
+    /// 外側 CompositeStep の StepContext を維持したまま内側 CompositeStep を実行します。
+    /// </summary>
+    /// <param name="input">外側 CompositeStep から渡された Step 入力。</param>
+    /// <returns>値を返さないことを表す Unit。</returns>
+    public Unit Execute(StepInput input)
+    {
+        CompositeStep<Unit> textPipeline = CompositeStep.Define("TextPipeline")
+            .Run<LoadTextStep, LoadTextResult>()
+                .Produce<ConvertTextInput>(x => new ConvertTextInput(x.Text))
+            .Run<ConvertTextStep, ConvertTextResult>()
+                .Produce<SaveTextInput>(x => new SaveTextInput(x.ConvertedText))
+            .Run<SaveTextStep, Unit>()
+                .Discard();
+
+        return textPipeline.Execute(input);
+    }
+}
+
 var Main = CompositeStep.Define("Main")
-    .Run<LoadTextStep, LoadTextResult>()
+    .Run<RunTextPipelineStep, Unit>()
         .WithConfig<MainConfig>()
         .WithConfig<LoadTextStep.Config>("Load")
-        .Produce<ConvertTextInput>(x => new ConvertTextInput(x.Text))
-    .Run<ConvertTextStep, ConvertTextResult>()
         .WithConfig<ConvertTextStep.Config>("Convert")
-        .Produce<SaveTextInput>(x => new SaveTextInput(x.ConvertedText))
-    .Run<SaveTextStep, Unit>()
         .WithConfig<SaveTextStep.Config>("Save")
         .Discard();

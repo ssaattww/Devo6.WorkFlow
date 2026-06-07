@@ -13,10 +13,10 @@
 ## 観点
 
 - `main.csx` が異なるフォルダの Step を `#load` していること。
-- `CompositeStep` が読み込み、変換、保存の Step を順番に実行していること。
+- 外側 `CompositeStep` の Step が、同じ `StepInput` と `StepContext` で内側 `CompositeStep` を実行していること。
 - Step ごとの Config 型と境界 Config 型の対応が読み取れること。
-- Step ごとの YAML 断片が Step フォルダに置かれていること。
-- 設計書で Step 側 YAML 断片と root Config の結合規則が説明されていること。
+- Step ごとの既定 Config YAML が Step フォルダに置かれていること。
+- 設計書で Step 側既定 Config YAML と root Config の結合規則が説明されていること。
 - README が利用者向けの実行方法だけを説明し、公開運用の内部説明を含まないこと。
 - サンプルの出力ファイルが作業ツリーに残らないこと。
 
@@ -27,7 +27,8 @@
 ## 確認結果
 
 - `dotnet test Devo6.WorkFlow.sln --filter MultiFolderCompositeSampleRuns`
-- `dotnet test Devo6.WorkFlow.sln --filter MultiFolderCompositeSampleRuntimeConfigReferencesYamlFragments`
+- `dotnet test Devo6.WorkFlow.sln --filter MultiFolderCompositeSampleRootConfigContainsOnlyOverrides`
+- `dotnet test Devo6.WorkFlow.sln --filter MultiFolderCompositeSampleUsesNestedCompositeStep`
 - `dotnet test Devo6.WorkFlow.sln --filter MultiFolderCompositeSampleMergedYamlFragmentsCanBeOverridden`
 - `dotnet run --project src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj -- validate samples/multi-folder-composite/main.csx --config appsettings.yaml`
 - `dotnet run --project src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj -- run samples/multi-folder-composite/main.csx --config appsettings.yaml`

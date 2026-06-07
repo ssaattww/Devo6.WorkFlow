@@ -42,9 +42,9 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
-    /// 結合した Step YAML 断片に CLI override を適用できることを検査します。
+    /// Step 既定 Config と root Config の結合結果に CLI override を適用できることを検査します。
     /// </summary>
-    [Fact(DisplayName = "結合した Step YAML 断片へ CLI override を適用できる")]
+    [Fact(DisplayName = "Step 既定 Config と root Config の結合結果へ CLI override を適用できる")]
     public void MultiFolderCompositeSampleMergedYamlFragmentsCanBeOverridden()
     {
         string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
@@ -73,23 +73,35 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
-    /// 実行用 Config が複数フォルダの Step YAML 断片を参照していることを検査します。
+    /// 実行用 root Config が Step 既定 Config への上書きだけを持つことを検査します。
     /// </summary>
-    [Fact(DisplayName = "実行用 Config は複数フォルダの Step YAML 断片を参照する")]
-    public void MultiFolderCompositeSampleRuntimeConfigReferencesYamlFragments()
+    [Fact(DisplayName = "実行用 root Config は Step 既定 Config への上書きだけを持つ")]
+    public void MultiFolderCompositeSampleRootConfigContainsOnlyOverrides()
     {
         string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
         string rootConfigPath = Path.Combine(sampleDirectory, "appsettings.yaml");
 
-        Assert.Equal(
-            "steps/load/appsettings.yaml",
-            ReadYamlScalar(rootConfigPath, "Load"));
-        Assert.Equal(
-            "steps/convert/appsettings.yaml",
-            ReadYamlScalar(rootConfigPath, "Convert"));
-        Assert.Equal(
-            "steps/save/appsettings.yaml",
-            ReadYamlScalar(rootConfigPath, "Save"));
+        Assert.False(YamlPathExists(rootConfigPath, "Load"));
+        Assert.Equal("converted: ", ReadYamlScalar(rootConfigPath, "Convert", "Prefix"));
+        Assert.False(YamlPathExists(rootConfigPath, "Save"));
+    }
+
+    /// <summary>
+    /// 複数フォルダのサンプルが外側 Step から内側 CompositeStep を実行する構成であることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "複数フォルダのサンプルは内側 CompositeStep を外側 Step から実行する")]
+    public void MultiFolderCompositeSampleUsesNestedCompositeStep()
+    {
+        string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
+        string entryPath = Path.Combine(sampleDirectory, "main.csx");
+        string source = File.ReadAllText(entryPath);
+
+        Assert.Contains("public sealed class RunTextPipelineStep : IStep<Unit>", source);
+        Assert.Contains("CompositeStep.Define(\"TextPipeline\")", source);
+        Assert.Contains(".Run<RunTextPipelineStep, Unit>()", source);
+        Assert.Contains(".WithConfig<LoadTextStep.Config>(\"Load\")", source);
+        Assert.Contains(".WithConfig<ConvertTextStep.Config>(\"Convert\")", source);
+        Assert.Contains(".WithConfig<SaveTextStep.Config>(\"Save\")", source);
     }
 
     /// <summary>
@@ -148,5 +160,38 @@ public sealed class SampleWorkflowTests
         }
 
         return Assert.IsType<YamlScalarNode>(current).Value ?? "";
+    }
+
+    /// <summary>
+    /// YAML ファイルに指定された path が存在するかどうかを返します。
+    /// </summary>
+    /// <param name="yamlPath">読み取る YAML ファイル。</param>
+    /// <param name="segments">存在を確認する path の区切り。</param>
+    /// <returns>指定 path が存在する場合は true。</returns>
+    private static bool YamlPathExists(string yamlPath, params string[] segments)
+    {
+        var yaml = new YamlStream();
+        using StreamReader reader = File.OpenText(yamlPath);
+        yaml.Load(reader);
+
+        YamlNode current = yaml.Documents[0].RootNode;
+        foreach (string segment in segments)
+        {
+            if (current is not YamlMappingNode mapping)
+            {
+                return false;
+            }
+
+            KeyValuePair<YamlNode, YamlNode>? pair = mapping.Children.FirstOrDefault(child =>
+                child.Key is YamlScalarNode scalar && string.Equals(scalar.Value, segment, StringComparison.Ordinal));
+            if (pair is null || pair.Value.Value is null)
+            {
+                return false;
+            }
+
+            current = pair.Value.Value;
+        }
+
+        return true;
     }
 }
