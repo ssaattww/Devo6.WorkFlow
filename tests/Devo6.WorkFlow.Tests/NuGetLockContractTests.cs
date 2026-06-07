@@ -305,14 +305,14 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// T28 より前は NuGet load directive が lock 検査に進まず unsupported のままであることを確認します。
+    /// package 内 path を含む独自 NuGet script load 文法が lock 検査より前に拒否されることを確認します。
     /// </summary>
-    [Fact(DisplayName = "NuGet load directive remains unsupported before T28")]
-    public void NuGetLoadDirectiveRemainsUnsupportedBeforeT28()
+    [Fact(DisplayName = "NuGet script load rejects package path syntax before provider")]
+    public void NuGetScriptLoadRejectsPackagePathSyntaxBeforeProvider()
     {
         string scriptPath = CreateScript(
             """
-            #load "nuget: CsvHelper, 33.0.1"
+            #load "nuget: CsvHelper, 33.0.1, contentFiles/csx/net8.0/csvhelper.csx"
             """);
         WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
         var provider = new FakeNuGetDependencyGraphProvider();
@@ -326,14 +326,394 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
+    /// NuGet script load が provider の script 解決情報から展開され、読み込まれた Step を実行できることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute loads NuGet script from provider and runs loaded Step")]
+    public void ExecuteLoadsNuGetScriptFromProviderAndRunsLoadedStep()
+    {
+        string markerPath = CreateMarkerPath();
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", CreateLoadedStepScript("CsvHelperLoadedStep", markerPath))],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Main", result.EntryName);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal("CsvHelperLoadedStep", traceStep.StepName);
+        Assert.Equal("CsvHelperLoadedStep;", File.ReadAllText(markerPath));
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// Validate でも NuGet script load が provider の script 解決情報から展開されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate accepts NuGet script load from provider")]
+    public void ValidateAcceptsNuGetScriptLoadFromProvider()
+    {
+        string markerPath = CreateMarkerPath();
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", CreateLoadedStepScript("CsvHelperLoadedStep", markerPath))],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Empty(result.Errors);
+        Assert.False(File.Exists(markerPath));
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// provider が返した script 内の許可外 nested NuGet script load が provider 後に拒否されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate rejects unallowed nested NuGet script load after provider")]
+    public void ValidateRejectsUnallowedNestedNuGetScriptLoadAfterProvider()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "NestedLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", "#load \"nuget: Other.Package, 1.0.0\"")],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptReferenceNotAllowed, error.Code);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// provider が返した script 内の浮動 version nested NuGet script load が provider 後に拒否されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate rejects floating nested NuGet script load after provider")]
+    public void ValidateRejectsFloatingNestedNuGetScriptLoadAfterProvider()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "NestedLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", "#load \"nuget: CsvHelper, *\"")],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptReferenceNotAllowed, error.Code);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// provider が返した script 内の package path 付き nested NuGet script load が provider 後に拒否されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate rejects package path nested NuGet script load after provider")]
+    public void ValidateRejectsPackagePathNestedNuGetScriptLoadAfterProvider()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "NestedLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", "#load \"nuget: CsvHelper, 33.0.1, contentFiles/csx/net8.0/csvhelper.csx\"")],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptReferenceNotAllowed, error.Code);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// provider が返した script 内の nested NuGet script load が lock directReferences に含まれない場合に不一致で失敗することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate returns lock mismatch when nested NuGet script direct reference is missing from lock")]
+    public void ValidateReturnsLockMismatchWhenNestedNuGetScriptDirectReferenceIsMissingFromLock()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "NestedLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", "#load \"nuget: Nested.Package, 1.2.3\"")],
+                ("Nested.Package", "1.2.3"),
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(
+            scriptPath,
+            provider,
+            [
+                new CsxNuGetReference("CsvHelper", "33.0.1"),
+                new CsxNuGetReference("Nested.Package", "1.2.3"),
+            ]);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMismatch, error.Code);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// provider が返した script 内の nested NuGet script load が lock directReferences として扱われることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute treats nested NuGet script load as locked direct reference")]
+    public void ExecuteTreatsNestedNuGetScriptLoadAsLockedDirectReference()
+    {
+        string markerPath = CreateMarkerPath();
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "NestedLoadedStep"));
+        WriteNuGetLockFile(
+            scriptPath,
+            [("CsvHelper", "33.0.1"), ("Nested.Package", "1.2.3")],
+            [
+                ("CsvHelper", "33.0.1", true),
+                ("Nested.Package", "1.2.3", true),
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0", false),
+            ]);
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = new CsxNuGetDependencyGraph(
+                [
+                    new CsxResolvedNuGetDependency("CsvHelper", "33.0.1", isDirect: true),
+                    new CsxResolvedNuGetDependency("Nested.Package", "1.2.3", isDirect: false),
+                    new CsxResolvedNuGetDependency("Microsoft.Bcl.AsyncInterfaces", "8.0.0", isDirect: false),
+                ],
+                scripts:
+                [
+                    CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", "#load \"nuget: Nested.Package, 1.2.3\""),
+                    CreateResolvedScript("Nested.Package", "1.2.3", "contentFiles/csx/net8.0/nested.csx", CreateLoadedStepScript("NestedLoadedStep", markerPath)),
+                ],
+                resolutionMetadata: CreateDefaultResolutionMetadata()),
+        };
+        CsxEntryLoader loader = CreateLoader(
+            scriptPath,
+            provider,
+            [
+                new CsxNuGetReference("CsvHelper", "33.0.1"),
+                new CsxNuGetReference("Nested.Package", "1.2.3"),
+            ]);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.True(result.Succeeded);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal("NestedLoadedStep", traceStep.StepName);
+        Assert.Equal("NestedLoadedStep;", File.ReadAllText(markerPath));
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// 許可外 NuGet script load が lock file 検査と provider 解決より前に拒否されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute rejects unallowed NuGet script load before lock and provider")]
+    public void ExecuteRejectsUnallowedNuGetScriptLoadBeforeLockAndProvider()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider();
+        var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            WorkflowRoot = Path.GetDirectoryName(scriptPath),
+            NuGetDependencyGraphProvider = provider,
+        });
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptReferenceNotAllowed, result.ErrorCode);
+        Assert.Equal(0, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// 浮動 version の NuGet script load が lock file 検査と provider 解決より前に拒否されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate rejects floating NuGet script load before lock and provider")]
+    public void ValidateRejectsFloatingNuGetScriptLoadBeforeLockAndProvider()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "*", "CsvHelperLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider();
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptReferenceNotAllowed, error.Code);
+        Assert.Equal(0, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// NuGet script load で lock file が無い場合に provider 解決前の専用 error code で失敗することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute returns lock missing for NuGet script load before provider")]
+    public void ExecuteReturnsLockMissingForNuGetScriptLoadBeforeProvider()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
+        var provider = new FakeNuGetDependencyGraphProvider();
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMissing, result.ErrorCode);
+        Assert.Equal(0, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// NuGet script load の直接参照が lock file と異なる場合に provider 解決前の不一致で失敗することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute returns lock mismatch for NuGet script direct reference before provider")]
+    public void ExecuteReturnsLockMismatchForNuGetScriptDirectReferenceBeforeProvider()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.0", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", CreateLoadedStepScript("CsvHelperLoadedStep", CreateMarkerPath()))],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMismatch, result.ErrorCode);
+        Assert.Equal(0, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// NuGet script load の解決済み依存が provider 解決後に lock file と異なる場合に不一致で失敗することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate returns lock mismatch when NuGet script resolved dependency differs")]
+    public void ValidateReturnsLockMismatchWhenNuGetScriptResolvedDependencyDiffers()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "7.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", CreateLoadedStepScript("CsvHelperLoadedStep", CreateMarkerPath()))],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMismatch, error.Code);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// NuGet script load の循環が既存の循環 error code に正規化されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute returns load cycle detected for NuGet script load cycle")]
+    public void ExecuteReturnsLoadCycleDetectedForNuGetScriptLoadCycle()
+    {
+        string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"))],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptLoadCycleDetected, result.ErrorCode);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// 同じ NuGet script load が重複しても一度だけ展開され、Step も重複しないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute expands duplicate NuGet script load once")]
+    public void ExecuteExpandsDuplicateNuGetScriptLoadOnce()
+    {
+        string markerPath = CreateMarkerPath();
+        string scriptPath = CreateScript(CreateDuplicateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
+        WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraphWithScripts(
+                "CsvHelper",
+                "33.0.1",
+                [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", CreateLoadedStepScript("CsvHelperLoadedStep", markerPath, recordExpansion: true))],
+                ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.True(result.Succeeded);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal("CsvHelperLoadedStep", traceStep.StepName);
+        Assert.Equal("expanded;CsvHelperLoadedStep;", File.ReadAllText(markerPath));
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
     /// 指定された script path に対する T27 用 loader を作成します。
     /// </summary>
-    private static CsxEntryLoader CreateLoader(string scriptPath, FakeNuGetDependencyGraphProvider provider)
+    private static CsxEntryLoader CreateLoader(
+        string scriptPath,
+        FakeNuGetDependencyGraphProvider provider,
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null)
     {
         return new CsxEntryLoader(new CsxEntryLoaderOptions
         {
             WorkflowRoot = Path.GetDirectoryName(scriptPath),
-            AllowedNuGetReferences = [new CsxNuGetReference("CsvHelper", "33.0.1")],
+            AllowedNuGetReferences = allowedNuGetReferences ?? [new CsxNuGetReference("CsvHelper", "33.0.1")],
             NuGetDependencyGraphProvider = provider,
         });
     }
@@ -360,6 +740,81 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
+    /// NuGet script load を含む最小の workflow script を作成します。
+    /// </summary>
+    private static string CreateNuGetLoadWorkflowScript(string packageId, string version, string stepTypeName)
+    {
+        return $$"""
+            #load "nuget: {{packageId}}, {{version}}"
+            using Devo6.WorkFlow.Engine;
+
+            var Main = CompositeStep.Define("Main")
+                .Run<{{stepTypeName}}, string>()
+                    .StoreAs();
+            """;
+    }
+
+    /// <summary>
+    /// 同じ NuGet script load を二度書いた workflow script を作成します。
+    /// </summary>
+    private static string CreateDuplicateNuGetLoadWorkflowScript(string packageId, string version, string stepTypeName)
+    {
+        return $$"""
+            #load "nuget: {{packageId}}, {{version}}"
+            #load "nuget: {{packageId}}, {{version}}"
+            using Devo6.WorkFlow.Engine;
+
+            var Main = CompositeStep.Define("Main")
+                .Run<{{stepTypeName}}, string>()
+                    .StoreAs();
+            """;
+    }
+
+    /// <summary>
+    /// NuGet script package から解決された Step 定義 script を作成します。
+    /// </summary>
+    private static string CreateLoadedStepScript(string stepTypeName, string markerPath, bool recordExpansion = false)
+    {
+        string expansionMarker = recordExpansion
+            ? $$"""
+            System.IO.File.AppendAllText("{{markerPath}}", "expanded;");
+
+            """
+            : "";
+
+        return $$"""
+            using Devo6.WorkFlow.Abstractions;
+
+            {{expansionMarker}}/// <summary>
+            /// NuGet script package から読み込まれた検査用 Step です。
+            /// </summary>
+            public sealed class {{stepTypeName}} : IStep<string>
+            {
+                /// <summary>
+                /// NuGet script package から読み込まれた Step の実行を marker file に記録します。
+                /// </summary>
+                public string Execute(StepInput input)
+                {
+                    System.IO.File.AppendAllText("{{markerPath}}", "{{stepTypeName}};");
+
+                    return "{{stepTypeName}}";
+                }
+            }
+            """;
+    }
+
+    /// <summary>
+    /// marker file の一時 path を作成します。
+    /// </summary>
+    private static string CreateMarkerPath()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "devo6-workflow-nuget-load-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+
+        return Path.Combine(directory, "marker.txt");
+    }
+
+    /// <summary>
     /// 標準名の NuGet lock file fixture を script directory に書き込みます。
     /// </summary>
     private static void WriteDefaultLockFile(
@@ -371,9 +826,33 @@ public sealed class NuGetLockContractTests
         string dotnetScriptCoreVersion = DefaultDotnetScriptCoreVersion,
         IReadOnlyList<string>? packageSources = null)
     {
+        WriteNuGetLockFile(
+            scriptPath,
+            [("CsvHelper", directVersion)],
+            [("CsvHelper", directVersion, true), ("Microsoft.Bcl.AsyncInterfaces", resolvedVersion, false)],
+            targetFramework,
+            runtimeIdentifier,
+            dotnetScriptCoreVersion,
+            packageSources);
+    }
+
+    /// <summary>
+    /// 指定した directReferences と resolvedDependencies を持つ NuGet lock file fixture を script directory に書き込みます。
+    /// </summary>
+    private static void WriteNuGetLockFile(
+        string scriptPath,
+        IReadOnlyList<(string PackageId, string Version)> directReferences,
+        IReadOnlyList<(string PackageId, string Version, bool IsDirect)> resolvedDependencies,
+        string targetFramework = DefaultTargetFramework,
+        string runtimeIdentifier = DefaultRuntimeIdentifier,
+        string dotnetScriptCoreVersion = DefaultDotnetScriptCoreVersion,
+        IReadOnlyList<string>? packageSources = null)
+    {
         string directory = Path.GetDirectoryName(scriptPath)!;
         string lockPath = Path.Combine(directory, DefaultNuGetLockFileName);
         string packageSourceYaml = ToPackageSourceYaml(packageSources ?? DefaultPackageSources);
+        string directReferenceYaml = ToDirectReferenceYaml(directReferences);
+        string resolvedDependencyYaml = ToResolvedDependencyYaml(resolvedDependencies);
         File.WriteAllText(
             lockPath,
             $$"""
@@ -385,15 +864,9 @@ public sealed class NuGetLockContractTests
             {{packageSourceYaml}}
             dotnetScriptCoreVersion: {{dotnetScriptCoreVersion}}
             directReferences:
-              - packageId: CsvHelper
-                version: {{directVersion}}
+            {{directReferenceYaml}}
             resolvedDependencies:
-              - packageId: CsvHelper
-                version: {{directVersion}}
-                direct: true
-              - packageId: Microsoft.Bcl.AsyncInterfaces
-                version: {{resolvedVersion}}
-                direct: false
+            {{resolvedDependencyYaml}}
             """);
     }
 
@@ -431,6 +904,27 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
+    /// NuGet 直接参照 fixture を YAML sequence に変換します。
+    /// </summary>
+    private static string ToDirectReferenceYaml(IReadOnlyList<(string PackageId, string Version)> directReferences)
+    {
+        return string.Join(
+            Environment.NewLine,
+            directReferences.Select(reference => $"  - packageId: {reference.PackageId}{Environment.NewLine}    version: {reference.Version}"));
+    }
+
+    /// <summary>
+    /// NuGet 解決済み依存 fixture を YAML sequence に変換します。
+    /// </summary>
+    private static string ToResolvedDependencyYaml(IReadOnlyList<(string PackageId, string Version, bool IsDirect)> resolvedDependencies)
+    {
+        return string.Join(
+            Environment.NewLine,
+            resolvedDependencies.Select(dependency =>
+                $"  - packageId: {dependency.PackageId}{Environment.NewLine}    version: {dependency.Version}{Environment.NewLine}    direct: {dependency.IsDirect.ToString().ToLowerInvariant()}"));
+    }
+
+    /// <summary>
     /// fake provider が返す解決済み NuGet dependency graph を作成します。
     /// </summary>
     private static CsxNuGetDependencyGraph CreateGraph(
@@ -447,6 +941,34 @@ public sealed class NuGetLockContractTests
             dependency => new CsxResolvedNuGetDependency(dependency.PackageId, dependency.Version, isDirect: false)));
 
         return new CsxNuGetDependencyGraph(dependencies, resolutionMetadata: CreateDefaultResolutionMetadata());
+    }
+
+    /// <summary>
+    /// fake provider が返す script 解決情報付きの NuGet dependency graph を作成します。
+    /// </summary>
+    private static CsxNuGetDependencyGraph CreateGraphWithScripts(
+        string directPackageId,
+        string directVersion,
+        IReadOnlyList<CsxResolvedNuGetScript> scripts,
+        params (string PackageId, string Version)[] transitiveDependencies)
+    {
+        var dependencies = new List<CsxResolvedNuGetDependency>
+        {
+            new(directPackageId, directVersion, isDirect: true),
+        };
+
+        dependencies.AddRange(transitiveDependencies.Select(
+            dependency => new CsxResolvedNuGetDependency(dependency.PackageId, dependency.Version, isDirect: false)));
+
+        return new CsxNuGetDependencyGraph(dependencies, scripts: scripts, resolutionMetadata: CreateDefaultResolutionMetadata());
+    }
+
+    /// <summary>
+    /// fake provider が返す NuGet script 解決情報を作成します。
+    /// </summary>
+    private static CsxResolvedNuGetScript CreateResolvedScript(string packageId, string version, string scriptPath, string sourceCode)
+    {
+        return new CsxResolvedNuGetScript(packageId, version, scriptPath, sourceCode);
     }
 
     /// <summary>

@@ -217,7 +217,9 @@ public sealed class CsxEntryLoader
 
         string code = MoveUsingDirectivesToTop(LoadScriptFile(entryFullPath, context));
         CsxNuGetDependencyGraph nuGetGraph = VerifyNuGetLock(entryFullPath, code, context);
-        string compilationCode = context.HasNuGetReferences ? RemoveNuGetReferenceDirectives(code) : code;
+        string compilationCode = context.HasNuGetReferences
+            ? MoveUsingDirectivesToTop(ExpandNuGetDirectives(code, nuGetGraph))
+            : code;
 
         return new CsxScriptSource(
             compilationCode,
@@ -267,9 +269,13 @@ public sealed class CsxEntryLoader
                 {
                     if (loadValue.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
                     {
-                        throw new CsxReferenceValidationException(
-                            WorkflowErrorCodes.ScriptReferenceNotAllowed,
-                            "#load with nuget references is not supported.");
+                        CsxNuGetReference reference = ValidateNuGetReference(loadValue);
+                        context.HasNuGetReferences = true;
+                        AddNuGetReference(context.NuGetReferences, reference);
+                        AddNuGetReference(context.NuGetScriptLoadReferences, reference);
+                        source.AppendLine(line);
+
+                        continue;
                     }
 
                     string loadedPath = Path.GetFullPath(Path.Combine(directory, loadValue));
@@ -314,7 +320,7 @@ public sealed class CsxEntryLoader
         {
             CsxNuGetReference reference = ValidateNuGetReference(referenceValue);
             context.HasNuGetReferences = true;
-            context.NuGetReferences.Add(reference);
+            AddNuGetReference(context.NuGetReferences, reference);
 
             return true;
         }
@@ -351,14 +357,14 @@ public sealed class CsxEntryLoader
     }
 
     /// <summary>
-    /// NuGet 参照が固定 version かつ許可済みであることを確認します。
+    /// NuGet directive が固定 version かつ許可済みであることを確認します。
     /// </summary>
-    /// <param name="referenceValue">#r directive に書かれた NuGet 参照値。</param>
+    /// <param name="referenceValue">NuGet directive に書かれた参照値。</param>
     /// <returns>検査済みの NuGet 直接参照。</returns>
     private CsxNuGetReference ValidateNuGetReference(string referenceValue)
     {
         string value = referenceValue["nuget:".Length..].Trim();
-        string[] parts = value.Split(',', 2, StringSplitOptions.TrimEntries);
+        string[] parts = value.Split(',', StringSplitOptions.TrimEntries);
 
         if (parts.Length != 2 || IsFloatingNuGetVersion(parts[1]))
         {
@@ -379,6 +385,22 @@ public sealed class CsxEntryLoader
         }
 
         return new CsxNuGetReference(parts[0], parts[1]);
+    }
+
+    /// <summary>
+    /// NuGet 直接参照の集合に未登録の参照だけを追加します。
+    /// </summary>
+    /// <param name="references">追加先の NuGet 直接参照集合。</param>
+    /// <param name="reference">追加する NuGet 直接参照。</param>
+    private static void AddNuGetReference(ICollection<CsxNuGetReference> references, CsxNuGetReference reference)
+    {
+        if (references.Any(existing => string.Equals(existing.PackageId, reference.PackageId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(existing.Version, reference.Version, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        references.Add(reference);
     }
 
     /// <summary>
@@ -404,7 +426,15 @@ public sealed class CsxEntryLoader
         }
 
         CsxNuGetLockFile lockFile = ReadNuGetLockFile(lockPath);
-        EnsureDirectReferencesMatch(context.NuGetReferences, lockFile.DirectReferences);
+        if (context.NuGetScriptLoadReferences.Count == 0)
+        {
+            EnsureDirectReferencesMatch(context.NuGetReferences, lockFile.DirectReferences);
+        }
+        else
+        {
+            EnsureKnownDirectReferencesMatchLock(context.NuGetReferences, lockFile.DirectReferences);
+        }
+
         EnsureLockMetadataIsComplete(lockFile);
 
         CsxNuGetDependencyGraph graph;
@@ -424,6 +454,13 @@ public sealed class CsxEntryLoader
                 WorkflowErrorCodes.ScriptNugetRestoreFailed,
                 $"NuGet dependencies could not be restored: {exception.Message}");
         }
+
+        IReadOnlyList<CsxNuGetReference> directReferences = CollectValidatedNuGetScriptDirectReferences(
+            graph,
+            context.NuGetReferences,
+            context.NuGetScriptLoadReferences);
+        EnsureDirectReferencesMatch(directReferences, lockFile.DirectReferences);
+        graph = MarkDirectResolvedDependencies(graph, directReferences);
 
         EnsureResolutionMetadataMatches(graph.ResolutionMetadata, lockFile);
         EnsureResolvedDependenciesMatch(graph.Dependencies, lockFile.ResolvedDependencies);
@@ -478,6 +515,147 @@ public sealed class CsxEntryLoader
                 WorkflowErrorCodes.ScriptNugetLockMismatch,
                 "NuGet direct references do not match the lock file.");
         }
+    }
+
+    /// <summary>
+    /// provider 前に判明している NuGet 直接参照が lock file に固定されていることを確認します。
+    /// </summary>
+    /// <param name="actualReferences">provider 前に script から読んだ直接参照。</param>
+    /// <param name="lockedReferences">lock file に記録された直接参照。</param>
+    private static void EnsureKnownDirectReferencesMatchLock(
+        IReadOnlyList<CsxNuGetReference> actualReferences,
+        IReadOnlyList<CsxNuGetReference> lockedReferences)
+    {
+        bool allKnownReferencesLocked = actualReferences.All(actualReference => lockedReferences.Any(lockedReference =>
+            string.Equals(actualReference.PackageId, lockedReference.PackageId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(actualReference.Version, lockedReference.Version, StringComparison.OrdinalIgnoreCase)));
+
+        if (!allKnownReferencesLocked)
+        {
+            throw new CsxReferenceValidationException(
+                WorkflowErrorCodes.ScriptNugetLockMismatch,
+                "NuGet direct references do not match the lock file.");
+        }
+    }
+
+    /// <summary>
+    /// provider が返した NuGet script source から reachable な nested NuGet script load を検査して直接参照に追加します。
+    /// </summary>
+    /// <param name="graph">lock と一致した解決済み NuGet dependency graph。</param>
+    /// <param name="entryReferences">entry と local script から provider 前に読んだ NuGet 直接参照。</param>
+    /// <param name="scriptLoadReferences">entry と local script から provider 前に読んだ NuGet script load 参照。</param>
+    /// <returns>provider script 内の nested NuGet script load を含む直接参照。</returns>
+    private IReadOnlyList<CsxNuGetReference> CollectValidatedNuGetScriptDirectReferences(
+        CsxNuGetDependencyGraph graph,
+        IReadOnlyList<CsxNuGetReference> entryReferences,
+        IReadOnlyList<CsxNuGetReference> scriptLoadReferences)
+    {
+        var directReferences = new List<CsxNuGetReference>(entryReferences);
+        var loadedScripts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var loadStack = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (CsxNuGetReference reference in scriptLoadReferences)
+        {
+            CollectValidatedNuGetScriptDirectReferences(graph, reference, directReferences, loadedScripts, loadStack);
+        }
+
+        return directReferences;
+    }
+
+    /// <summary>
+    /// 指定した NuGet script load から reachable な nested NuGet script load を検査して直接参照に追加します。
+    /// </summary>
+    /// <param name="graph">lock と一致した解決済み NuGet dependency graph。</param>
+    /// <param name="reference">検査する NuGet script load 参照。</param>
+    /// <param name="directReferences">検査済み直接参照の追加先。</param>
+    /// <param name="loadedScripts">既に検査済みの script key 集合。</param>
+    /// <param name="loadStack">現在検査中の script key 集合。</param>
+    private void CollectValidatedNuGetScriptDirectReferences(
+        CsxNuGetDependencyGraph graph,
+        CsxNuGetReference reference,
+        ICollection<CsxNuGetReference> directReferences,
+        ISet<string> loadedScripts,
+        ISet<string> loadStack)
+    {
+        CsxResolvedNuGetScript[] scripts = FindResolvedNuGetScripts(graph, reference);
+
+        foreach (CsxResolvedNuGetScript script in scripts)
+        {
+            CollectValidatedNuGetScriptDirectReferences(graph, script, directReferences, loadedScripts, loadStack);
+        }
+    }
+
+    /// <summary>
+    /// 指定した解決済み NuGet script source 内の nested NuGet script load を検査して直接参照に追加します。
+    /// </summary>
+    /// <param name="graph">lock と一致した解決済み NuGet dependency graph。</param>
+    /// <param name="script">検査する解決済み NuGet script。</param>
+    /// <param name="directReferences">検査済み直接参照の追加先。</param>
+    /// <param name="loadedScripts">既に検査済みの script key 集合。</param>
+    /// <param name="loadStack">現在検査中の script key 集合。</param>
+    private void CollectValidatedNuGetScriptDirectReferences(
+        CsxNuGetDependencyGraph graph,
+        CsxResolvedNuGetScript script,
+        ICollection<CsxNuGetReference> directReferences,
+        ISet<string> loadedScripts,
+        ISet<string> loadStack)
+    {
+        string scriptKey = CreateNuGetScriptKey(script);
+
+        if (loadStack.Contains(scriptKey))
+        {
+            throw new CsxReferenceValidationException(
+                WorkflowErrorCodes.ScriptLoadCycleDetected,
+                $"NuGet script load cycle was detected: {script.PackageId}, {script.Version}, {script.ScriptPath}");
+        }
+
+        if (loadedScripts.Contains(scriptKey))
+        {
+            return;
+        }
+
+        loadStack.Add(scriptKey);
+
+        try
+        {
+            foreach (string line in script.SourceCode.Split(Environment.NewLine))
+            {
+                if (TryReadDirective(line, "load", out string loadValue)
+                    && loadValue.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
+                {
+                    CsxNuGetReference nestedReference = ValidateNuGetReference(loadValue);
+                    AddNuGetReference(directReferences, nestedReference);
+                    CollectValidatedNuGetScriptDirectReferences(graph, nestedReference, directReferences, loadedScripts, loadStack);
+                }
+            }
+
+            loadedScripts.Add(scriptKey);
+        }
+        finally
+        {
+            loadStack.Remove(scriptKey);
+        }
+    }
+
+    /// <summary>
+    /// provider が返した解決済み依存関係の直接参照 flag を検査済み直接参照に合わせます。
+    /// </summary>
+    /// <param name="graph">provider が返した解決済み NuGet dependency graph。</param>
+    /// <param name="directReferences">検査済み NuGet 直接参照。</param>
+    /// <returns>直接参照 flag を補正した解決済み NuGet dependency graph。</returns>
+    private static CsxNuGetDependencyGraph MarkDirectResolvedDependencies(
+        CsxNuGetDependencyGraph graph,
+        IReadOnlyList<CsxNuGetReference> directReferences)
+    {
+        CsxResolvedNuGetDependency[] dependencies = graph.Dependencies
+            .Select(dependency => new CsxResolvedNuGetDependency(
+                dependency.PackageId,
+                dependency.Version,
+                directReferences.Any(reference => string.Equals(reference.PackageId, dependency.PackageId, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(reference.Version, dependency.Version, StringComparison.OrdinalIgnoreCase))))
+            .ToArray();
+
+        return new CsxNuGetDependencyGraph(dependencies, graph.ReferencePaths, graph.Scripts, graph.ResolutionMetadata);
     }
 
     /// <summary>
@@ -815,17 +993,160 @@ public sealed class CsxEntryLoader
     }
 
     /// <summary>
-    /// lock 検査後の compile source から NuGet #r directive を取り除きます。
+    /// lock 検査後の compile source から NuGet directive を取り除き、NuGet script を展開します。
     /// </summary>
     /// <param name="code">変換前の script source。</param>
-    /// <returns>NuGet #r directive を取り除いた script source。</returns>
-    private static string RemoveNuGetReferenceDirectives(string code)
+    /// <param name="graph">lock と一致した解決済み NuGet dependency graph。</param>
+    /// <returns>NuGet directive を取り除き、解決済み script source を展開した source。</returns>
+    private static string ExpandNuGetDirectives(string code, CsxNuGetDependencyGraph graph)
     {
-        return string.Join(
-            Environment.NewLine,
-            code.Split(Environment.NewLine)
-                .Where(line => !TryReadDirective(line, "r", out string referenceValue)
-                    || !referenceValue.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase)));
+        var source = new StringBuilder();
+        var loadedScripts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var loadStack = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string line in code.Split(Environment.NewLine))
+        {
+            if (TryReadDirective(line, "r", out string referenceValue)
+                && referenceValue.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (TryReadDirective(line, "load", out string loadValue)
+                && loadValue.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
+            {
+                CsxNuGetReference reference = ParseValidatedNuGetReference(loadValue);
+                AppendResolvedNuGetScripts(source, graph, reference, loadedScripts, loadStack);
+
+                continue;
+            }
+
+            source.AppendLine(line);
+        }
+
+        return source.ToString();
+    }
+
+    /// <summary>
+    /// 検査済み NuGet directive 文字列から NuGet 直接参照を再作成します。
+    /// </summary>
+    /// <param name="referenceValue">検査済みの NuGet directive 値。</param>
+    /// <returns>NuGet 直接参照。</returns>
+    private static CsxNuGetReference ParseValidatedNuGetReference(string referenceValue)
+    {
+        string[] parts = referenceValue["nuget:".Length..].Trim().Split(',', StringSplitOptions.TrimEntries);
+
+        return new CsxNuGetReference(parts[0], parts[1]);
+    }
+
+    /// <summary>
+    /// NuGet 直接参照に対応する解決済み script source を出力へ追加します。
+    /// </summary>
+    /// <param name="source">展開後 source の追加先。</param>
+    /// <param name="graph">解決済み NuGet dependency graph。</param>
+    /// <param name="reference">展開する NuGet script load 参照。</param>
+    /// <param name="loadedScripts">既に展開済みの script key 集合。</param>
+    /// <param name="loadStack">現在展開中の script key 集合。</param>
+    private static void AppendResolvedNuGetScripts(
+        StringBuilder source,
+        CsxNuGetDependencyGraph graph,
+        CsxNuGetReference reference,
+        ISet<string> loadedScripts,
+        ISet<string> loadStack)
+    {
+        CsxResolvedNuGetScript[] scripts = FindResolvedNuGetScripts(graph, reference);
+
+        if (scripts.Length == 0)
+        {
+            throw new CsxReferenceValidationException(
+                WorkflowErrorCodes.ScriptNugetRestoreFailed,
+                $"NuGet script load could not be resolved: {reference.PackageId}, {reference.Version}");
+        }
+
+        foreach (CsxResolvedNuGetScript script in scripts)
+        {
+            AppendResolvedNuGetScript(source, graph, script, loadedScripts, loadStack);
+        }
+    }
+
+    /// <summary>
+    /// NuGet 直接参照に対応する解決済み script source を取得します。
+    /// </summary>
+    /// <param name="graph">解決済み NuGet dependency graph。</param>
+    /// <param name="reference">検索する NuGet script load 参照。</param>
+    /// <returns>package id と version が一致する解決済み script source。</returns>
+    private static CsxResolvedNuGetScript[] FindResolvedNuGetScripts(CsxNuGetDependencyGraph graph, CsxNuGetReference reference)
+    {
+        return graph.Scripts
+            .Where(script => string.Equals(script.PackageId, reference.PackageId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(script.Version, reference.Version, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(script => script.ScriptPath, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// 解決済み NuGet script source を循環と重複を避けて出力へ追加します。
+    /// </summary>
+    /// <param name="source">展開後 source の追加先。</param>
+    /// <param name="graph">解決済み NuGet dependency graph。</param>
+    /// <param name="script">展開する解決済み NuGet script。</param>
+    /// <param name="loadedScripts">既に展開済みの script key 集合。</param>
+    /// <param name="loadStack">現在展開中の script key 集合。</param>
+    private static void AppendResolvedNuGetScript(
+        StringBuilder source,
+        CsxNuGetDependencyGraph graph,
+        CsxResolvedNuGetScript script,
+        ISet<string> loadedScripts,
+        ISet<string> loadStack)
+    {
+        string scriptKey = CreateNuGetScriptKey(script);
+
+        if (loadStack.Contains(scriptKey))
+        {
+            throw new CsxReferenceValidationException(
+                WorkflowErrorCodes.ScriptLoadCycleDetected,
+                $"NuGet script load cycle was detected: {script.PackageId}, {script.Version}, {script.ScriptPath}");
+        }
+
+        if (loadedScripts.Contains(scriptKey))
+        {
+            return;
+        }
+
+        loadStack.Add(scriptKey);
+
+        try
+        {
+            foreach (string line in script.SourceCode.Split(Environment.NewLine))
+            {
+                if (TryReadDirective(line, "load", out string loadValue)
+                    && loadValue.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
+                {
+                    CsxNuGetReference reference = ParseValidatedNuGetReference(loadValue);
+                    AppendResolvedNuGetScripts(source, graph, reference, loadedScripts, loadStack);
+
+                    continue;
+                }
+
+                source.AppendLine(line);
+            }
+
+            loadedScripts.Add(scriptKey);
+        }
+        finally
+        {
+            loadStack.Remove(scriptKey);
+        }
+    }
+
+    /// <summary>
+    /// 解決済み NuGet script の重複判定 key を作成します。
+    /// </summary>
+    /// <param name="script">key を作成する解決済み NuGet script。</param>
+    /// <returns>package id、version、script path から作った key。</returns>
+    private static string CreateNuGetScriptKey(CsxResolvedNuGetScript script)
+    {
+        return $"{script.PackageId}\n{script.Version}\n{script.ScriptPath}";
     }
 
     private static bool LooksLikeFileReference(string referenceValue)
@@ -1032,6 +1353,11 @@ public sealed class CsxEntryLoader
         public List<CsxNuGetReference> NuGetReferences { get; } = new();
 
         /// <summary>
+        /// script に含まれる NuGet script load 直接参照を取得します。
+        /// </summary>
+        public List<CsxNuGetReference> NuGetScriptLoadReferences { get; } = new();
+
+        /// <summary>
         /// NuGet 参照が見つかったかどうかを取得または設定します。
         /// </summary>
         public bool HasNuGetReferences { get; set; }
@@ -1177,8 +1503,26 @@ public sealed class CsxEntryLoader
                 .Where(path => !string.IsNullOrWhiteSpace(path))
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
+            CsxResolvedNuGetScript[] scripts = compilationContext.RuntimeDependencies
+                .SelectMany(dependency => dependency.Scripts.Select(scriptPath => CreateResolvedNuGetScript(dependency.Name, dependency.Version, scriptPath)))
+                .OrderBy(script => script.PackageId, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(script => script.Version, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(script => script.ScriptPath, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 
-            return new CsxNuGetDependencyGraph(dependencies, referencePaths, CreateResolutionMetadata(workingDirectory));
+            return new CsxNuGetDependencyGraph(dependencies, referencePaths, scripts, CreateResolutionMetadata(workingDirectory));
+        }
+
+        /// <summary>
+        /// Dotnet.Script が解決した script path から NuGet script 情報を作成します。
+        /// </summary>
+        /// <param name="packageId">NuGet package id。</param>
+        /// <param name="version">解決済み NuGet package version。</param>
+        /// <param name="scriptPath">Dotnet.Script が解決した script path。</param>
+        /// <returns>解決済み NuGet script 情報。</returns>
+        private static CsxResolvedNuGetScript CreateResolvedNuGetScript(string packageId, string version, string scriptPath)
+        {
+            return new CsxResolvedNuGetScript(packageId, version, scriptPath, File.ReadAllText(scriptPath));
         }
     }
 }
@@ -1324,14 +1668,17 @@ public sealed class CsxNuGetDependencyGraph
     /// </summary>
     /// <param name="dependencies">解決済み NuGet 依存関係。</param>
     /// <param name="referencePaths">compile に追加する runtime assembly path。</param>
+    /// <param name="scripts">NuGet script load 用に解決済みの script source 一覧。</param>
     /// <param name="resolutionMetadata">NuGet 解決時の再現性 metadata。</param>
     public CsxNuGetDependencyGraph(
         IReadOnlyList<CsxResolvedNuGetDependency> dependencies,
         IReadOnlyList<string>? referencePaths = null,
+        IReadOnlyList<CsxResolvedNuGetScript>? scripts = null,
         CsxNuGetResolutionMetadata? resolutionMetadata = null)
     {
         Dependencies = dependencies;
         ReferencePaths = referencePaths ?? [];
+        Scripts = scripts ?? [];
         ResolutionMetadata = resolutionMetadata ?? new CsxNuGetResolutionMetadata("", "", [], "");
     }
 
@@ -1346,9 +1693,62 @@ public sealed class CsxNuGetDependencyGraph
     public IReadOnlyList<string> ReferencePaths { get; }
 
     /// <summary>
+    /// NuGet script load 用に解決済みの script source 一覧を取得します。
+    /// </summary>
+    public IReadOnlyList<CsxResolvedNuGetScript> Scripts { get; }
+
+    /// <summary>
     /// NuGet 解決時の再現性 metadata を取得します。
     /// </summary>
     public CsxNuGetResolutionMetadata ResolutionMetadata { get; }
+}
+
+/// <summary>
+/// provider が返す解決済み NuGet script load の source 情報を表します。
+/// </summary>
+public sealed class CsxResolvedNuGetScript
+{
+    /// <summary>
+    /// YAML deserialize などに使う空の解決済み NuGet script 情報を作成します。
+    /// </summary>
+    public CsxResolvedNuGetScript()
+    {
+    }
+
+    /// <summary>
+    /// 解決済み NuGet script load の source 情報を作成します。
+    /// </summary>
+    /// <param name="packageId">NuGet package id。</param>
+    /// <param name="version">解決済み NuGet package version。</param>
+    /// <param name="scriptPath">package 内 script を識別する path。</param>
+    /// <param name="sourceCode">解決済み script source。</param>
+    public CsxResolvedNuGetScript(string packageId, string version, string scriptPath, string sourceCode)
+    {
+        PackageId = packageId;
+        Version = version;
+        ScriptPath = scriptPath;
+        SourceCode = sourceCode;
+    }
+
+    /// <summary>
+    /// NuGet package id を取得または設定します。
+    /// </summary>
+    public string PackageId { get; set; } = "";
+
+    /// <summary>
+    /// 解決済み NuGet package version を取得または設定します。
+    /// </summary>
+    public string Version { get; set; } = "";
+
+    /// <summary>
+    /// package 内 script を識別する path を取得または設定します。
+    /// </summary>
+    public string ScriptPath { get; set; } = "";
+
+    /// <summary>
+    /// 解決済み script source を取得または設定します。
+    /// </summary>
+    public string SourceCode { get; set; } = "";
 }
 
 /// <summary>

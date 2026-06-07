@@ -1175,6 +1175,38 @@ Step 実行、`StepInput` 構築、Config 保持、検証、ログ、実行結�
 
 `#load "nuget: ..."` は初期版では対象外とする。
 
+T28 では、`dotnet-script` 互換の NuGet script パッケージ読み込みに対応する。
+
+```csharp
+#load "nuget: Simple.Targets.Csx, 6.0.0"
+```
+
+文法は `#load "nuget: PackageId, Version"` のみとする。
+
+`#load "nuget: PackageId, Version, path/to/file.csx"` のようにパッケージ内 path をディレクティブで指定する独自文法は採用しない。
+
+NuGet script パッケージのパッケージ内 `.csx` 探索、`contentFiles` または `content` 配下の script 選択、入口判定、`project.assets.json` 解析、実行時 assembly 解決は、`Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
+
+エンジン側では NuGet キャッシュの配置、パッケージ内 `contentFiles` 選択規則、`project.assets.json` 解析、実行時 assembly 解決を再実装しない。
+
+T28 の provider 契約は、`RuntimeDependency.Scripts` 相当のパッケージ script 解決情報、または最終コンパイル時に `NuGetSourceReferenceResolver` へ渡せる script 解決情報を返せる必要がある。
+
+`#load "nuget: ..."` のディレクティブを source に残す経路では、最終コンパイルに `NuGetSourceReferenceResolver` が有効な `ScriptOptions` または同等の `ScriptCompilationContext` を使う。
+
+ローカル `#load` の循環は、読み込み中の正規パス一覧で検出し、`SCRIPT_LOAD_CYCLE_DETECTED` とする。
+
+ローカル `#load` の重複は、同一正規パスを 1 回だけ読み込む。
+
+NuGet script 読み込みの循環は、パッケージ ID、解決済み version、パッケージ内 script path からなる script 識別子で扱う。
+
+ローカル script と NuGet script をまたぐ循環を検出できる場合も `SCRIPT_LOAD_CYCLE_DETECTED` とする。
+
+NuGet source 解決機構または Roslyn 側で循環が検出された場合も、識別できる範囲では `SCRIPT_LOAD_CYCLE_DETECTED` に正規化する。
+
+NuGet script 読み込みの重複は、同一パッケージ ID、解決済み version、パッケージ内 script path の script 識別子を 1 回だけ読み込む。
+
+同一パッケージの複数 script 入口やパッケージ内 script からの相対 `#load` の展開順は、`dotnet-script` の `NuGetSourceReferenceResolver` と script パッケージ解決規則に従う。
+
 ### 16.3 `#r` と NuGet 参照
 
 初期版では、以下を明示許可された場合に限り対応する。
@@ -1203,6 +1235,12 @@ T27 の NuGet ロックファイルは `#r "nuget: package, version"` の再現�
 
 `#load "nuget: ..."` は T28 の対象であり、T27 では引き続き拒否する。
 
+T28 では `#load "nuget: package, version"` も NuGet 直接参照として扱い、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
+
+T28 の `directReferences` はディレクティブ種別を区別しないパッケージ ID、version、参照元の正規化集合とし、`#r` と `#load` の両方から得た直接 NuGet パッケージ参照を含める。
+
+`#load "nuget: ..."` はパッケージ内 script を実行可能 source として取り込むが、T28 では新しい許可一覧を増やさず、NuGet `#r` と同じ許可済みパッケージ ID と version の規則を適用する。
+
 ロックファイルは Entry `.csx` の workflow root に置く YAML とし、ファイル名は `devo6.nuget.lock.yaml` とする。
 
 ロックファイルには以下を記録する。
@@ -1218,17 +1256,22 @@ T27 の NuGet ロックファイルは `#r "nuget: package, version"` の再現�
 
 ロック検証の順序は以下とする。
 
-1. 許可外 NuGet 参照と浮動バージョンを拒否する
-2. NuGet 参照がある場合、復元前に `devo6.nuget.lock.yaml` の欠落を拒否する
-3. 直接参照のパッケージ ID と version がロックファイルと一致しない場合、復元前に拒否する
+1. 許可外 NuGet 参照、浮動バージョン、`dotnet-script` 互換でない NuGet `#load` 文法を `SCRIPT_REFERENCE_NOT_ALLOWED` として拒否する
+2. NuGet 直接参照がある場合、復元前に `devo6.nuget.lock.yaml` の欠落を `SCRIPT_NUGET_LOCK_MISSING` として拒否する
+3. 直接参照のパッケージ ID と version がロックファイルと一致しない場合、復元前に `SCRIPT_NUGET_LOCK_MISMATCH` として拒否する
 4. `Dotnet.Script.Core` による依存関係解決を行う
-5. 解決済み依存関係をロックファイルと比較する
+5. 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする
+6. 解決済み依存関係または `metadata` がロックファイルと一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする
 
 リポジトリ側はロックファイルの読み書き、欠落、不一致、許可済み直接参照の完全一致、解決済み依存関係の比較だけを薄く持つ。
 
 通常の `dotnet test` が外部通信に依存しないよう、依存関係 provider は注入できる設計にする。
 
 本番 provider は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` を使い、検査 provider は固定データを返す。
+
+T28 の通常検査では偽 provider などの固定データを使い、外部 NuGet source への通信を必須にしない。
+
+必要な場合だけ、ローカルの NuGet 参照元を使う追加検証を分けて用意する。
 
 ただし、NuGet 参照は実行できるコードを増やすため、信頼済みワークフローでのみ使う。
 
@@ -1249,6 +1292,7 @@ Script 側で公開 API assembly の別コピーが読み込まれた場合、�
 - Entry `.csx` の正規パスと内容ハッシュ
 - `#load` された全 `.csx` の正規パスと内容ハッシュ
 - `#r` の参照一覧
+- `#load "nuget: ..."` から解決されたパッケージ script のパッケージ ID、version、パッケージ内 script 識別子
 - NuGet パッケージ ID、バージョン、参照元
 - エンジンのバージョン
 
@@ -1479,6 +1523,14 @@ NuGet ロックファイルが必要な workflow root に存在しない場合�
 ロックファイルと直接参照、またはロックファイルと解決済み依存関係が一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする。
 
 `Dotnet.Script.Core` による NuGet 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする。
+
+T28 の `#load "nuget: ..."` では、未許可 NuGet、浮動 version、`dotnet-script` 互換でない文法を `SCRIPT_REFERENCE_NOT_ALLOWED` とする。
+
+`devo6.nuget.lock.yaml` が欠落している場合は、復元を試みる前に `SCRIPT_NUGET_LOCK_MISSING` を返す。
+
+直接参照の不一致は復元前に `SCRIPT_NUGET_LOCK_MISMATCH` とし、復元失敗の `SCRIPT_NUGET_RESTORE_FAILED` より優先する。
+
+復元後の解決済み依存関係または `metadata` の不一致は `SCRIPT_NUGET_LOCK_MISMATCH` とする。
 
 trace 値を `System.Text.Json` で直列化できない場合でも、T26 の既定動作では workflow を失敗させない。
 
@@ -1861,7 +1913,15 @@ T27 の NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Sc
 
 エンジン側は利用者向けの `devo6.nuget.lock.yaml` と、許可済み直接参照、解決済み依存関係、`targetFramework`、実行時識別子、パッケージ参照元、`Dotnet.Script.Core` version の比較を担当する。
 
+T28 では、`dotnet-script` 互換の `#load "nuget: PackageId, Version"` を採用し、パッケージ内 path をディレクティブに追加する独自仕様は採用しない。
+
+`#load "nuget: ..."` から得た直接参照も、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
+
+NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解析、実行時 assembly 解決、最終コンパイル用の NuGet script source 解決機構は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
+
 通常の検査では固定データを返す依存関係 provider を使い、外部 NuGet source への通信を必須にしない。
+
+必要に応じてローカルの NuGet 参照元を使う追加検証を用意するが、通常の `dotnet test` の前提にはしない。
 
 ---
 
