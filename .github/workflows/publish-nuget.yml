@@ -17,7 +17,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      pull-requests: read
     env:
       NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
 
@@ -140,3 +141,45 @@ jobs:
             --api-key "${{ env.NUGET_API_KEY }}" \
             --source "https://api.nuget.org/v3/index.json" \
             --skip-duplicate
+
+      - name: Verify gh CLI
+        if: ${{ github.event_name == 'push' && github.ref_name == 'master' }}
+        run: gh --version
+
+      - name: Create GitHub Pre-release
+        if: ${{ github.event_name == 'push' && github.ref_name == 'master' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          repo="${{ github.repository }}"
+          sha="${{ github.sha }}"
+          tag="${{ steps.version.outputs.package_version }}"
+
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            echo "GitHub pre-release already exists: $tag"
+            exit 0
+          fi
+
+          notes_file=$(mktemp)
+          {
+            echo "Automated pre-release from master push."
+            echo
+            pr_numbers=$(gh api -H "Accept: application/vnd.github+json" "/repos/${repo}/commits/${sha}/pulls" --jq '.[].number' 2>/dev/null || true)
+            if [[ -n "${pr_numbers}" ]]; then
+              echo "Related pull requests:"
+              while IFS= read -r pr; do
+                [[ -z "${pr}" ]] && continue
+                echo "- #${pr}"
+              done <<< "${pr_numbers}"
+            else
+              echo "Related pull request: not found."
+            fi
+          } > "$notes_file"
+
+          gh release create "$tag" \
+            --repo "$repo" \
+            --target "$sha" \
+            --title "$tag" \
+            --notes-file "$notes_file" \
+            --prerelease
