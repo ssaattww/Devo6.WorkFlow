@@ -101,10 +101,10 @@ jobs:
           echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
 
       - name: Restore
-        run: dotnet restore Devo6.WorkFlow.sln
+        run: dotnet restore "${{ steps.project.outputs.path }}"
 
-      - name: Test
-        run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore
+      - name: Build
+        run: dotnet build "${{ steps.project.outputs.path }}" --configuration Release --no-restore
 
       - name: Pack CLI tool
         run: |

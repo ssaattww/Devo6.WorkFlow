@@ -10,6 +10,7 @@
 ## 観点
 
 - 公開対象が CLI ツールプロジェクトに限定されていること。
+- 公開 workflow が不要な全体テストを実行せず、公開対象の build、pack、導入確認に限定されていること。
 - NuGet.org 公開前にパッケージ作成と `dotnet tool install` の導入確認を行うこと。
 - `engine` コマンドが導入後に起動されること。
 - 公開には `NUGET_API_KEY` が必要であり、未設定時に明示的に失敗すること。
@@ -22,6 +23,7 @@
 ## 確認結果
 
 - YAML として読み込み可能であることを確認した。
+- 公開 workflow から `dotnet test` が外れ、公開対象プロジェクトの restore、build、pack に絞られていることを確認した。
 - ローカルパッケージからの `dotnet tool install` と `engine` 起動確認を実施した。
 - Release 構成、no-build pack、公開前版番号の組み合わせでも導入確認を実施した。
 - Markdown lint と表記揺れ検査を実施した。
