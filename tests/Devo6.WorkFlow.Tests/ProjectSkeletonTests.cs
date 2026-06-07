@@ -58,6 +58,8 @@ public sealed class ProjectSkeletonTests
                 "run",
                 "--project",
                 Path.Combine(RepositoryRoot, "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"),
+                "--configuration",
+                TestBuildConfiguration.Current,
                 "--no-build"
             },
             RedirectStandardError = true,
