@@ -6,6 +6,9 @@ using Microsoft.Extensions.Logging;
 
 namespace Devo6.WorkFlow.Tests;
 
+/// <summary>
+/// retry 実行の公開契約を検査します。
+/// </summary>
 public sealed class RetryExecutionContractTests
 {
     /// <summary>
@@ -257,10 +260,19 @@ public sealed class RetryExecutionContractTests
         Assert.Equal(1, traceStep.Attempt);
     }
 
+    /// <summary>
+    /// retry 対象 Step が返す観測用の値を保持します。
+    /// </summary>
     private sealed record RetryOutput(string Value);
 
+    /// <summary>
+    /// Produce から後続 Step へ渡す観測用の値を保持します。
+    /// </summary>
     private sealed record NextInput(string Value);
 
+    /// <summary>
+    /// 3 回目の実行だけ成功する retry 検査用 Step です。
+    /// </summary>
     private sealed class ThirdAttemptSucceedsStep : IStep<RetryOutput>
     {
         /// <summary>
@@ -280,6 +292,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// すべての試行で通常例外を投げる retry 検査用 Step です。
+    /// </summary>
     private sealed class AlwaysFailsStep : IStep<RetryOutput>
     {
         /// <summary>
@@ -294,6 +309,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// timeout が retry 対象にならないことを観測する async Step です。
+    /// </summary>
     private sealed class TimeoutStep : IAsyncStep<RetryOutput>
     {
         /// <summary>
@@ -310,6 +328,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// 外部キャンセルが retry 対象にならないことを観測する async Step です。
+    /// </summary>
     private sealed class ExternallyCanceledStep : IAsyncStep<RetryOutput>
     {
         /// <summary>
@@ -327,6 +348,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// Produce 失敗時の Step 本体再実行有無を観測する Step です。
+    /// </summary>
     private sealed class ProduceFailureSourceStep : IStep<RetryOutput>
     {
         /// <summary>
@@ -341,6 +365,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// retry 対象 Step の後続実行を観測する Step です。
+    /// </summary>
     private sealed class FollowingStep : IStep<string>
     {
         /// <summary>
@@ -355,6 +382,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// retry 検査で共有する試行回数と実行イベントを保持します。
+    /// </summary>
     private static class RetryContractState
     {
         private static readonly object Gate = new();
@@ -449,6 +479,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// workflow 実行中の logger entry を記録する factory です。
+    /// </summary>
     private sealed class RecordingLoggerFactory : ILoggerFactory
     {
         private readonly RecordingLogger logger;
@@ -489,6 +522,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// 現在の scope と message を entries に保存する logger です。
+    /// </summary>
     private sealed class RecordingLogger(List<LogEntry> entries) : ILogger
     {
         private readonly AsyncLocal<ImmutableStack<IReadOnlyDictionary<string, object?>>?> scopes = new();
@@ -555,6 +591,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// BeginScope で追加した scope を破棄時に戻します。
+    /// </summary>
     private sealed class ScopePopper : IDisposable
     {
         private readonly AsyncLocal<ImmutableStack<IReadOnlyDictionary<string, object?>>?> scopes;
@@ -576,6 +615,9 @@ public sealed class RetryExecutionContractTests
         }
     }
 
+    /// <summary>
+    /// logger に記録された message と scope の snapshot を保持します。
+    /// </summary>
     private sealed record LogEntry(
         LogLevel Level,
         string Message,

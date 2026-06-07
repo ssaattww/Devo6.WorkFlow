@@ -1,47 +1,47 @@
 namespace Devo6.WorkFlow.Abstractions;
 
 /// <summary>
-/// Provides stable workflow error code constants used by validation, execution results, logs, and traces.
+/// validation、実行結果、log、trace で使う安定した workflow error code 定数を提供します。
 /// </summary>
 public static class WorkflowErrorCodes
 {
     /// <summary>
-    /// Indicates that the entry script file was not found.
+    /// entry script file が見つからなかったことを示します。
     /// </summary>
     public const string EntryScriptNotFound = "ENTRY_SCRIPT_NOT_FOUND";
 
     /// <summary>
-    /// Indicates that the requested entry step was not found.
+    /// 要求された entry Step が見つからなかったことを示します。
     /// </summary>
     public const string EntryStepNotFound = "ENTRY_STEP_NOT_FOUND";
 
     /// <summary>
-    /// Indicates that multiple public steps used the same name.
+    /// 複数の public Step が同じ名前を使用したことを示します。
     /// </summary>
     public const string DuplicateStepName = "DUPLICATE_STEP_NAME";
 
     /// <summary>
-    /// Indicates that script compilation failed.
+    /// script compile が失敗したことを示します。
     /// </summary>
     public const string ScriptCompileFailed = "SCRIPT_COMPILE_FAILED";
 
     /// <summary>
-    /// Indicates that script loading failed.
+    /// script load が失敗したことを示します。
     /// </summary>
     public const string ScriptLoadFailed = "SCRIPT_LOAD_FAILED";
 
     /// <summary>
-    /// Indicates that script loading detected a cycle.
+    /// script load で循環を検出したことを示します。
     /// </summary>
     public const string ScriptLoadCycleDetected = "SCRIPT_LOAD_CYCLE_DETECTED";
 
     /// <summary>
-    /// Indicates that a script reference was not allowed by policy.
+    /// script reference が policy で許可されていなかったことを示します。
     /// </summary>
     public const string ScriptReferenceNotAllowed = "SCRIPT_REFERENCE_NOT_ALLOWED";
 
     /// <summary>
-    /// Indicates that restoring script NuGet dependencies failed.
+    /// script の NuGet 依存関係 restore が失敗したことを示します。
     /// </summary>
     public const string ScriptNugetRestoreFailed = "SCRIPT_NUGET_RESTORE_FAILED";
 
@@ -56,37 +56,37 @@ public static class WorkflowErrorCodes
     public const string ScriptNugetLockMismatch = "SCRIPT_NUGET_LOCK_MISMATCH";
 
     /// <summary>
-    /// Indicates that the loaded script used an incompatible workflow API identity.
+    /// load された script が互換性のない workflow API identity を使用したことを示します。
     /// </summary>
     public const string ScriptApiIdentityMismatch = "SCRIPT_API_IDENTITY_MISMATCH";
 
     /// <summary>
-    /// Indicates that a required step input was not found.
+    /// 必須の Step 入力が見つからなかったことを示します。
     /// </summary>
     public const string StepInputNotFound = "STEP_INPUT_NOT_FOUND";
 
     /// <summary>
-    /// Indicates that a step input existed but could not be read as the requested type.
+    /// Step 入力は存在したが要求された型として読めなかったことを示します。
     /// </summary>
     public const string StepInputTypeMismatch = "STEP_INPUT_TYPE_MISMATCH";
 
     /// <summary>
-    /// Indicates that a required configuration source was not found.
+    /// 必須の config source が見つからなかったことを示します。
     /// </summary>
     public const string ConfigNotFound = "CONFIG_NOT_FOUND";
 
     /// <summary>
-    /// Indicates that configuration loading failed.
+    /// config load が失敗したことを示します。
     /// </summary>
     public const string ConfigLoadFailed = "CONFIG_LOAD_FAILED";
 
     /// <summary>
-    /// Indicates that a step threw or otherwise failed during execution.
+    /// Step が例外またはその他の理由で実行中に失敗したことを示します。
     /// </summary>
     public const string StepExecutionFailed = "STEP_EXECUTION_FAILED";
 
     /// <summary>
-    /// Indicates that a step exceeded its configured timeout.
+    /// Step が設定された timeout を超過したことを示します。
     /// </summary>
     public const string StepTimeout = "STEP_TIMEOUT";
 
@@ -96,7 +96,7 @@ public static class WorkflowErrorCodes
     public const string StepCanceled = "STEP_CANCELED";
 
     /// <summary>
-    /// Indicates that serializing the execution trace failed.
+    /// execution trace の serialize が失敗したことを示します。
     /// </summary>
     public const string TraceSerializationFailed = "TRACE_SERIALIZATION_FAILED";
 }

@@ -1,22 +1,22 @@
 namespace Devo6.WorkFlow.Abstractions;
 
 /// <summary>
-/// Holds command-line engine arguments that workflow steps can read from StepContext.
+/// workflow Step が StepContext から参照できる command-line engine 引数を保持します。
 /// </summary>
 public sealed class EngineArguments
 {
     /// <summary>
-    /// Gets the entry .csx file path selected for the workflow run.
+    /// workflow 実行に選択された entry .csx file path を取得します。
     /// </summary>
     public string EntryPath { get; init; } = "";
 
     /// <summary>
-    /// Gets the resolved config file path, or an empty string when no config file was specified.
+    /// 解決済み config file path を取得します。config file が指定されていない場合は空文字列です。
     /// </summary>
     public string ConfigPath { get; init; } = "";
 
     /// <summary>
-    /// Gets string override settings supplied by repeated --set key=value arguments.
+    /// 複数の --set key=value 引数から渡された文字列 override 設定を取得します。
     /// </summary>
     public IReadOnlyDictionary<string, string> Settings { get; init; } = new Dictionary<string, string>();
 }

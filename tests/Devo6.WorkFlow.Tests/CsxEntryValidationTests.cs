@@ -4,12 +4,12 @@ using Devo6.WorkFlow.Engine;
 namespace Devo6.WorkFlow.Tests;
 
 /// <summary>
-/// Verifies the user-facing pre-execution validation contract for trusted .csx workflows.
+/// 信頼済み .csx workflow の実行前 validation が利用者向けの成功結果と validation error を返すことを検査します。
 /// </summary>
 public sealed class CsxEntryValidationTests
 {
     /// <summary>
-    /// Verifies that a valid .csx workflow validates successfully without errors.
+    /// 妥当な csx workflow は Step を実行せずに validation success となり errors が空になることを検査します。
     /// </summary>
     [Fact(DisplayName = "valid csx は validation success になり errors が空になる")]
     public void ValidCsxはValidationSuccessになりErrorsが空になる()
@@ -36,7 +36,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that a missing entry .csx file returns ENTRY_SCRIPT_NOT_FOUND.
+    /// 存在しない Entry csx に ENTRY_SCRIPT_NOT_FOUND の validation error が返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "Entry csx が存在しない場合は ENTRY_SCRIPT_NOT_FOUND が返る")]
     public void EntryCsxが存在しない場合はEntryScriptNotFoundが返る()
@@ -52,7 +52,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that a missing requested entry name returns ENTRY_STEP_NOT_FOUND.
+    /// 指定した Entry 名が存在しない場合に、その Entry 名を path として ENTRY_STEP_NOT_FOUND が返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "指定 Entry 名が存在しない場合は ENTRY_STEP_NOT_FOUND が返る")]
     public void 指定Entry名が存在しない場合はEntryStepNotFoundが返る()
@@ -92,12 +92,12 @@ public sealed class CsxEntryValidationTests
             using Devo6.WorkFlow.Engine;
 
             /// <summary>
-            /// Deploy 名前空間の Build Entry で検証対象にする Step です。
+            /// デプロイ用 Deploy 名前空間の Build Entry で検証対象にする Step です。
             /// </summary>
             public sealed class DeployBuildStep : IStep<string>
             {
                 /// <summary>
-                /// Deploy Build の固定値を返します。
+                /// デプロイ用 Deploy Build の固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>Deploy Build の固定値。</returns>
@@ -116,7 +116,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that duplicate public CompositeStep names across loaded script variables return DUPLICATE_STEP_NAME.
+    /// 読み込まれた script 変数を含む公開 CompositeStep 名の重複が DUPLICATE_STEP_NAME として返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "公開 CompositeStep 名の重複は DUPLICATE_STEP_NAME が返る")]
     public void 公開CompositeStep名の重複はDuplicateStepNameが返る()
@@ -194,12 +194,12 @@ public sealed class CsxEntryValidationTests
             using Devo6.WorkFlow.Engine;
 
             /// <summary>
-            /// load 先で重複定義された Deploy Build Entry の Step です。
+            /// 読み込み先で重複定義された Deploy Build Entry の Step です。
             /// </summary>
             public sealed class LoadedDeployBuildStep : IStep<string>
             {
                 /// <summary>
-                /// load 先の Deploy Build 固定値を返します。
+                /// 読み込み先の Deploy Build 固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>load 先の Deploy Build 固定値。</returns>
@@ -220,7 +220,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that #load reference errors are returned as validation errors.
+    /// ワークフロー root 外を指す load 参照解決エラーが validation error として返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "load 参照解決エラーは validation error として返る")]
     public void Load参照解決エラーはValidationErrorとして返る()
@@ -240,7 +240,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that #load cycles are returned as validation errors.
+    /// 読み込み循環が validation error として返り SCRIPT_LOAD_CYCLE_DETECTED になることを検査します。
     /// </summary>
     [Fact(DisplayName = "load 循環は validation error として返る")]
     public void Load循環はValidationErrorとして返る()
@@ -259,7 +259,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that unapproved #r references are returned as validation errors.
+    /// 許可されていない r 参照が validation error として返り SCRIPT_REFERENCE_NOT_ALLOWED になることを検査します。
     /// </summary>
     [Fact(DisplayName = "許可外 r は validation error として返る")]
     public void 許可外RはValidationErrorとして返る()
@@ -274,7 +274,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that unapproved NuGet references are returned as validation errors.
+    /// 許可されていない NuGet 参照が validation error として返り SCRIPT_REFERENCE_NOT_ALLOWED になることを検査します。
     /// </summary>
     [Fact(DisplayName = "許可外 NuGet は validation error として返る")]
     public void 許可外NuGetはValidationErrorとして返る()
@@ -289,7 +289,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that .csx compile errors are returned as SCRIPT_COMPILE_FAILED validation errors.
+    /// スクリプト csx の compile error が SCRIPT_COMPILE_FAILED の validation error として返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "csx compile error は SCRIPT_COMPILE_FAILED が返る")]
     public void CsxCompileErrorはScriptCompileFailedが返る()
@@ -311,7 +311,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that referencing a copied workflow API assembly is rejected as an API identity mismatch.
+    /// 複製された workflow public API assembly への参照が API identity mismatch として拒否されることを検査します。
     /// </summary>
     [Fact(DisplayName = "別 copy の public API assembly 参照は SCRIPT_API_IDENTITY_MISMATCH が返る")]
     public void 別CopyのPublicApiAssembly参照はScriptApiIdentityMismatchが返る()
@@ -339,7 +339,7 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// Verifies that missing config file paths are returned as CONFIG_NOT_FOUND validation errors.
+    /// 存在しない config file path が CONFIG_NOT_FOUND の validation error として返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "存在しない config file path は CONFIG_NOT_FOUND が返る")]
     public void 存在しないConfigFilePathはConfigNotFoundが返る()
@@ -372,6 +372,12 @@ public sealed class CsxEntryValidationTests
         Assert.Equal(WorkflowErrorCodes.ConfigNotFound, error.Code);
     }
 
+    /// <summary>
+    /// 一時 workflow directory に main.csx と追加 file を作成します。
+    /// </summary>
+    /// <param name="contents">main.csx に書き込む内容。</param>
+    /// <param name="additionalFiles">main.csx と同じ workflow directory に作成する追加 file。</param>
+    /// <returns>作成した main.csx の path。</returns>
     private static string CreateScript(string contents, params (string RelativePath, string Contents)[] additionalFiles)
     {
         string directory = CreateWorkflowDirectory();
@@ -389,6 +395,10 @@ public sealed class CsxEntryValidationTests
         return scriptPath;
     }
 
+    /// <summary>
+    /// 検証用の一時 workflow directory path を作成します。
+    /// </summary>
+    /// <returns>検証用の一時 workflow directory path。</returns>
     private static string CreateWorkflowDirectory()
     {
         return Path.Combine(Path.GetTempPath(), "devo6-workflow-validation-tests", Guid.NewGuid().ToString("N"));

@@ -3,28 +3,28 @@ using Devo6.WorkFlow.Abstractions;
 namespace Devo6.WorkFlow.Engine;
 
 /// <summary>
-/// Represents the pre-execution validation outcome for a .csx workflow entry.
+/// .csx workflow entry の実行前検証結果を表します。
 /// </summary>
 public sealed class WorkflowValidationResult
 {
     /// <summary>
-    /// Gets whether validation completed without errors.
+    /// 検証が error なしで完了したかどうかを取得します。
     /// </summary>
     public bool Succeeded => Errors.Count == 0;
 
     /// <summary>
-    /// Gets the validation errors found before workflow execution.
+    /// workflow 実行前に見つかった検証 error を取得します。
     /// </summary>
     public IReadOnlyList<ValidationError> Errors { get; init; } = [];
 }
 
 /// <summary>
-/// Configures additional pre-execution validation inputs for a .csx workflow entry.
+/// .csx workflow entry の実行前検証に使う追加入力を設定します。
 /// </summary>
 public sealed class CsxValidationOptions
 {
     /// <summary>
-    /// Gets config file paths to check for existence, resolved relative to the entry .csx directory when not rooted.
+    /// 存在を確認する config file path を取得します。相対 path は entry .csx directory から解決します。
     /// </summary>
     public IReadOnlyList<string> ConfigPaths { get; init; } = [];
 }

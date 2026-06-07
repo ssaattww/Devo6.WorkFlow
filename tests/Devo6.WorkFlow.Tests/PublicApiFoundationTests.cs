@@ -2,8 +2,14 @@ using Devo6.WorkFlow.Abstractions;
 
 namespace Devo6.WorkFlow.Tests;
 
+/// <summary>
+/// 公開 API の基礎契約を検査します。
+/// </summary>
 public sealed class PublicApiFoundationTests
 {
+    /// <summary>
+    /// IStep が StepInput から値を取得して同期実行できることを検査します。
+    /// </summary>
     [Fact(DisplayName = "IStep は StepInput から値を取得して同期実行できる")]
     public void IStepはStepInputから値を取得して同期実行できる()
     {
@@ -15,6 +21,9 @@ public sealed class PublicApiFoundationTests
         Assert.Equal("hello", step.Execute(input));
     }
 
+    /// <summary>
+    /// StepInput が型付き値と名前付き値を取得できることを検査します。
+    /// </summary>
     [Fact(DisplayName = "StepInput は型付き取得と名前付き取得ができる")]
     public void StepInputは型付き取得と名前付き取得ができる()
     {
@@ -32,6 +41,9 @@ public sealed class PublicApiFoundationTests
         Assert.Equal("件名", namedValue);
     }
 
+    /// <summary>
+    /// StepInput が同じ型と名前の重複登録を失敗させることを検査します。
+    /// </summary>
     [Fact(DisplayName = "StepInput は同じ型と名前の重複登録を失敗させる")]
     public void StepInputは同じ型と名前の重複登録を失敗させる()
     {
@@ -46,6 +58,9 @@ public sealed class PublicApiFoundationTests
         Assert.Equal("other", input.Get<string>("right"));
     }
 
+    /// <summary>
+    /// StepInput の公開 API が Context と Get と TryGet に限定されることを検査します。
+    /// </summary>
     [Fact(DisplayName = "StepInput の公開 API は Context と Get と TryGet に限定する")]
     public void StepInputの公開ApiはContextとGetとTryGetに限定する()
     {
@@ -78,6 +93,9 @@ public sealed class PublicApiFoundationTests
             }.Except(publicMembers));
     }
 
+    /// <summary>
+    /// StepContext が型付き値と名前付き値を明示上書きできることを検査します。
+    /// </summary>
     [Fact(DisplayName = "StepContext は型付き取得と名前付き取得を明示上書きできる")]
     public void StepContextは型付き取得と名前付き取得を明示上書きできる()
     {
@@ -97,6 +115,9 @@ public sealed class PublicApiFoundationTests
         Assert.Equal("new", namedValue);
     }
 
+    /// <summary>
+    /// 未登録値と無効な名前が分かりやすい例外または失敗結果になることを検査します。
+    /// </summary>
     [Fact(DisplayName = "未登録値と無効な名前は分かりやすく失敗する")]
     public void 未登録値と無効な名前は分かりやすく失敗する()
     {
@@ -116,6 +137,9 @@ public sealed class PublicApiFoundationTests
         Assert.Throws<ArgumentException>(() => context.Set(" ", "value"));
     }
 
+    /// <summary>
+    /// StepValueKey が型キーと名前付きキーを区別することを検査します。
+    /// </summary>
     [Fact(DisplayName = "StepValueKey は型キーと名前付きキーを区別する")]
     public void StepValueKeyは型キーと名前付きキーを区別する()
     {
@@ -132,6 +156,9 @@ public sealed class PublicApiFoundationTests
         Assert.Throws<ArgumentException>(() => StepValueKey.For<string>(" "));
     }
 
+    /// <summary>
+    /// Unit が単一の公開値を持つ readonly struct として使えることを検査します。
+    /// </summary>
     [Fact(DisplayName = "Unit は単一の公開値を持つ readonly struct として使える")]
     public void Unitは単一の公開値を持つReadonlyStructとして使える()
     {
@@ -140,8 +167,16 @@ public sealed class PublicApiFoundationTests
         Assert.Equal(default, value);
     }
 
+    /// <summary>
+    /// 入力から message 値を返す検査用 Step です。
+    /// </summary>
     private sealed class EchoStep : IStep<string>
     {
+        /// <summary>
+        /// StepInput の message 値を返します。
+        /// </summary>
+        /// <param name="input">message 値を含む Step 入力。</param>
+        /// <returns>入力から取得した message 値。</returns>
         public string Execute(StepInput input)
         {
             return input.Get<string>("message");

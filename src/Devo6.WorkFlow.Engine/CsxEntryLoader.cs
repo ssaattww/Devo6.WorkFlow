@@ -20,7 +20,7 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace Devo6.WorkFlow.Engine;
 
 /// <summary>
-/// Loads trusted .csx workflow entries and executes the named CompositeStep through the engine path.
+/// 信頼済み .csx workflow entry を読み込み、指定された CompositeStep を engine 経路で実行します。
 /// </summary>
 public sealed class CsxEntryLoader
 {
@@ -34,21 +34,21 @@ public sealed class CsxEntryLoader
     private readonly CsxEntryLoaderOptions loaderOptions;
 
     /// <summary>
-    /// Creates a loader for trusted .csx workflow entry files.
+    /// 信頼済み .csx workflow entry file 用の loader を作成します。
     /// </summary>
-    /// <param name="options">The reference validation options used while loading .csx files.</param>
+    /// <param name="options">.csx file 読み込み中に使う参照検査 option。</param>
     public CsxEntryLoader(CsxEntryLoaderOptions? options = null)
     {
         loaderOptions = options ?? new CsxEntryLoaderOptions();
     }
 
     /// <summary>
-    /// Loads the requested entry from a trusted .csx file and executes it as a workflow.
+    /// 信頼済み .csx file から要求された entry を読み込み、workflow として実行します。
     /// </summary>
-    /// <param name="entryPath">The .csx file path to load.</param>
-    /// <param name="entryName">The named script variable to use as the workflow entry, or null for Main.</param>
-    /// <param name="options">The workflow execution options passed to the loaded CompositeStep.</param>
-    /// <returns>The workflow result produced by loading, resolving, and executing the requested entry.</returns>
+    /// <param name="entryPath">読み込む .csx file path。</param>
+    /// <param name="entryName">workflow entry として使う script 変数名。null の場合は Main を使います。</param>
+    /// <param name="options">読み込んだ CompositeStep に渡す workflow 実行 option。</param>
+    /// <returns>要求された entry の読み込み、解決、実行で得た workflow 結果。</returns>
     public WorkflowResult Execute(
         string entryPath,
         string? entryName = null,
@@ -124,12 +124,12 @@ public sealed class CsxEntryLoader
     }
 
     /// <summary>
-    /// Validates a trusted .csx workflow entry before executing any workflow steps.
+    /// workflow step を実行する前に信頼済み .csx workflow entry を検証します。
     /// </summary>
-    /// <param name="entryPath">The .csx file path to validate.</param>
-    /// <param name="entryName">The named script variable to validate as the workflow entry, or null for Main.</param>
-    /// <param name="validationOptions">Additional validation inputs such as config file paths.</param>
-    /// <returns>The validation result containing all detected pre-execution errors.</returns>
+    /// <param name="entryPath">検証する .csx file path。</param>
+    /// <param name="entryName">workflow entry として検証する script 変数名。null の場合は Main を使います。</param>
+    /// <param name="validationOptions">config file path などの追加検証入力。</param>
+    /// <returns>実行前に検出したすべての error を含む検証結果。</returns>
     public WorkflowValidationResult Validate(
         string entryPath,
         string? entryName = null,
@@ -833,6 +833,11 @@ public sealed class CsxEntryLoader
     /// <summary>
     /// Entry metadata に基づいて標準 Config を読み込み、実行 option を準備します。
     /// </summary>
+    /// <param name="entryName">実行対象 Entry の表示名。</param>
+    /// <param name="entry">実行対象の CompositeStep instance。</param>
+    /// <param name="options">呼び出し元から渡された workflow 実行 option。</param>
+    /// <param name="failure">準備に失敗した場合の workflow 結果。</param>
+    /// <returns>Config を反映した workflow 実行 option。失敗時は null。</returns>
     private static WorkflowExecutionOptions? PrepareExecutionOptions(
         string entryName,
         object entry,
@@ -1042,6 +1047,12 @@ public sealed class CsxEntryLoader
             ?.GetValue(value) as IReadOnlyList<StepConfigRegistration> ?? [];
     }
 
+    /// <summary>
+    /// 検証 option に指定された config file path の存在を確認します。
+    /// </summary>
+    /// <param name="entryPath">基準 directory を決める entry script の path。</param>
+    /// <param name="validationOptions">config file path を含む検証 option。</param>
+    /// <returns>見つからなかった config file の検証 error 一覧。</returns>
     private static IEnumerable<ValidationError> ValidateConfigPaths(string entryPath, CsxValidationOptions? validationOptions)
     {
         if (validationOptions is null)
@@ -1067,6 +1078,10 @@ public sealed class CsxEntryLoader
         }
     }
 
+    /// <summary>
+    /// 参照 file が host 側 public API assembly の別 copy ではないことを検査します。
+    /// </summary>
+    /// <param name="referencePath">検査する assembly file path。</param>
     private static void ValidateApiAssemblyIdentity(string referencePath)
     {
         AssemblyName referenceAssemblyName;
@@ -1084,6 +1099,12 @@ public sealed class CsxEntryLoader
         RejectCopiedApiAssembly(referencePath, referenceAssemblyName, typeof(CompositeStep).Assembly);
     }
 
+    /// <summary>
+    /// host assembly と同名だが path が異なる API assembly 参照を拒否します。
+    /// </summary>
+    /// <param name="referencePath">script が参照した assembly file path。</param>
+    /// <param name="referenceAssemblyName">参照 file から読んだ assembly 名。</param>
+    /// <param name="hostAssembly">比較対象の host 側 assembly。</param>
     private static void RejectCopiedApiAssembly(string referencePath, AssemblyName referenceAssemblyName, Assembly hostAssembly)
     {
         AssemblyName hostAssemblyName = hostAssembly.GetName();
@@ -1106,6 +1127,13 @@ public sealed class CsxEntryLoader
             $"Script references a different copy of public API assembly: {referencePath}");
     }
 
+    /// <summary>
+    /// script source の 1 行から指定 directive の引用値を読み取ります。
+    /// </summary>
+    /// <param name="line">読み取る script source の 1 行。</param>
+    /// <param name="directiveName">先頭の # を除いた directive 名。</param>
+    /// <param name="value">読み取った directive 値。見つからない場合は空文字列。</param>
+    /// <returns>指定 directive を読み取れた場合は true。</returns>
     private static bool TryReadDirective(string line, string directiveName, out string value)
     {
         Match match = Regex.Match(
@@ -1118,6 +1146,11 @@ public sealed class CsxEntryLoader
         return match.Success;
     }
 
+    /// <summary>
+    /// #r directive と using directive を script source の先頭へ移動します。
+    /// </summary>
+    /// <param name="code">並べ替える script source。</param>
+    /// <returns>directive を先頭へ移動した script source。</returns>
     private static string MoveUsingDirectivesToTop(string code)
     {
         var referenceDirectives = new List<string>();
@@ -1309,6 +1342,11 @@ public sealed class CsxEntryLoader
         return $"{script.PackageId}\n{script.Version}\n{script.ScriptPath}";
     }
 
+    /// <summary>
+    /// #r directive の値が file 参照形式に見えるかどうかを返します。
+    /// </summary>
+    /// <param name="referenceValue">#r directive に書かれた参照値。</param>
+    /// <returns>file 参照として扱う場合は true。</returns>
     private static bool LooksLikeFileReference(string referenceValue)
     {
         return referenceValue.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
@@ -1317,6 +1355,11 @@ public sealed class CsxEntryLoader
             || Path.IsPathRooted(referenceValue);
     }
 
+    /// <summary>
+    /// NuGet version 指定が floating または range 形式かどうかを返します。
+    /// </summary>
+    /// <param name="version">検査する NuGet version 指定。</param>
+    /// <returns>固定 version ではない場合は true。</returns>
     private static bool IsFloatingNuGetVersion(string version)
     {
         return string.IsNullOrWhiteSpace(version)
@@ -1327,6 +1370,12 @@ public sealed class CsxEntryLoader
             || version.Contains(')', StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 指定 path が root directory 内にあるかどうかを解決後 path で判定します。
+    /// </summary>
+    /// <param name="path">検査する path。</param>
+    /// <param name="root">基準 root directory。</param>
+    /// <returns>path が root 自身または root 配下の場合は true。</returns>
     private static bool IsInsideRoot(string path, string root)
     {
         string fullPath = ResolvePathFinalTarget(path);
@@ -1336,6 +1385,11 @@ public sealed class CsxEntryLoader
             || fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// path の各要素をたどり、存在する symbolic link の最終 target を反映した full path を返します。
+    /// </summary>
+    /// <param name="path">解決する path。</param>
+    /// <returns>symbolic link の最終 target を反映した full path。</returns>
     private static string ResolvePathFinalTarget(string path)
     {
         string fullPath = Path.GetFullPath(path);
@@ -1439,6 +1493,11 @@ public sealed class CsxEntryLoader
             .ToArray();
     }
 
+    /// <summary>
+    /// 既存の file または directory に対応する file system 情報を取得します。
+    /// </summary>
+    /// <param name="path">確認する path。</param>
+    /// <returns>既存 path の file system 情報。存在しない場合は null。</returns>
     private static FileSystemInfo? GetExistingFileSystemInfo(string path)
     {
         if (Directory.Exists(path))
@@ -1454,6 +1513,13 @@ public sealed class CsxEntryLoader
         return null;
     }
 
+    /// <summary>
+    /// trace なしの失敗 workflow 結果を作成します。
+    /// </summary>
+    /// <param name="entryName">失敗した Entry 名。</param>
+    /// <param name="errorCode">workflow error code。</param>
+    /// <param name="errorMessage">利用者向け error message。</param>
+    /// <returns>失敗を表す workflow 結果。</returns>
     private static WorkflowResult Failure(string entryName, string errorCode, string errorMessage)
     {
         return new WorkflowResult
@@ -1466,6 +1532,13 @@ public sealed class CsxEntryLoader
         };
     }
 
+    /// <summary>
+    /// path、error code、message から検証 error を作成します。
+    /// </summary>
+    /// <param name="path">error の対象 path または Entry 名。</param>
+    /// <param name="code">workflow error code。</param>
+    /// <param name="message">利用者向け error message。</param>
+    /// <returns>検証 error。</returns>
     private static ValidationError ToValidationError(string path, string code, string message)
     {
         return new ValidationError
@@ -1896,7 +1969,7 @@ public sealed class CsxNuGetDependencyGraphRequest
 }
 
 /// <summary>
-/// 解決済み NuGet dependency graph を提供する contract です。
+/// 解決済み NuGet dependency graph を提供する契約です。
 /// </summary>
 public interface ICsxNuGetDependencyGraphProvider
 {

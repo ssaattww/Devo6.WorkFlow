@@ -4,15 +4,15 @@ using Devo6.WorkFlow.Engine;
 namespace Devo6.WorkFlow.Cli;
 
 /// <summary>
-/// Provides the command-line entry point for running and validating .csx workflows.
+/// .csx workflow の実行と validation を行う command-line entry point を提供します。
 /// </summary>
 public static class Program
 {
     /// <summary>
-    /// Runs the command-line interface and returns the process exit code.
+    /// command-line interface を実行して process exit code を返します。
     /// </summary>
-    /// <param name="args">Command-line arguments.</param>
-    /// <returns>Zero on success; non-zero on command, validation, or workflow failure.</returns>
+    /// <param name="args">command-line 引数。</param>
+    /// <returns>成功時は 0。command、validation、または workflow 失敗時は 0 以外。</returns>
     public static int Main(string[] args)
     {
         if (args.Length == 0)
@@ -69,6 +69,11 @@ public static class Program
         return 1;
     }
 
+    /// <summary>
+    /// validation 結果を標準出力または標準 error に表示します。
+    /// </summary>
+    /// <param name="validationResult">表示する validation 結果。</param>
+    /// <returns>validation 成功時は 0。失敗時は 1。</returns>
     private static int PrintValidationResult(WorkflowValidationResult validationResult)
     {
         if (validationResult.Succeeded)
@@ -86,6 +91,13 @@ public static class Program
         return 1;
     }
 
+    /// <summary>
+    /// command-line 引数を CLI command に変換します。
+    /// </summary>
+    /// <param name="args">parse 対象の command-line 引数。</param>
+    /// <param name="command">parse できた CLI command。</param>
+    /// <param name="errorMessage">parse に失敗した場合の error message。</param>
+    /// <returns>parse に成功した場合は true。</returns>
     private static bool TryParse(string[] args, out CliCommand command, out string errorMessage)
     {
         command = new CliCommand("", "", null, "", new Dictionary<string, string>());
@@ -158,6 +170,13 @@ public static class Program
         return true;
     }
 
+    /// <summary>
+    /// option の直後にある値を読み取ります。
+    /// </summary>
+    /// <param name="args">command-line 引数。</param>
+    /// <param name="index">現在の option index。成功時は値の index に進みます。</param>
+    /// <param name="value">読み取った option 値。</param>
+    /// <returns>値を読み取れた場合は true。</returns>
     private static bool TryReadValue(string[] args, ref int index, out string value)
     {
         value = "";
@@ -173,6 +192,12 @@ public static class Program
         return true;
     }
 
+    /// <summary>
+    /// entry path を基準に config path を絶対 path へ解決します。
+    /// </summary>
+    /// <param name="entryPath">workflow entry の path。</param>
+    /// <param name="configPath">指定された config path。</param>
+    /// <returns>解決済み config path。未指定の場合は空文字列。</returns>
     private static string ResolveConfigPath(string entryPath, string configPath)
     {
         if (string.IsNullOrWhiteSpace(configPath))
@@ -190,6 +215,14 @@ public static class Program
         return Path.GetFullPath(Path.Combine(entryDirectory, configPath));
     }
 
+    /// <summary>
+    /// parse 済み CLI command と option を保持します。
+    /// </summary>
+    /// <param name="Name">実行する command 名。</param>
+    /// <param name="EntryPath">workflow entry .csx file path。</param>
+    /// <param name="EntryName">明示指定された entry Step 名。</param>
+    /// <param name="ConfigPath">指定された config file path。</param>
+    /// <param name="Settings">--set option で指定された override 設定。</param>
     private sealed record CliCommand(
         string Name,
         string EntryPath,

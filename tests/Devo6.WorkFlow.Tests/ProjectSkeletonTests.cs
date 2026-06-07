@@ -2,10 +2,19 @@ using System.Diagnostics;
 
 namespace Devo6.WorkFlow.Tests;
 
+/// <summary>
+/// repository の project skeleton を検査します。
+/// </summary>
 public sealed class ProjectSkeletonTests
 {
+    /// <summary>
+    /// repository root path を保持します。
+    /// </summary>
     private static readonly string RepositoryRoot = FindRepositoryRoot();
 
+    /// <summary>
+    /// solution に必要な project が含まれることを検査します。
+    /// </summary>
     [Fact(DisplayName = "solution に中核、CLI、検査 project が含まれる")]
     public void Solutionに必要なProjectが含まれる()
     {
@@ -19,6 +28,9 @@ public sealed class ProjectSkeletonTests
         Assert.Contains("tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj", solutionText);
     }
 
+    /// <summary>
+    /// 検査 project から中核 project を参照できることを検査します。
+    /// </summary>
     [Fact(DisplayName = "検査 project から中核 project を参照できる")]
     public void 検査Projectから中核Projectを参照できる()
     {
@@ -30,6 +42,10 @@ public sealed class ProjectSkeletonTests
             testProjectText);
     }
 
+    /// <summary>
+    /// CLI project が最小入口で起動できることを検査します。
+    /// </summary>
+    /// <returns>非同期検査を表す task。</returns>
     [Fact(DisplayName = "CLI project は最小入口で起動できる")]
     public async Task CliProjectは最小入口で起動できる()
     {
@@ -57,6 +73,10 @@ public sealed class ProjectSkeletonTests
         Assert.Contains("Devo6.WorkFlow", standardOutput);
     }
 
+    /// <summary>
+    /// repository root path を探索します。
+    /// </summary>
+    /// <returns>検出した repository root path。</returns>
     private static string FindRepositoryRoot()
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

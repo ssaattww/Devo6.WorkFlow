@@ -5,6 +5,9 @@ using Devo6.WorkFlow.Engine;
 
 namespace Devo6.WorkFlow.Tests;
 
+/// <summary>
+/// timeout とキャンセルの公開契約を検査します。
+/// </summary>
 public sealed class TimeoutCancellationContractTests
 {
     private static readonly TimeSpan SyncStepDelay = TimeSpan.FromMilliseconds(150);
@@ -229,6 +232,9 @@ public sealed class TimeoutCancellationContractTests
         return options;
     }
 
+    /// <summary>
+    /// timeout/cancel 検査用 Step の出力値を保持します。
+    /// </summary>
     private sealed class TimedOutput
     {
         /// <summary>
@@ -245,6 +251,9 @@ public sealed class TimeoutCancellationContractTests
         public string Value { get; }
     }
 
+    /// <summary>
+    /// Produce から後続 Step へ渡す入力値を保持します。
+    /// </summary>
     private sealed class NextInput
     {
         /// <summary>
@@ -261,6 +270,9 @@ public sealed class TimeoutCancellationContractTests
         public string Value { get; }
     }
 
+    /// <summary>
+    /// timeout 用 token の受け渡しと協調キャンセルを観測する async Step です。
+    /// </summary>
     private sealed class TimeoutObservingAsyncStep : IAsyncStep<TimedOutput>
     {
         /// <summary>
@@ -279,6 +291,9 @@ public sealed class TimeoutCancellationContractTests
         }
     }
 
+    /// <summary>
+    /// 外部 CancellationToken による async Step のキャンセルを観測します。
+    /// </summary>
     private sealed class ExternallyCanceledAsyncStep : IAsyncStep<TimedOutput>
     {
         /// <summary>
@@ -298,6 +313,9 @@ public sealed class TimeoutCancellationContractTests
         }
     }
 
+    /// <summary>
+    /// timeout より長く実行される同期 Step です。
+    /// </summary>
     private sealed class SlowSynchronousStep : IStep<TimedOutput>
     {
         /// <summary>
@@ -313,6 +331,9 @@ public sealed class TimeoutCancellationContractTests
         }
     }
 
+    /// <summary>
+    /// 外部 cancel より長く実行される同期 Step です。
+    /// </summary>
     private sealed class SlowExternallyCanceledSynchronousStep : IStep<TimedOutput>
     {
         /// <summary>
@@ -328,6 +349,9 @@ public sealed class TimeoutCancellationContractTests
         }
     }
 
+    /// <summary>
+    /// timeout と外部 cancel の優先順位を観測する同期 Step です。
+    /// </summary>
     private sealed class SlowTimeoutAndExternallyCanceledSynchronousStep : IStep<TimedOutput>
     {
         /// <summary>
@@ -343,6 +367,9 @@ public sealed class TimeoutCancellationContractTests
         }
     }
 
+    /// <summary>
+    /// timeout または cancel 後に後続 Step が走らないことを検出する Step です。
+    /// </summary>
     private sealed class ShouldNotRunStep : IStep<string>
     {
         /// <summary>
@@ -356,6 +383,9 @@ public sealed class TimeoutCancellationContractTests
         }
     }
 
+    /// <summary>
+    /// timeout/cancel 検査で共有する実行順序と token 観測結果を保持します。
+    /// </summary>
     private static class ContractTestState
     {
         private static readonly object Gate = new();

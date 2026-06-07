@@ -4,14 +4,17 @@ using System.Diagnostics;
 namespace Devo6.WorkFlow.Tests;
 
 /// <summary>
-/// Verifies the user-facing CLI run and validate commands.
+/// user-facing CLI run と validate command を検査します。
 /// </summary>
 public sealed class CliRunValidateTests
 {
+    /// <summary>
+    /// repository root path を保持します。
+    /// </summary>
     private static readonly string RepositoryRoot = FindRepositoryRoot();
 
     /// <summary>
-    /// Verifies that engine run exits with 0 for a valid Main entry.
+    /// engine run が有効な Main Entry で exit code 0 になることを検査します。
     /// </summary>
     [Fact(DisplayName = "engine run main.csx は成功時 exit code 0 になる")]
     public async Task EngineRunMainCsxは成功時ExitCode0になる()
@@ -42,7 +45,7 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
-    /// Verifies that engine validate exits with 0 for a valid Main entry.
+    /// engine validate が有効な Main Entry で exit code 0 になることを検査します。
     /// </summary>
     [Fact(DisplayName = "engine validate main.csx は成功時 exit code 0 になる")]
     public async Task EngineValidateMainCsxは成功時ExitCode0になる()
@@ -68,7 +71,7 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
-    /// Verifies that engine run uses the entry name supplied by --entry.
+    /// engine run が --entry で指定した Entry 名を使用することを検査します。
     /// </summary>
     [Fact(DisplayName = "engine run main.csx --entry Build は指定 Entry を実行する")]
     public async Task EngineRunMainCsxEntryBuildは指定Entryを実行する()
@@ -103,7 +106,7 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
-    /// Verifies that engine validate uses the entry name supplied by --entry.
+    /// engine validate が --entry で指定した Entry 名を使用することを検査します。
     /// </summary>
     [Fact(DisplayName = "engine validate main.csx --entry Build は指定 Entry を検証する")]
     public async Task EngineValidateMainCsxEntryBuildは指定Entryを検証する()
@@ -304,7 +307,7 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
-    /// Verifies that --config is resolved relative to the entry .csx directory and exposed through EngineArguments.
+    /// --config が Entry .csx directory 基準で解決され EngineArguments から公開されることを検査します。
     /// </summary>
     [Fact(DisplayName = "--config は Entry directory 基準で解決され StepContext から取得できる")]
     public async Task ConfigはEntryDirectory基準で解決されStepContextから取得できる()
@@ -341,7 +344,7 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
-    /// Verifies that repeated --set values are exposed as strings through EngineArguments.
+    /// 複数の --set 値が EngineArguments から文字列として公開されることを検査します。
     /// </summary>
     [Fact(DisplayName = "複数 --set は文字列として StepContext から取得できる")]
     public async Task 複数Setは文字列としてStepContextから取得できる()
@@ -413,7 +416,7 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
-    /// Verifies that run and validate failures return non-zero exit codes.
+    /// run と validate の失敗が 0 以外の exit code を返すことを検査します。
     /// </summary>
     [Fact(DisplayName = "validate と run の失敗時は exit code が 0 以外になる")]
     public async Task ValidateとRunの失敗時はExitCodeが0以外になる()
@@ -434,6 +437,11 @@ public sealed class CliRunValidateTests
         Assert.NotEqual(0, runResult.ExitCode);
     }
 
+    /// <summary>
+    /// CLI process を指定引数で実行します。
+    /// </summary>
+    /// <param name="arguments">CLI に渡す引数。</param>
+    /// <returns>CLI process の実行結果。</returns>
     private static async Task<CliResult> RunCliAsync(params string[] arguments)
     {
         using Process process = Process.Start(new ProcessStartInfo
@@ -459,6 +467,10 @@ public sealed class CliRunValidateTests
         return new CliResult(process.ExitCode, standardOutput, standardError);
     }
 
+    /// <summary>
+    /// CLI result が成功していることを検査します。
+    /// </summary>
+    /// <param name="result">検査対象の CLI result。</param>
     private static void AssertSuccess(CliResult result)
     {
         Assert.True(
@@ -466,6 +478,11 @@ public sealed class CliRunValidateTests
             $"終了コード: {result.ExitCode}{Environment.NewLine}標準出力: {result.StandardOutput}{Environment.NewLine}標準エラー: {result.StandardError}");
     }
 
+    /// <summary>
+    /// 一時 directory に main.csx を作成します。
+    /// </summary>
+    /// <param name="contents">main.csx に書き込む内容。</param>
+    /// <returns>作成した script path。</returns>
     private static string CreateScript(string contents)
     {
         string directory = Path.Combine(Path.GetTempPath(), "devo6-workflow-cli-tests", Guid.NewGuid().ToString("N"));
@@ -476,6 +493,10 @@ public sealed class CliRunValidateTests
         return scriptPath;
     }
 
+    /// <summary>
+    /// repository root path を探索します。
+    /// </summary>
+    /// <returns>検出した repository root path。</returns>
     private static string FindRepositoryRoot()
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);
@@ -493,20 +514,26 @@ public sealed class CliRunValidateTests
         throw new InvalidOperationException("repository root を特定できませんでした。");
     }
 
+    /// <summary>
+    /// CLI process の実行結果です。
+    /// </summary>
+    /// <param name="ExitCode">CLI process の exit code。</param>
+    /// <param name="StandardOutput">CLI process の標準出力。</param>
+    /// <param name="StandardError">CLI process の標準エラー。</param>
     private sealed record CliResult(int ExitCode, string StandardOutput, string StandardError);
 }
 
 /// <summary>
-/// Provides small process start info helpers for CLI integration tests.
+/// CLI integration test 用の ProcessStartInfo helper を提供します。
 /// </summary>
 internal static class ProcessStartInfoExtensions
 {
     /// <summary>
-    /// Appends command-line arguments to a process start info instance used by CLI integration tests.
+    /// CLI integration test で使う process start info に command-line 引数を追加します。
     /// </summary>
-    /// <param name="startInfo">The process start info to update.</param>
-    /// <param name="arguments">The arguments to append.</param>
-    /// <returns>The same process start info instance.</returns>
+    /// <param name="startInfo">更新する process start info。</param>
+    /// <param name="arguments">追加する引数。</param>
+    /// <returns>同じ process start info instance。</returns>
     public static ProcessStartInfo AddArguments(this ProcessStartInfo startInfo, IEnumerable<string> arguments)
     {
         foreach (string argument in arguments)

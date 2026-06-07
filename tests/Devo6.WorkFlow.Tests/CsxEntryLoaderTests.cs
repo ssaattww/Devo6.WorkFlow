@@ -4,7 +4,7 @@ using Devo6.WorkFlow.Engine;
 namespace Devo6.WorkFlow.Tests;
 
 /// <summary>
-/// Verifies the user-facing entry loading contract for trusted single-file .csx workflows.
+/// 信頼済み単一ファイル .csx workflow の Entry 読み込みが利用者向けの成功結果と失敗結果を返すことを検査します。
 /// </summary>
 public sealed class CsxEntryLoaderTests
 {
@@ -34,7 +34,7 @@ public sealed class CsxEntryLoaderTests
     private static readonly string[] DefaultPackageSources = ["https://api.nuget.org/v3/index.json"];
 
     /// <summary>
-    /// Verifies that the default Main entry can be loaded from a sample .csx file and executed successfully.
+    /// サンプル csx から既定名 Main の Entry を読み込み、対応する CompositeStep を実行できることを検査します。
     /// </summary>
     [Fact(DisplayName = "sample csx から既定 Entry 名 Main の CompositeStep を取得して実行できる")]
     public void SampleCsxから既定Entry名MainのCompositeStepを取得して実行できる()
@@ -64,7 +64,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that a .csx entry using RunAsync is awaited through the normal loader execution path.
+    /// 非同期 Entry に含まれる RunAsync が通常の loader 実行経路で await され、副作用と trace が残ることを検査します。
     /// </summary>
     [Fact(DisplayName = "RunAsync を含む csx Entry を読み込んで実行できる")]
     public void RunAsyncを含むCsxEntryを読み込んで実行できる()
@@ -110,7 +110,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that a named Build entry can be loaded from a sample .csx file and executed successfully.
+    /// サンプル csx から指定名 Build の Entry を読み込み、Main ではなく Build の CompositeStep を実行できることを検査します。
     /// </summary>
     [Fact(DisplayName = "sample csx から指定 Entry 名 Build の CompositeStep を取得して実行できる")]
     public void SampleCsxから指定Entry名BuildのCompositeStepを取得して実行できる()
@@ -159,12 +159,12 @@ public sealed class CsxEntryLoaderTests
             using Devo6.WorkFlow.Engine;
 
             /// <summary>
-            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// デプロイ用 Deploy 名前空間の Build Entry で実行する Step です。
             /// </summary>
             public sealed class DeployBuildStep : IStep<string>
             {
                 /// <summary>
-                /// Deploy Build の固定値を返します。
+                /// デプロイ用 Deploy Build の固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>Deploy Build の固定値。</returns>
@@ -196,12 +196,12 @@ public sealed class CsxEntryLoaderTests
             using Devo6.WorkFlow.Engine;
 
             /// <summary>
-            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// デプロイ用 Deploy 名前空間の Build Entry で実行する Step です。
             /// </summary>
             public sealed class DeployBuildStep : IStep<string>
             {
                 /// <summary>
-                /// Deploy Build の固定値を返します。
+                /// デプロイ用 Deploy Build の固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>Deploy Build の固定値。</returns>
@@ -209,12 +209,12 @@ public sealed class CsxEntryLoaderTests
             }
 
             /// <summary>
-            /// Test 名前空間の Build Entry で実行する Step です。
+            /// テスト用 Test 名前空間の Build Entry で実行する Step です。
             /// </summary>
             public sealed class TestBuildStep : IStep<string>
             {
                 /// <summary>
-                /// Test Build の固定値を返します。
+                /// テスト用 Test Build の固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>Test Build の固定値。</returns>
@@ -252,12 +252,12 @@ public sealed class CsxEntryLoaderTests
             using Devo6.WorkFlow.Engine;
 
             /// <summary>
-            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// デプロイ用 Deploy 名前空間の Build Entry で実行する Step です。
             /// </summary>
             public sealed class DeployBuildStep : IStep<string>
             {
                 /// <summary>
-                /// Deploy Build の固定値を返します。
+                /// デプロイ用 Deploy Build の固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>Deploy Build の固定値。</returns>
@@ -289,12 +289,12 @@ public sealed class CsxEntryLoaderTests
             using Devo6.WorkFlow.Engine;
 
             /// <summary>
-            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// デプロイ用 Deploy 名前空間の Build Entry で実行する Step です。
             /// </summary>
             public sealed class DeployBuildStep : IStep<string>
             {
                 /// <summary>
-                /// Deploy Build の固定値を返します。
+                /// デプロイ用 Deploy Build の固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>Deploy Build の固定値。</returns>
@@ -302,12 +302,12 @@ public sealed class CsxEntryLoaderTests
             }
 
             /// <summary>
-            /// Test 名前空間の Build Entry で実行する Step です。
+            /// テスト用 Test 名前空間の Build Entry で実行する Step です。
             /// </summary>
             public sealed class TestBuildStep : IStep<string>
             {
                 /// <summary>
-                /// Test Build の固定値を返します。
+                /// テスト用 Test Build の固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>Test Build の固定値。</returns>
@@ -333,7 +333,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// load 先で定義された名前空間付き Entry を公開完全修飾名で実行できることを検査します。
+    /// 読み込み先で定義された名前空間付き Entry を公開完全修飾名で実行できることを検査します。
     /// </summary>
     [Fact(DisplayName = "load 先の名前空間付き Entry は公開完全修飾名で実行できる")]
     public void ExecuteLoadedNamespaceEntryByQualifiedName()
@@ -348,12 +348,12 @@ public sealed class CsxEntryLoaderTests
             using Devo6.WorkFlow.Engine;
 
             /// <summary>
-            /// load 先の Deploy Build Entry で実行する Step です。
+            /// 読み込み先の Deploy Build Entry で実行する Step です。
             /// </summary>
             public sealed class LoadedDeployBuildStep : IStep<string>
             {
                 /// <summary>
-                /// load 先の Deploy Build 固定値を返します。
+                /// 読み込み先の Deploy Build 固定値を返します。
                 /// </summary>
                 /// <param name="input">未使用の Step 入力。</param>
                 /// <returns>load 先の Deploy Build 固定値。</returns>
@@ -374,7 +374,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// WithConfig と RunAsync の chain 後も名前空間付き Entry metadata が維持されることを検査します。
+    /// 設定と非同期処理を含む WithConfig と RunAsync の chain 後も名前空間付き Entry metadata が維持されることを検査します。
     /// </summary>
     [Fact(DisplayName = "WithConfig と RunAsync chain 後も名前空間付き Entry metadata は維持される")]
     public void ExecutePreservesNamespaceMetadataAfterConfigRunAndRunAsyncChain()
@@ -387,7 +387,7 @@ public sealed class CsxEntryLoaderTests
             using Devo6.WorkFlow.Engine;
 
             /// <summary>
-            /// chain 維持検査用 Config です。
+            /// 連結処理の維持を検査する Config です。
             /// </summary>
             public sealed class ChainConfig
             {
@@ -398,7 +398,7 @@ public sealed class CsxEntryLoaderTests
             }
 
             /// <summary>
-            /// chain の先頭で固定値を返す Step です。
+            /// 連結処理の先頭で固定値を返す Step です。
             /// </summary>
             public sealed class ChainFirstStep : IStep<int>
             {
@@ -411,7 +411,7 @@ public sealed class CsxEntryLoaderTests
             }
 
             /// <summary>
-            /// chain の末尾で非同期に固定値を返す Step です。
+            /// 連結処理の末尾で非同期に固定値を返す Step です。
             /// </summary>
             public sealed class ChainAsyncStep : IAsyncStep<string>
             {
@@ -457,7 +457,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that a missing entry file is returned as a SCRIPT_LOAD_FAILED workflow failure.
+    /// 存在しない Entry file が Main の実行失敗として SCRIPT_LOAD_FAILED を返すことを検査します。
     /// </summary>
     [Fact(DisplayName = "Entry file が存在しない場合は SCRIPT_LOAD_FAILED の失敗結果になる")]
     public void EntryFileが存在しない場合はScriptLoadFailedの失敗結果になる()
@@ -472,7 +472,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that script compile errors are returned as SCRIPT_COMPILE_FAILED workflow failures.
+    /// スクリプトの compile error が Main の実行失敗として SCRIPT_COMPILE_FAILED になり、error message も返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "script compile error は SCRIPT_COMPILE_FAILED の失敗結果になる")]
     public void ScriptCompileErrorはScriptCompileFailedの失敗結果になる()
@@ -495,7 +495,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that a missing entry name is returned as an ENTRY_STEP_NOT_FOUND workflow failure in the T14 loader path.
+    /// 指定した Entry 名が script 内に存在しない場合に、その Entry 名の実行失敗として ENTRY_STEP_NOT_FOUND が返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "Entry 名が存在しない場合は ENTRY_STEP_NOT_FOUND の失敗結果になる")]
     public void Entry名が存在しない場合はEntryStepNotFoundの失敗結果になる()
@@ -523,7 +523,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that an entry .csx file can load a relative local .csx file and execute a CompositeStep defined there.
+    /// 起点の Entry csx から相対 load した local csx に定義された CompositeStep を実行できることを検査します。
     /// </summary>
     [Fact(DisplayName = "Entry csx から相対 load した file 側の CompositeStep を実行できる")]
     public void EntryCsxから相対LoadしたFile側のCompositeStepを実行できる()
@@ -555,7 +555,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that nested #load paths are resolved relative to the file that contains the directive.
+    /// 入れ子の load path が、directive を書いた csx file の directory を基準に解決されることを検査します。
     /// </summary>
     [Fact(DisplayName = "load 内の相対 path は load を書いた csx の directory 基準で解決される")]
     public void Load内の相対PathはLoadを書いたCsxのDirectory基準で解決される()
@@ -595,7 +595,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that #load cannot resolve a file outside the workflow root.
+    /// ワークフロー root 外の file を指す load が SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
     /// </summary>
     [Fact(DisplayName = "workflow root 外への load は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
     public void WorkflowRoot外へのLoadはScriptReferenceNotAllowedになる()
@@ -618,7 +618,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that a #load path through a root-local symlink to an outside file is rejected.
+    /// ルート内 symlink 経由で root 外 file を指す load が SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
     /// </summary>
     [Fact(DisplayName = "root 内 symlink が root 外 file を指す load は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
     public void Root内SymlinkがRoot外Fileを指すLoadはScriptReferenceNotAllowedになる()
@@ -643,7 +643,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that a #load path through a root-local symlink to an outside directory is rejected.
+    /// ルート内 symlink 経由で root 外 directory 配下の file を指す load が SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
     /// </summary>
     [Fact(DisplayName = "root 内 symlink が root 外 directory を指す load は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
     public void Root内SymlinkがRoot外Directoryを指すLoadはScriptReferenceNotAllowedになる()
@@ -669,7 +669,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that a #load cycle is reported without executing the workflow.
+    /// 読み込み循環が workflow を実行せずに SCRIPT_LOAD_CYCLE_DETECTED として返ることを検査します。
     /// </summary>
     [Fact(DisplayName = "load 循環は SCRIPT_LOAD_CYCLE_DETECTED になる")]
     public void Load循環はScriptLoadCycleDetectedになる()
@@ -690,7 +690,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that duplicate #load directives for the same normalized path do not compile duplicate definitions.
+    /// 正規化後に同じ path になる重複 load が同じ定義を二重 compile せず、workflow を実行できることを検査します。
     /// </summary>
     [Fact(DisplayName = "同一正規 path の重複 load は compile を壊さない")]
     public void 同一正規Pathの重複LoadはCompileを壊さない()
@@ -729,7 +729,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that an unapproved #r directive is rejected before script compilation.
+    /// 許可されていない r directive が script compile 前に SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
     /// </summary>
     [Fact(DisplayName = "許可外 r は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
     public void 許可外RはScriptReferenceNotAllowedになる()
@@ -746,7 +746,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that an explicitly allowed assembly name reference can be used by a workflow script.
+    /// 明示的に許可した assembly 名参照を workflow script から利用して実行できることを検査します。
     /// </summary>
     [Fact(DisplayName = "許可された assembly 名参照は実行できる")]
     public void 許可されたAssembly名参照は実行できる()
@@ -780,7 +780,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that unapproved NuGet references are rejected without restoring the package.
+    /// 許可一覧にない NuGet 参照が package restore へ進まず SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
     /// </summary>
     [Fact(DisplayName = "許可一覧にない NuGet 参照は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
     public void 許可一覧にないNuGet参照はScriptReferenceNotAllowedになる()
@@ -835,7 +835,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// Verifies that floating NuGet versions are rejected even when the package id is otherwise allowed.
+    /// パッケージ id が許可されていても浮動 NuGet version は SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
     /// </summary>
     [Fact(DisplayName = "浮動 NuGet version は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
     public void 浮動NuGetVersionはScriptReferenceNotAllowedになる()
@@ -855,6 +855,12 @@ public sealed class CsxEntryLoaderTests
         Assert.Equal(WorkflowErrorCodes.ScriptReferenceNotAllowed, result.ErrorCode);
     }
 
+    /// <summary>
+    /// 一時 workflow directory に main.csx と追加 file を作成します。
+    /// </summary>
+    /// <param name="contents">main.csx に書き込む内容。</param>
+    /// <param name="additionalFiles">main.csx と同じ workflow directory に作成する追加 file。</param>
+    /// <returns>作成した main.csx の path。</returns>
     private static string CreateScript(string contents, params (string RelativePath, string Contents)[] additionalFiles)
     {
         string directory = CreateWorkflowDirectory();
@@ -872,6 +878,10 @@ public sealed class CsxEntryLoaderTests
         return scriptPath;
     }
 
+    /// <summary>
+    /// 検査用の一時 workflow directory path を作成します。
+    /// </summary>
+    /// <returns>検査用の一時 workflow directory path。</returns>
     private static string CreateWorkflowDirectory()
     {
         return Path.Combine(Path.GetTempPath(), "devo6-workflow-tests", Guid.NewGuid().ToString("N"));
@@ -905,7 +915,7 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// fake provider が返す標準の NuGet 解決 metadata を作成します。
+    /// 固定 fake provider が返す標準の NuGet 解決 metadata を作成します。
     /// </summary>
     private static CsxNuGetResolutionMetadata CreateDefaultResolutionMetadata()
     {
