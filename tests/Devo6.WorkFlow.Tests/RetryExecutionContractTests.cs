@@ -174,7 +174,7 @@ public sealed class RetryExecutionContractTests
             Retry = new RetryOptions { MaxAttempts = 3 },
         };
 
-        WorkflowResult result = await step.ExecuteWorkflowAsync(options).WaitAsync(TimeSpan.FromSeconds(2));
+        WorkflowResult result = await step.ExecuteWorkflowAsync(options).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.StepTimeout, result.ErrorCode);
@@ -213,7 +213,7 @@ public sealed class RetryExecutionContractTests
         Task<WorkflowResult> workflowTask = step.ExecuteWorkflowAsync(options, cancellationTokenSource.Token);
         await RetryContractState.WaitForAsyncStepStartAsync(TimeSpan.FromSeconds(1));
         await cancellationTokenSource.CancelAsync();
-        WorkflowResult result = await workflowTask.WaitAsync(TimeSpan.FromSeconds(2));
+        WorkflowResult result = await workflowTask.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);

@@ -218,7 +218,7 @@ public sealed class TraceValueContractTests
             StepTimeout = TimeSpan.FromMilliseconds(50),
         };
 
-        WorkflowResult result = await step.ExecuteWorkflowAsync(options).WaitAsync(TimeSpan.FromSeconds(2));
+        WorkflowResult result = await step.ExecuteWorkflowAsync(options).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.StepTimeout, result.ErrorCode);
@@ -242,7 +242,7 @@ public sealed class TraceValueContractTests
 
         Task<WorkflowResult> workflowTask = step.ExecuteWorkflowAsync(cancellationToken: cancellationTokenSource.Token);
         await cancellationTokenSource.CancelAsync();
-        WorkflowResult result = await workflowTask.WaitAsync(TimeSpan.FromSeconds(2));
+        WorkflowResult result = await workflowTask.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);

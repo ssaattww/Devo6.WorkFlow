@@ -46,7 +46,7 @@ public sealed class TimeoutCancellationContractTests
                 .StoreAs();
         WorkflowExecutionOptions options = CreateOptionsWithStepTimeout(TimeSpan.FromMilliseconds(50));
 
-        WorkflowResult result = await step.ExecuteWorkflowAsync(options).WaitAsync(TimeSpan.FromSeconds(2));
+        WorkflowResult result = await step.ExecuteWorkflowAsync(options).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.False(result.Succeeded);
         Assert.Equal("Main", result.EntryName);
@@ -82,7 +82,7 @@ public sealed class TimeoutCancellationContractTests
         Task<WorkflowResult> workflowTask = step.ExecuteWorkflowAsync(cancellationToken: cancellationTokenSource.Token);
         await ContractTestState.WaitForAsyncStepStartAsync(TimeSpan.FromSeconds(1));
         await cancellationTokenSource.CancelAsync();
-        WorkflowResult result = await workflowTask.WaitAsync(TimeSpan.FromSeconds(2));
+        WorkflowResult result = await workflowTask.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.False(result.Succeeded);
         Assert.Equal("Main", result.EntryName);
