@@ -1,7 +1,8 @@
-using System.ComponentModel.DataAnnotations;
 using System.Collections;
+using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Reflection;
+using YamlDotNet.RepresentationModel;
 using YamlDotNet.Serialization;
 
 namespace Devo6.WorkFlow.Engine;
@@ -32,6 +33,44 @@ internal static class StandardConfigLoader
     }
 
     /// <summary>
+    /// Step 登録単位 Config metadata に基づいてすべての Step Config を読み込みます。
+    /// </summary>
+    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="boundaryConfigType">YAML 全体を変換する CompositeStep 境界 Config 型。</param>
+    /// <param name="registrations">Step 登録単位 Config metadata の一覧。</param>
+    /// <param name="settings">raw CLI override。</param>
+    /// <returns>検証済みの Step Config instance 一覧。</returns>
+    internal static IReadOnlyList<StepConfigValue> LoadStepConfigs(
+        string configPath,
+        Type boundaryConfigType,
+        IReadOnlyList<StepConfigRegistration> registrations,
+        IReadOnlyDictionary<string, string>? settings = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(configPath);
+        ArgumentNullException.ThrowIfNull(boundaryConfigType);
+        ArgumentNullException.ThrowIfNull(registrations);
+
+        EnsureSectionPathsAreUsable(registrations);
+        string[] sectionPaths = registrations.Select(registration => registration.SectionPath).Distinct(StringComparer.Ordinal).ToArray();
+        EnsureSettingsTargetDeclared(sectionPaths, settings);
+        EnsureSectionsExist(configPath, sectionPaths);
+
+        object boundaryConfig = Deserialize(configPath, boundaryConfigType);
+        ApplySettings(boundaryConfig, settings);
+        Validate(boundaryConfig);
+
+        return registrations
+            .Select(registration =>
+            {
+                object config = ExtractStepConfig(boundaryConfig, registration.SectionPath, registration.ConfigType);
+                Validate(config);
+
+                return new StepConfigValue(registration.StepIndex, registration.ConfigType, config);
+            })
+            .ToArray();
+    }
+
+    /// <summary>
     /// YAML file を標準 Config 型の instance に変換します。
     /// </summary>
     /// <param name="configPath">読み込む YAML file path。</param>
@@ -42,6 +81,17 @@ internal static class StandardConfigLoader
         using StreamReader reader = File.OpenText(configPath);
         object? config = Deserializer.Deserialize(reader, configType);
 
+        return EnsureConfigInstance(config, configType);
+    }
+
+    /// <summary>
+    /// null の変換結果を引数なし constructor で生成した Config instance に置き換えます。
+    /// </summary>
+    /// <param name="config">YAML から変換した Config instance。</param>
+    /// <param name="configType">生成対象の標準 Config 型。</param>
+    /// <returns>null ではない標準 Config instance。</returns>
+    private static object EnsureConfigInstance(object? config, Type configType)
+    {
         if (config is null)
         {
             config = Activator.CreateInstance(configType)
@@ -49,6 +99,219 @@ internal static class StandardConfigLoader
         }
 
         return config;
+    }
+
+    /// <summary>
+    /// YAML file から境界 Config 型上の property path に対応する node を取得します。
+    /// </summary>
+    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="sectionPath">境界 Config 型上の property path。</param>
+    /// <returns>指定された property path の YAML node。</returns>
+    private static YamlNode ReadSectionNode(string configPath, string sectionPath)
+    {
+        var yaml = new YamlStream();
+        using StreamReader reader = File.OpenText(configPath);
+        yaml.Load(reader);
+
+        if (yaml.Documents.Count == 0)
+        {
+            throw new InvalidOperationException($"Config section was not found: {sectionPath}");
+        }
+
+        YamlNode current = yaml.Documents[0].RootNode;
+        foreach (string segment in SplitSectionPath(sectionPath))
+        {
+            if (current is not YamlMappingNode mapping)
+            {
+                throw new InvalidOperationException($"Config section was not found: {sectionPath}");
+            }
+
+            KeyValuePair<YamlNode, YamlNode>? pair = mapping.Children
+                .FirstOrDefault(child => child.Key is YamlScalarNode scalar
+                    && string.Equals(scalar.Value, segment, StringComparison.Ordinal));
+
+            if (pair is null || pair.Value.Value is null)
+            {
+                throw new InvalidOperationException($"Config section was not found: {sectionPath}");
+            }
+
+            current = pair.Value.Value;
+        }
+
+        return current;
+    }
+
+    /// <summary>
+    /// Step Config property path の prefix 関係と path 書式を検査します。
+    /// </summary>
+    /// <param name="registrations">検査する Step 登録単位 Config metadata の一覧。</param>
+    private static void EnsureSectionPathsAreUsable(IReadOnlyList<StepConfigRegistration> registrations)
+    {
+        string[] sectionPaths = registrations
+            .Select(registration => registration.SectionPath)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        foreach (string sectionPath in sectionPaths)
+        {
+            _ = SplitSectionPath(sectionPath);
+        }
+
+        for (int i = 0; i < sectionPaths.Length; i++)
+        {
+            for (int j = i + 1; j < sectionPaths.Length; j++)
+            {
+                if (SectionPathIsPrefixOf(sectionPaths[i], sectionPaths[j])
+                    || SectionPathIsPrefixOf(sectionPaths[j], sectionPaths[i]))
+                {
+                    throw new InvalidOperationException($"Config section paths must not have a prefix relationship: {sectionPaths[i]}, {sectionPaths[j]}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 宣言済み property path が YAML file に存在することを検査します。
+    /// </summary>
+    /// <param name="configPath">読み込む YAML file path。</param>
+    /// <param name="sectionPaths">存在を確認する宣言済み property path の一覧。</param>
+    private static void EnsureSectionsExist(string configPath, IReadOnlyList<string> sectionPaths)
+    {
+        foreach (string sectionPath in sectionPaths)
+        {
+            _ = ReadSectionNode(configPath, sectionPath);
+        }
+    }
+
+    /// <summary>
+    /// raw CLI override が宣言済み property path の接頭辞を対象にしていることを検査します。
+    /// </summary>
+    /// <param name="sectionPaths">宣言済み property path の一覧。</param>
+    /// <param name="settings">raw CLI override。</param>
+    private static void EnsureSettingsTargetDeclared(IReadOnlyList<string> sectionPaths, IReadOnlyDictionary<string, string>? settings)
+    {
+        if (settings is null || settings.Count == 0)
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<string, string> setting in settings)
+        {
+            string? matchedSection = sectionPaths.SingleOrDefault(sectionPath => TryRemoveSectionPrefix(setting.Key, sectionPath, out _));
+            if (matchedSection is null)
+            {
+                throw new InvalidOperationException($"Config override section was not declared: {setting.Key}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 境界 Config 型から宣言済み Step Config property path の値を抽出します。
+    /// </summary>
+    /// <param name="boundaryConfig">境界 Config instance。</param>
+    /// <param name="sectionPath">境界 Config 型上の property path。</param>
+    /// <param name="configType">StepContext へ登録する Step Config 型。</param>
+    /// <returns>抽出した Step Config instance。</returns>
+    private static object ExtractStepConfig(object boundaryConfig, string sectionPath, Type configType)
+    {
+        object? value = GetPropertyPathValue(boundaryConfig, sectionPath);
+        if (value is null)
+        {
+            value = Activator.CreateInstance(configType)
+                ?? throw new InvalidOperationException($"Step config type could not be created: {configType.FullName}");
+        }
+
+        if (!configType.IsAssignableFrom(value.GetType()))
+        {
+            throw new InvalidOperationException($"Config section type does not match declared step config type: {sectionPath}");
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// object の公開 property path をたどって値を取得します。
+    /// </summary>
+    /// <param name="source">property path をたどる起点 object。</param>
+    /// <param name="path">C# public instance property 名で構成された path。</param>
+    /// <returns>path の終端 property 値。</returns>
+    private static object? GetPropertyPathValue(object source, string path)
+    {
+        object? current = source;
+        foreach (string segment in SplitSectionPath(path))
+        {
+            if (current is null)
+            {
+                return null;
+            }
+
+            PropertyInfo property = FindProperty(current.GetType(), segment);
+            current = property.GetValue(current);
+        }
+
+        return current;
+    }
+
+    /// <summary>
+    /// override path から指定 property path の接頭辞を剥がします。
+    /// </summary>
+    /// <param name="settingPath">raw CLI override path。</param>
+    /// <param name="sectionPath">宣言済み property path。</param>
+    /// <param name="propertyPath">宣言済み property path を剥がした override property path。</param>
+    /// <returns>override path が宣言済み property path と一致する場合は true。</returns>
+    private static bool TryRemoveSectionPrefix(string settingPath, string sectionPath, out string propertyPath)
+    {
+        string[] settingSegments = SplitSectionPath(settingPath);
+        string[] sectionSegments = SplitSectionPath(sectionPath);
+        propertyPath = "";
+
+        if (settingSegments.Length <= sectionSegments.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < sectionSegments.Length; i++)
+        {
+            if (!string.Equals(settingSegments[i], sectionSegments[i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        propertyPath = string.Join('.', settingSegments.Skip(sectionSegments.Length));
+
+        return true;
+    }
+
+    /// <summary>
+    /// 左の property path が右の property path の真の prefix かどうかを返します。
+    /// </summary>
+    /// <param name="left">prefix 候補の property path。</param>
+    /// <param name="right">比較対象の property path。</param>
+    /// <returns>左が右の真の prefix の場合は true。</returns>
+    private static bool SectionPathIsPrefixOf(string left, string right)
+    {
+        string[] leftSegments = SplitSectionPath(left);
+        string[] rightSegments = SplitSectionPath(right);
+
+        return leftSegments.Length < rightSegments.Length
+            && leftSegments.Zip(rightSegments).All(pair => string.Equals(pair.First, pair.Second, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// property または override path を `.` 区切りの要素に分割します。
+    /// </summary>
+    /// <param name="path">分割する path。</param>
+    /// <returns>path 要素の一覧。</returns>
+    private static string[] SplitSectionPath(string path)
+    {
+        string[] segments = path.Split('.');
+        if (segments.Length == 0 || segments.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidOperationException($"Config section path is invalid: {path}");
+        }
+
+        return segments;
     }
 
     /// <summary>

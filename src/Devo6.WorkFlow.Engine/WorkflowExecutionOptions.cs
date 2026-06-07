@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 namespace Devo6.WorkFlow.Engine;
 
 /// <summary>
-/// Provides optional engine execution dependencies for workflow runs.
+/// workflow 実行に使う任意の依存関係を提供します。
 /// </summary>
 public sealed class WorkflowExecutionOptions
 {
@@ -20,12 +20,12 @@ public sealed class WorkflowExecutionOptions
     }
 
     /// <summary>
-    /// Gets the logger factory used to create engine and step loggers.
+    /// engine と step logger を作成する logger factory を取得します。
     /// </summary>
     public ILoggerFactory? LoggerFactory { get; }
 
     /// <summary>
-    /// Gets command-line engine arguments exposed through StepContext during workflow execution.
+    /// workflow 実行中に StepContext へ公開する command-line engine 引数を取得します。
     /// </summary>
     public EngineArguments? EngineArguments { get; }
 
@@ -45,6 +45,11 @@ public sealed class WorkflowExecutionOptions
     internal object? StandardConfig { get; private init; }
 
     /// <summary>
+    /// Step 実行直前に StepContext へ登録する Step Config instance の一覧を取得します。
+    /// </summary>
+    internal IReadOnlyList<StepConfigValue> StepConfigs { get; private init; } = [];
+
+    /// <summary>
     /// 標準 Config instance を追加した実行 option を作成します。
     /// </summary>
     /// <param name="standardConfig">StepContext に登録する標準 Config instance。</param>
@@ -56,8 +61,35 @@ public sealed class WorkflowExecutionOptions
         return new WorkflowExecutionOptions(LoggerFactory, EngineArguments)
         {
             Retry = Retry,
+            StepConfigs = StepConfigs,
             StandardConfig = standardConfig,
             StepTimeout = StepTimeout,
         };
     }
+
+    /// <summary>
+    /// Step Config instance の一覧を追加した実行 option を作成します。
+    /// </summary>
+    /// <param name="stepConfigs">Step 実行直前に登録する Config instance の一覧。</param>
+    /// <returns>既存設定を引き継ぎ、Step Config instance の一覧を持つ実行 option。</returns>
+    internal WorkflowExecutionOptions WithStepConfigs(IReadOnlyList<StepConfigValue> stepConfigs)
+    {
+        ArgumentNullException.ThrowIfNull(stepConfigs);
+
+        return new WorkflowExecutionOptions(LoggerFactory, EngineArguments)
+        {
+            Retry = Retry,
+            StandardConfig = StandardConfig,
+            StepConfigs = stepConfigs.ToArray(),
+            StepTimeout = StepTimeout,
+        };
+    }
 }
+
+/// <summary>
+/// Step 実行直前に登録する検証済み Config instance を保持します。
+/// </summary>
+/// <param name="StepIndex">Config を登録する Step の登録順 index。</param>
+/// <param name="ConfigType">StepContext へ登録する Config 型。</param>
+/// <param name="Config">StepContext へ登録する Config instance。</param>
+internal sealed record StepConfigValue(int StepIndex, Type ConfigType, object Config);

@@ -842,9 +842,20 @@ public sealed class CsxEntryLoader
         failure = null;
 
         Type? configType = GetCompositeStepConfigType(entry);
-        if (configType is null)
+        IReadOnlyList<StepConfigRegistration> stepConfigRegistrations = GetCompositeStepConfigRegistrations(entry);
+        if (configType is null && stepConfigRegistrations.Count == 0)
         {
             return options;
+        }
+
+        if (configType is null && stepConfigRegistrations.Count > 0)
+        {
+            failure = Failure(
+                entryName,
+                WorkflowErrorCodes.ConfigLoadFailed,
+                "CompositeStep boundary config type was not declared.");
+
+            return null;
         }
 
         string configPath = options?.EngineArguments?.ConfigPath ?? "";
@@ -862,9 +873,25 @@ public sealed class CsxEntryLoader
 
         try
         {
-            object standardConfig = StandardConfigLoader.Load(configPath, configType, options?.EngineArguments?.Settings);
+            WorkflowExecutionOptions preparedOptions = options ?? new WorkflowExecutionOptions();
 
-            return (options ?? new WorkflowExecutionOptions()).WithStandardConfig(standardConfig);
+            if (stepConfigRegistrations.Count == 0)
+            {
+                object standardConfig = StandardConfigLoader.Load(configPath, configType!, options?.EngineArguments?.Settings);
+                preparedOptions = preparedOptions.WithStandardConfig(standardConfig);
+            }
+
+            if (stepConfigRegistrations.Count > 0)
+            {
+                IReadOnlyList<StepConfigValue> stepConfigs = StandardConfigLoader.LoadStepConfigs(
+                    configPath,
+                    configType!,
+                    stepConfigRegistrations,
+                    options?.EngineArguments?.Settings);
+                preparedOptions = preparedOptions.WithStepConfigs(stepConfigs);
+            }
+
+            return preparedOptions;
         }
         catch (Exception exception) when (exception is not ArgumentException)
         {
@@ -996,9 +1023,23 @@ public sealed class CsxEntryLoader
     /// <summary>
     /// CompositeStep の標準 Config 型 metadata を取得します。
     /// </summary>
+    /// <param name="value">CompositeStep instance。</param>
+    /// <returns>Entry 全体 Config 型。未指定の場合は null。</returns>
     private static Type? GetCompositeStepConfigType(object value)
     {
         return value.GetType().GetProperty(nameof(CompositeStep<Unit>.ConfigType))?.GetValue(value) as Type;
+    }
+
+    /// <summary>
+    /// CompositeStep の Step 登録単位 Config metadata を取得します。
+    /// </summary>
+    /// <param name="value">CompositeStep instance。</param>
+    /// <returns>Step 登録単位 Config metadata の一覧。</returns>
+    private static IReadOnlyList<StepConfigRegistration> GetCompositeStepConfigRegistrations(object value)
+    {
+        return value.GetType()
+            .GetProperty(nameof(CompositeStep<Unit>.StepConfigRegistrations))
+            ?.GetValue(value) as IReadOnlyList<StepConfigRegistration> ?? [];
     }
 
     private static IEnumerable<ValidationError> ValidateConfigPaths(string entryPath, CsxValidationOptions? validationOptions)

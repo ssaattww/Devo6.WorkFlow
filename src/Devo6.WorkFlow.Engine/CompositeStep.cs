@@ -113,18 +113,21 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     /// <param name="qualifiedName">Entry の完全修飾名。</param>
     /// <param name="steps">登録済み Step 列。</param>
     /// <param name="configType">Entry が要求する標準 Config 型。</param>
+    /// <param name="stepConfigRegistrations">Step 登録単位 Config metadata の一覧。</param>
     internal CompositeStep(
         string name,
         string? namespaceName,
         string qualifiedName,
         IReadOnlyList<StepRegistration> steps,
-        Type? configType = null)
+        Type? configType = null,
+        IReadOnlyList<StepConfigRegistration>? stepConfigRegistrations = null)
     {
         Name = name;
         NamespaceName = namespaceName;
         QualifiedName = qualifiedName;
         this.steps = steps.ToArray();
         ConfigType = configType;
+        StepConfigRegistrations = stepConfigRegistrations?.ToArray() ?? [];
     }
 
     /// <summary>
@@ -148,6 +151,11 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     public Type? ConfigType { get; }
 
     /// <summary>
+    /// Step 登録単位 Config metadata の一覧を取得します。
+    /// </summary>
+    public IReadOnlyList<StepConfigRegistration> StepConfigRegistrations { get; }
+
+    /// <summary>
     /// 同期 Step を末尾へ追加します。
     /// </summary>
     /// <typeparam name="TStep">追加する同期 Step 型。</typeparam>
@@ -161,7 +169,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             NamespaceName,
             QualifiedName,
             Append(StepRegistration.Create<TStep, TNext>()),
-            ConfigType);
+            ConfigType,
+            StepConfigRegistrations);
     }
 
     /// <summary>
@@ -178,7 +187,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             NamespaceName,
             QualifiedName,
             Append(StepRegistration.CreateAsync<TStep, TNext>()),
-            ConfigType);
+            ConfigType,
+            StepConfigRegistrations);
     }
 
     /// <summary>
@@ -188,7 +198,24 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     /// <returns>標準 Config 型 metadata を持つ composite entry。</returns>
     public CompositeStep<TOut> WithConfig<TConfig>()
     {
-        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, steps, typeof(TConfig));
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, steps, typeof(TConfig), StepConfigRegistrations);
+    }
+
+    /// <summary>
+    /// 直前に登録した Step に対応する Step 登録単位 Config 型と境界 Config 型上の property path を metadata として設定します。
+    /// </summary>
+    /// <typeparam name="TConfig">StepContext に登録する Step Config 型。</typeparam>
+    /// <param name="sectionPath">境界 Config 型上の property path。</param>
+    /// <returns>Step 登録単位 Config metadata を持つ composite entry。</returns>
+    public CompositeStep<TOut> WithConfig<TConfig>(string sectionPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sectionPath);
+
+        StepConfigRegistration[] nextRegistrations = StepConfigRegistrations
+            .Append(new StepConfigRegistration(CurrentStep.StepType, sectionPath, typeof(TConfig), steps.Count - 1))
+            .ToArray();
+
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, steps, ConfigType, nextRegistrations);
     }
 
     /// <summary>
@@ -370,6 +397,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
                 try
                 {
+                    SetStepConfig(context, options.StepConfigs, stepIndex);
                     currentValue = await step.ExecuteAsync(input, stepCancellation.Token).ConfigureAwait(false);
 
                     StepCancellationFailure? cancellationFailure = DetectCancellationFailure(
@@ -708,7 +736,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         StepRegistration[] nextSteps = steps.ToArray();
         nextSteps[^1] = registration;
 
-        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, nextSteps, ConfigType);
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, nextSteps, ConfigType, StepConfigRegistrations);
     }
 
     /// <summary>
@@ -720,14 +748,84 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     private static void SetStandardConfig(StepContext context, Type? configType, object standardConfig)
     {
         Type targetType = configType ?? standardConfig.GetType();
+        SetConfig(context, targetType, standardConfig);
+    }
+
+    /// <summary>
+    /// 指定された Step index に対応する Step Config instance を StepContext に登録します。
+    /// </summary>
+    /// <param name="context">Step Config instance を登録する StepContext。</param>
+    /// <param name="stepConfigs">検証済み Step Config instance の一覧。</param>
+    /// <param name="stepIndex">実行直前の Step 登録順 index。</param>
+    private static void SetStepConfig(StepContext context, IReadOnlyList<StepConfigValue> stepConfigs, int stepIndex)
+    {
+        foreach (StepConfigValue stepConfig in stepConfigs.Where(stepConfig => stepConfig.StepIndex == stepIndex))
+        {
+            SetConfig(context, stepConfig.ConfigType, stepConfig.Config);
+        }
+    }
+
+    /// <summary>
+    /// 指定された型で Config instance を StepContext に登録します。
+    /// </summary>
+    /// <param name="context">Config instance を登録する StepContext。</param>
+    /// <param name="configType">StepContext 登録に使う Config 型。</param>
+    /// <param name="config">登録する Config instance。</param>
+    private static void SetConfig(StepContext context, Type configType, object config)
+    {
         typeof(StepContext)
             .GetMethods()
             .Single(method => method.Name == nameof(StepContext.Set)
                 && method.IsGenericMethodDefinition
                 && method.GetParameters().Length == 1)
-            .MakeGenericMethod(targetType)
-            .Invoke(context, [standardConfig]);
+            .MakeGenericMethod(configType)
+            .Invoke(context, [config]);
     }
+}
+
+/// <summary>
+/// Step 登録単位 Config の宣言 metadata を保持します。
+/// </summary>
+public sealed class StepConfigRegistration
+{
+    /// <summary>
+    /// Step 登録単位 Config の宣言 metadata を初期化します。
+    /// </summary>
+    /// <param name="stepType">Config を使う Step 型。</param>
+    /// <param name="sectionPath">境界 Config 型上の property path。</param>
+    /// <param name="configType">StepContext へ登録する Config 型。</param>
+    /// <param name="stepIndex">Config を登録する Step の登録順 index。</param>
+    internal StepConfigRegistration(Type stepType, string sectionPath, Type configType, int stepIndex)
+    {
+        ArgumentNullException.ThrowIfNull(stepType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sectionPath);
+        ArgumentNullException.ThrowIfNull(configType);
+
+        StepType = stepType;
+        SectionPath = sectionPath;
+        ConfigType = configType;
+        StepIndex = stepIndex;
+    }
+
+    /// <summary>
+    /// Config を使う Step 型を取得します。
+    /// </summary>
+    public Type StepType { get; }
+
+    /// <summary>
+    /// 境界 Config 型上の property path を取得します。
+    /// </summary>
+    public string SectionPath { get; }
+
+    /// <summary>
+    /// StepContext へ登録する Config 型を取得します。
+    /// </summary>
+    public Type ConfigType { get; }
+
+    /// <summary>
+    /// Config を登録する Step の登録順 index を取得します。
+    /// </summary>
+    internal int StepIndex { get; }
 }
 
 /// <summary>
@@ -736,6 +834,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 internal sealed class StepRegistration
 {
     private readonly string name;
+    private readonly Type stepType;
     private readonly Func<StepInput, CancellationToken, Task<object?>> executeAsync;
     private readonly IReadOnlyList<StepValueProducer> producers;
 
@@ -743,14 +842,17 @@ internal sealed class StepRegistration
     /// Step 登録情報を初期化します。
     /// </summary>
     /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="stepType">登録された Step 型。</param>
     /// <param name="executeAsync">登録済み Step を実行する処理。</param>
     /// <param name="producers">Step 成功後に実行する値生成処理。</param>
     private StepRegistration(
         string name,
+        Type stepType,
         Func<StepInput, CancellationToken, Task<object?>> executeAsync,
         IReadOnlyList<StepValueProducer> producers)
     {
         this.name = name;
+        this.stepType = stepType;
         this.executeAsync = executeAsync;
         this.producers = producers.ToArray();
     }
@@ -759,6 +861,11 @@ internal sealed class StepRegistration
     /// trace と log に記録する Step 名を取得します。
     /// </summary>
     public string Name => name;
+
+    /// <summary>
+    /// 登録された Step 型を取得します。
+    /// </summary>
+    public Type StepType => stepType;
 
     /// <summary>
     /// 同期 Step の登録情報を作成します。
@@ -771,6 +878,7 @@ internal sealed class StepRegistration
     {
         return new StepRegistration(
             typeof(TStep).Name,
+            typeof(TStep),
             (input, cancellationToken) =>
             {
                 return Task.FromResult<object?>(new TStep().Execute(input));
@@ -789,6 +897,7 @@ internal sealed class StepRegistration
     {
         return new StepRegistration(
             typeof(TStep).Name,
+            typeof(TStep),
             async (input, cancellationToken) => await new TStep().ExecuteAsync(input, cancellationToken).ConfigureAwait(false),
             []);
     }
@@ -822,7 +931,7 @@ internal sealed class StepRegistration
 
         nextProducers[^1] = producer;
 
-        return new StepRegistration(name, executeAsync, nextProducers);
+        return new StepRegistration(name, stepType, executeAsync, nextProducers);
     }
 
     /// <summary>
@@ -831,7 +940,7 @@ internal sealed class StepRegistration
     /// <returns>値生成処理を削除した Step 登録情報。</returns>
     public StepRegistration ClearProducers()
     {
-        return new StepRegistration(name, executeAsync, []);
+        return new StepRegistration(name, stepType, executeAsync, []);
     }
 
     /// <summary>

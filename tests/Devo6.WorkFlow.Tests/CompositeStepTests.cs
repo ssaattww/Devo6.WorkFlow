@@ -1,5 +1,7 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using System.Collections;
+using System.Reflection;
 
 namespace Devo6.WorkFlow.Tests;
 
@@ -33,6 +35,56 @@ public sealed class CompositeStepTests
         Assert.Equal("Deploy", step.NamespaceName);
         Assert.Equal("Deploy.Build", step.QualifiedName);
         Assert.Equal(typeof(string), step.ConfigType);
+    }
+
+    /// <summary>
+    /// 境界 Config 型と Step 登録単位 Config metadata の関係を検査します。
+    /// </summary>
+    [Fact(DisplayName = "CompositeStep は境界 Config 型と Step Config metadata を公開する")]
+    public void CompositeStepExposesBoundaryConfigAndStepConfigRegistrationMetadata()
+    {
+        MethodInfo? boundaryWithConfig = typeof(CompositeStep<FirstOutput>)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .SingleOrDefault(method => method.Name == "WithConfig"
+                && method.IsGenericMethodDefinition
+                && method.GetParameters().Length == 0);
+        MethodInfo? withConfig = typeof(CompositeStep<FirstOutput>)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .SingleOrDefault(method => method.Name == "WithConfig"
+                && method.IsGenericMethodDefinition
+                && method.GetParameters() is [{ ParameterType: Type parameterType }]
+                && parameterType == typeof(string));
+        PropertyInfo? boundaryConfigType = typeof(CompositeStep<FirstOutput>).GetProperty("ConfigType", BindingFlags.Instance | BindingFlags.Public);
+        Type? registrationType = typeof(CompositeStep<FirstOutput>).Assembly.GetType("Devo6.WorkFlow.Engine.StepConfigRegistration");
+
+        Assert.NotNull(boundaryWithConfig);
+        Assert.NotNull(withConfig);
+        Assert.Equal(typeof(CompositeStep<FirstOutput>), withConfig!.ReturnType);
+        Assert.NotNull(boundaryConfigType);
+        Assert.Equal(typeof(Type), boundaryConfigType!.PropertyType);
+        Assert.NotNull(registrationType);
+        Assert.NotNull(registrationType!.GetProperty("StepType", BindingFlags.Instance | BindingFlags.Public));
+        Assert.NotNull(registrationType.GetProperty("SectionPath", BindingFlags.Instance | BindingFlags.Public));
+        Assert.NotNull(registrationType.GetProperty("ConfigType", BindingFlags.Instance | BindingFlags.Public));
+
+        PropertyInfo? registrationsProperty = typeof(CompositeStep<FirstOutput>).GetProperty(
+            "StepConfigRegistrations",
+            BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(registrationsProperty);
+        Assert.Equal(typeof(IReadOnlyList<>).MakeGenericType(registrationType), registrationsProperty!.PropertyType);
+
+        CompositeStep<FirstOutput> step = CompositeStep
+            .Define("Main")
+            .Run<FirstStep, FirstOutput>()
+            .WithConfig<MetadataMainConfig>();
+        object configuredStep = withConfig.MakeGenericMethod(typeof(FirstStep.Config)).Invoke(step, ["Load"])!;
+        IEnumerable registrations = (IEnumerable)registrationsProperty.GetValue(configuredStep)!;
+        object registration = Assert.Single(registrations.Cast<object>());
+
+        Assert.Equal(typeof(MetadataMainConfig), boundaryConfigType.GetValue(configuredStep));
+        Assert.Equal(typeof(FirstStep), registrationType.GetProperty("StepType")!.GetValue(registration));
+        Assert.Equal("Load", registrationType.GetProperty("SectionPath")!.GetValue(registration));
+        Assert.Equal(typeof(FirstStep.Config), registrationType.GetProperty("ConfigType")!.GetValue(registration));
     }
 
     [Fact(DisplayName = "CompositeStep は定義順に Step を実行し Produce で型付き値を下流へ渡す")]
@@ -202,8 +254,26 @@ public sealed class CompositeStepTests
 
     private sealed record SecondInput(int Value);
 
+    /// <summary>
+    /// Step Config metadata 検査で使う境界 Config 型です。
+    /// </summary>
+    private sealed class MetadataMainConfig
+    {
+        /// <summary>
+        /// 最初の Step 用 Config を取得または設定します。
+        /// </summary>
+        public FirstStep.Config Load { get; set; } = new();
+    }
+
     private sealed class FirstStep : IStep<FirstOutput>
     {
+        /// <summary>
+        /// 最初の Step 用 Config です。
+        /// </summary>
+        public sealed class Config
+        {
+        }
+
         public FirstOutput Execute(StepInput input)
         {
             ExecutionLog.Add("first");

@@ -256,9 +256,14 @@ Step の入口は `StepInput` のみであり、Config は `StepInput.Context` �
 ```csharp
 public sealed class ConvertStep : IStep<ConvertResult>
 {
+    public sealed class Config
+    {
+        public bool ToUpper { get; set; }
+    }
+
     public ConvertResult Execute(StepInput input)
     {
-        ConvertConfig config = input.Context.Get<ConvertConfig>();
+        Config config = input.Context.Get<Config>();
         ConvertInput convertInput = input.Get<ConvertInput>();
 
         return new ConvertResult
@@ -297,48 +302,49 @@ Save:
   Path: ./output.txt
 ```
 
-`Load`、`Convert`、`Save` は各 Step 用の Config 区画である。
+`Load`、`Convert`、`Save` は CompositeStep 境界 Config 型上のプロパティ path である。
 
-これらの区画は、Step 登録単位で宣言された Config 型に対応する。`Load` は `LoadConfig`、`Convert` は `ConvertConfig`、`Save` は `SaveConfig` として読み込む。YAML の区画名は Step 実行順を定義しない。Step 実行順は `.csx` の `CompositeStep` 定義で決める。
+標準契約では、各 Step は `public sealed class Config` などの自分の Config 型を Step 型の内側に持つ。CompositeStep は `MainConfig` のような境界 Config 型を持ち、`MainConfig.Load` は `LoadStep.Config`、`MainConfig.Convert` は `ConvertStep.Config`、`MainConfig.Save` は `SaveStep.Config` を保持する。YAML の区画名は Step 実行順を定義しない。Step 実行順は `.csx` の `CompositeStep` 定義で決める。
 
 ### 6.3 Config 読み込み
 
 標準 Config 読み込みは、エンジンの実行前処理として行う。
 
-推奨契約では、Entry 側は Step 登録単位で Config 型と YAML 区画 path を明示する。
+推奨契約では、Entry 側は CompositeStep 境界 Config 型と、Step 登録単位の Config 型および境界 Config 型上のプロパティ path を明示する。
 
 ```csharp
 var Main = CompositeStep.Define("Main")
     .Run<LoadStep, LoadResult>()
-        .WithConfig<LoadConfig>("Load")
+        .WithConfig<MainConfig>()
+        .WithConfig<LoadStep.Config>("Load")
         .Produce<ConvertInput>(x => new ConvertInput
         {
             Text = x.Text
         })
     .Run<ConvertStep, ConvertResult>()
-        .WithConfig<ConvertConfig>("Convert")
+        .WithConfig<ConvertStep.Config>("Convert")
         .Produce<SaveInput>(x => new SaveInput
         {
             Content = x.ConvertedText
         })
     .Run<SaveStep, Unit>()
-        .WithConfig<SaveConfig>("Save")
+        .WithConfig<SaveStep.Config>("Save")
         .Discard();
 ```
 
-`WithConfig<TConfig>(string sectionPath)` は、直前に登録した Step のメタ情報として Config 型と YAML 区画 path を保持する。Step 専用引数は増やさない。
+`WithConfig<TConfig>()` は、Step 登録単位 Config がある場合は CompositeStep 境界 Config 型の宣言として扱う。
 
-CLI `run` は Entry `.csx` をロードした後、宣言されたすべての Step Config を単一 `--config` YAML ファイルから読み込む。
+`WithConfig<TConfig>(string sectionPath)` は、直前に登録した Step のメタ情報として Step Config 型と境界 Config 型上のプロパティ path を保持する。Step 専用引数は増やさない。
 
-`run` は最初の Step を実行する前に、宣言済み Step Config の YAML 区画選択、型変換、CLI override 適用、`DataAnnotations` と `IValidatableObject` の検証をすべて完了する。いずれか 1 つでも失敗した場合、最初の Step は実行しない。
+CLI `run` は Entry `.csx` をロードした後、単一 `--config` YAML ファイル全体を境界 Config 型へ変換する。
 
-実行時は、対象 Step の実行直前に、その Step 用の検証済み Config を `StepContext.Set<TConfig>(config)` で登録する。
+`run` は最初の Step を実行する前に、境界 Config 型への型変換、CLI override 適用、`DataAnnotations` と `IValidatableObject` の検証をすべて完了する。いずれか 1 つでも失敗した場合、最初の Step は実行しない。
 
-同じ Config 型を複数 Step で別区画として使う場合も、標準契約では対象 Step の実行直前に `StepContext.Set<TConfig>()` へ登録する。後続 Step では次の Step 用 Config によって同じ型の値が上書きされうる。永続的に名前付き取得したい場合は、利用者が Config 型を別型に分ける。
+実行時は、対象 Step の実行直前に、境界 Config 型上の `sectionPath` プロパティ値を取り出し、`StepContext.Set<TConfig>(config)` で登録する。たとえば `WithConfig<LoadStep.Config>("Load")` は、`MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録する宣言である。
 
-既存の `WithConfig<TConfig>()` は互換 API として残し、Entry 全体 Config 型を宣言する。互換 API は YAML 全体を 1 つの `TConfig` に変換し、最初の Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。利用者向け文書に出す推奨例は Step 登録単位の明示 Config API とする。
+Step 登録単位 Config があるのに `WithConfig<MainConfig>()` のような境界 Config 型宣言がない場合は、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
 
-同じ Entry で Step 登録単位 Config API と Entry 全体 Config 互換 API を併用する規則は標準契約に含めない。
+旧 `.WithConfig<TConfig>()` だけを使う Entry 全体 Config 互換 API は維持する。Step 登録単位 Config がない場合は従来どおり YAML 全体を `TConfig` に変換し、最初の Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。
 
 複数 Config ファイル統合、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は採用しない。
 
@@ -349,38 +355,16 @@ Config 読み込み Step を使用する場合は、標準 Config 読み込み�
 ### 6.4 標準 Config の定義と取得
 
 ```csharp
-public sealed class LoadConfig
-{
-    public string Path { get; set; } = "";
-}
-
-public sealed class ConvertConfig
-{
-    public bool ToUpper { get; set; }
-
-    public string Mode { get; set; } = "";
-}
-
-public sealed class SaveConfig
-{
-    public string Path { get; set; } = "";
-}
-```
-
-各 Step は `StepContext.Get<TConfig>()` で自分の Config 型を取得する。
-
-| Step | Config 区画 | 参照例 |
-| --- | --- | --- |
-| `LoadStep` | `Load` | `input.Context.Get<LoadConfig>().Path` |
-| `ConvertStep` | `Convert` | `input.Context.Get<ConvertConfig>().ToUpper`, `input.Context.Get<ConvertConfig>().Mode` |
-| `SaveStep` | `Save` | `input.Context.Get<SaveConfig>().Path` |
-
-```csharp
 public sealed class LoadStep : IStep<LoadResult>
 {
+    public sealed class Config
+    {
+        public string Path { get; set; } = "";
+    }
+
     public LoadResult Execute(StepInput input)
     {
-        LoadConfig config = input.Context.Get<LoadConfig>();
+        Config config = input.Context.Get<Config>();
 
         string text = File.ReadAllText(config.Path);
 
@@ -394,9 +378,16 @@ public sealed class LoadStep : IStep<LoadResult>
 
 public sealed class ConvertStep : IStep<ConvertResult>
 {
+    public sealed class Config
+    {
+        public bool ToUpper { get; set; }
+
+        public string Mode { get; set; } = "";
+    }
+
     public ConvertResult Execute(StepInput input)
     {
-        ConvertConfig config = input.Context.Get<ConvertConfig>();
+        Config config = input.Context.Get<Config>();
         ConvertInput convertInput = input.Get<ConvertInput>();
 
         return new ConvertResult
@@ -411,9 +402,14 @@ public sealed class ConvertStep : IStep<ConvertResult>
 
 public sealed class SaveStep : IStep<Unit>
 {
+    public sealed class Config
+    {
+        public string Path { get; set; } = "";
+    }
+
     public Unit Execute(StepInput input)
     {
-        SaveConfig config = input.Context.Get<SaveConfig>();
+        Config config = input.Context.Get<Config>();
         SaveInput saveInput = input.Get<SaveInput>();
 
         File.WriteAllText(config.Path, saveInput.Content);
@@ -421,18 +417,40 @@ public sealed class SaveStep : IStep<Unit>
         return Unit.Value;
     }
 }
+
+public sealed class MainConfig
+{
+    public LoadStep.Config Load { get; set; } = new();
+
+    public ConvertStep.Config Convert { get; set; } = new();
+
+    public SaveStep.Config Save { get; set; } = new();
+}
 ```
 
-対応関係は Step 登録時の `WithConfig<TConfig>(sectionPath)` と Step 実装の `StepContext.Get<TConfig>()` で明示する。Step ごとの Config 専用引数や、Step 型に対する Config 自動注入は追加しない。
+各 Step は `StepContext.Get<TConfig>()` で自分の Config 型を取得する。
 
-`Convert` 区画の複数プロパティを使う場合も、Step は同じ `ConvertConfig` から必要な値だけを読む。
+| Step | 境界 Config プロパティ path | Step Config 参照例 |
+| --- | --- | --- |
+| `LoadStep` | `Load` | `input.Context.Get<LoadStep.Config>().Path` |
+| `ConvertStep` | `Convert` | `input.Context.Get<ConvertStep.Config>().ToUpper`, `input.Context.Get<ConvertStep.Config>().Mode` |
+| `SaveStep` | `Save` | `input.Context.Get<SaveStep.Config>().Path` |
+
+対応関係は、`MainConfig` のプロパティ、Step 登録時の `WithConfig<TConfig>(sectionPath)`、Step 実装の `StepContext.Get<TConfig>()` で明示する。Step ごとの Config 専用引数や、Step 型に対する Config 自動注入は追加しない。
+
+`Convert` プロパティの複数プロパティを使う場合も、Step は同じ `ConvertStep.Config` から必要な値だけを読む。
 
 ```csharp
 public sealed class ConvertStep : IStep<ConvertResult>
 {
+    public sealed class Config
+    {
+        public string Mode { get; set; } = "";
+    }
+
     public ConvertResult Execute(StepInput input)
     {
-        ConvertConfig config = input.Context.Get<ConvertConfig>();
+        Config config = input.Context.Get<Config>();
 
         return new ConvertResult
         {
@@ -447,7 +465,8 @@ Entry 側の宣言例:
 ```csharp
 var Main = CompositeStep.Define("Main")
     .Run<ConvertStep, ConvertResult>()
-        .WithConfig<ConvertConfig>("Convert");
+        .WithConfig<MainConfig>()
+        .WithConfig<ConvertStep.Config>("Convert");
 ```
 
 Step は Config 専用引数を受け取らない。標準 Config は対象 Step の実行直前に `StepContext` へ登録され、Step は `StepContext.Get<TConfig>()` で取得する。
@@ -462,7 +481,9 @@ engine run main.csx --config config/appsettings.yaml
 
 `--config` は Config ファイルパスとして `EngineArguments` に保持する。
 
-Entry が Step 登録単位 Config または Entry 全体 Config 互換 API を使っている場合、CLI `run` は `--config` の YAML を各 Config 型に変換し、Step 実行前に検証する。
+Entry が Step 登録単位 Config を使っている場合、CLI `run` は `--config` の YAML 全体を CompositeStep 境界 Config 型に変換し、Step 実行前に検証する。
+
+Entry が旧 Entry 全体 Config 互換 API だけを使っている場合、CLI `run` は従来どおり `--config` の YAML 全体をその `TConfig` に変換し、Step 実行前に検証する。
 
 `--config` 未指定で、Entry が Config API を使っていない場合は既存どおり成功する。
 
@@ -479,23 +500,23 @@ engine run main.csx --config config/appsettings.yaml --set Convert.ToUpper=false
 engine run main.csx --config config/appsettings.yaml --set Save.Path=./override.txt
 ```
 
-`--set` は、宣言された YAML 区画 path に対するプロパティ path override として扱う。
+`--set` は、CompositeStep 境界 Config 型に対するプロパティ path override として扱う。
 
 書式は `--set Key=value` とする。CLI 解析層は最初の `=` より前を key、最初の `=` 以降を値として保持する。値の中の `=` は許可する。
 
 CLI 解析層で `--set` に値がない場合、`key=value` になっていない場合、または key が空の場合は、Config 型を見ない CLI 解析エラーとして終了コード 2 で失敗する。
 
-Step 登録単位 Config では、key の先頭は宣言済みの YAML 区画 path と一致しなければならない。区画 path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は `Convert` 区画への override として扱い、区画接頭辞 `Convert` を剥がした `ToUpper=false` を `ConvertConfig.ToUpper` に適用する。`ConvertExtra.ToUpper` は `Convert` 区画に一致しない。
+Step 登録単位 Config では、key の先頭は宣言済みの境界 Config プロパティ path と一致しなければならない。プロパティ path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は `MainConfig.Convert.ToUpper` への override として扱い、対象 Step 実行直前には `MainConfig.Convert` を `StepContext.Set<ConvertStep.Config>()` へ登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
 
-同一 Entry 内の宣言済み区画 path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済み区画に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
+同一 Entry 内の宣言済みプロパティ path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済みプロパティ path に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
 
-区画接頭辞を剥がした後の key は C# の公開プロパティ名を `.` でたどる。プロパティ名は大小文字を区別する完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
+プロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名は大小文字を区別する完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
 
-Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を `TConfig` のプロパティ path として扱い、区画接頭辞の剥がしは行わない。
+Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を `TConfig` のプロパティ path として扱う。
 
 入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
 
-配列またはリストは、区画接頭辞を剥がした後に `Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は標準 Config override には含めない。添字が範囲外、負数、または数値でない場合は `CONFIG_LOAD_FAILED` とする。
+配列またはリストは、`Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は標準 Config override には含めない。添字が範囲外、負数、または数値でない場合は `CONFIG_LOAD_FAILED` とする。
 
 型変換は override 対象プロパティの型に対して行う。標準契約では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。型変換に失敗した場合は `CONFIG_LOAD_FAILED` とする。
 
@@ -636,9 +657,14 @@ Step はメソッドの連続呼び出しで定義せず、通常の C# クラ�
 ```csharp
 public sealed class LoadStep : IStep<LoadResult>
 {
+    public sealed class Config
+    {
+        public string Path { get; set; } = "";
+    }
+
     public LoadResult Execute(StepInput input)
     {
-        LoadConfig config = input.Context.Get<LoadConfig>();
+        Config config = input.Context.Get<Config>();
 
         string text = File.ReadAllText(config.Path);
 
@@ -656,10 +682,15 @@ public sealed class LoadStep : IStep<LoadResult>
 ```csharp
 public sealed class ConvertStep : IStep<ConvertResult>
 {
+    public sealed class Config
+    {
+        public bool ToUpper { get; set; }
+    }
+
     public ConvertResult Execute(StepInput input)
     {
         ConvertInput convertInput = input.Get<ConvertInput>();
-        ConvertConfig config = input.Context.Get<ConvertConfig>();
+        Config config = input.Context.Get<Config>();
 
         return new ConvertResult
         {
@@ -739,8 +770,8 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 5. `.csx` を `Dotnet.Script.Core` 経由でロードする
 6. `.csx` 上の CompositeStep 定義を取得する
 7. Entry の Step Config メタ情報を確認する
-8. 必要な場合は `--config` の YAML 区画を型付き Config に変換する
-9. `--set` の区画接頭辞付きプロパティ path override を型付き Config に適用する
+8. 必要な場合は `--config` の YAML 全体を境界 Config 型または Entry 全体 Config 型へ変換する
+9. `--set` のプロパティ path override を Config に適用する
 10. `DataAnnotations` と `IValidatableObject` で Config を検証する
 11. 検証済み Config を対象 Step の実行直前に `StepContext` に登録する
 12. 指定された Step を実行する
@@ -995,19 +1026,20 @@ var Main = CompositeStep.Define("Main")
 ```csharp
 var Main = CompositeStep.Define("Main")
     .Run<LoadStep, LoadResult>()
-        .WithConfig<LoadConfig>("Load")
+        .WithConfig<MainConfig>()
+        .WithConfig<LoadStep.Config>("Load")
         .Produce<ConvertInput>(x => new ConvertInput
         {
             Text = x.Text
         })
     .Run<ConvertStep, ConvertResult>()
-        .WithConfig<ConvertConfig>("Convert")
+        .WithConfig<ConvertStep.Config>("Convert")
         .Produce<SaveInput>(x => new SaveInput
         {
             Content = x.ConvertedText
         })
     .Run<SaveStep, Unit>()
-        .WithConfig<SaveConfig>("Save")
+        .WithConfig<SaveStep.Config>("Save")
         .Discard();
 ```
 
@@ -1124,9 +1156,9 @@ public sealed class StepConfigRegistration
 }
 ```
 
-`WithConfig<TConfig>(string sectionPath)` は直前に登録した Step に標準 Config 型と YAML 区画 path のメタ情報を設定する。`StepConfigRegistrations` は Entry 内の Step 登録順で保持する。
+`WithConfig<TConfig>(string sectionPath)` は直前に登録した Step に Step Config 型と境界 Config 型上のプロパティ path のメタ情報を設定する。`StepConfigRegistrations` は Entry 内の Step 登録順で保持する。
 
-`WithConfig<TConfig>()` は互換 API として Entry 全体 Config 型メタ情報を設定する。1 つの Entry に設定できる Entry 全体 Config 型は 1 つだけとする。
+`WithConfig<TConfig>()` は、Step 登録単位 Config がある場合は CompositeStep 境界 Config 型メタ情報を設定する。Step 登録単位 Config がない場合は、互換 API として Entry 全体 Config 型メタ情報を設定する。1 つの Entry に設定できる Config 型は 1 つだけとする。
 
 `CompositeStep.Define("Build", namespaceName: "Deploy")` は、短い名前 `Build`、名前空間 `Deploy`、完全修飾名 `Deploy.Build` を持つ Entry を定義する。
 
@@ -1183,9 +1215,9 @@ public sealed class RetryOptions
 
 `Retry` は CLI オプションまたは Config から直接指定しない。
 
-標準 Config 型と YAML 区画 path は `WorkflowExecutionOptions` ではなく、Entry の `CompositeStep` メタ情報から取得する。
+標準 Config 型と境界 Config プロパティ path は `WorkflowExecutionOptions` ではなく、Entry の `CompositeStep` メタ情報から取得する。
 
-CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `StepConfigRegistrations`、`EngineArguments.ConfigPath`、`EngineArguments.Settings` を使って Step 登録単位 Config を読み込む。Entry 全体 Config 互換 API を使う場合は、互換メタ情報の `ConfigType` を使う。
+CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `ConfigType`、`StepConfigRegistrations`、`EngineArguments.ConfigPath`、`EngineArguments.Settings` を使って Step 登録単位 Config を読み込む。Entry 全体 Config 互換 API を使う場合は、互換メタ情報の `ConfigType` を使う。
 
 `EngineArguments.Settings` は元の文字列を保持する。標準 Config に適用された後も、Step は CLI 指定値そのものを参照できる。
 
@@ -1238,10 +1270,11 @@ engine run main.csx --entry Deploy.Build
 ```csharp
 var Main = CompositeStep.Define("Main")
     .Run<LoadStep, LoadResult>()
-        .WithConfig<LoadConfig>("Load")
+        .WithConfig<MainConfig>()
+        .WithConfig<LoadStep.Config>("Load")
         .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
     .Run<ConvertStep, ConvertResult>()
-        .WithConfig<ConvertConfig>("Convert")
+        .WithConfig<ConvertStep.Config>("Convert")
         .StoreAs();
 
 var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
@@ -1555,17 +1588,19 @@ CLI `run` では、Entry が Step 登録単位 Config API または Entry 全体
 
 `--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
 
-Step 登録単位 Config API では、`--config` の YAML から宣言済みの区画 path を選択し、各 Step の `TConfig` に型変換する。その後、該当区画接頭辞を剥がした `--set` を各 Config に適用し、`DataAnnotations` と `IValidatableObject` を検証する。
+Step 登録単位 Config API では、`--config` の YAML 全体を CompositeStep 境界 Config 型に変換する。その後、`--set` を境界 Config 型のプロパティ path override として適用し、`DataAnnotations` と `IValidatableObject` を境界 Config 型から検証する。
 
-宣言済み区画 path が YAML に存在しない場合は、Config 型の生成や override 適用へ進まず、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
+宣言済み `sectionPath` が YAML に存在しない場合は、Config 型の生成や override 適用へ進まず、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
 
-宣言済み Step Config はすべて最初の Step 実行前に検証する。1 つでも検証に失敗した場合、最初の Step は実行せず `CONFIG_LOAD_FAILED` とする。
+Step 登録単位 Config があるのに CompositeStep 境界 Config 型が宣言されていない場合は、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
 
-検証に成功した Config は、Step 専用引数ではなく対象 Step の実行直前に `StepContext` に登録する。
+境界 Config と宣言済み Step Config の対応はすべて最初の Step 実行前に検証する。1 つでも検証に失敗した場合、最初の Step は実行せず `CONFIG_LOAD_FAILED` とする。
+
+検証に成功した Step Config は、Step 専用引数ではなく対象 Step の実行直前に `StepContext` に登録する。
 
 検証に失敗した Config は `StepContext` に登録してはならない。
 
-宣言済み区画が YAML 上に存在し、その区画が空または `{}` の場合は、Config 型を生成でき、検証に通れば成功とする。検証に失敗した場合は `CONFIG_LOAD_FAILED` とする。
+宣言済み `sectionPath` が YAML 上に存在し、その値が空または `{}` の場合は、Step Config 型を生成でき、検証に通れば成功とする。検証に失敗した場合は `CONFIG_LOAD_FAILED` とする。
 
 Entry 全体 Config 互換 API では、従来どおり YAML 全体を `TConfig` に型変換し、`--set` key 全体を `TConfig` へ適用してから検証する。
 
@@ -1861,12 +1896,14 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - retry 試行ごとのログと trace
 - 標準 Config 読み込み
 - CLI override による標準 Config 上書き
-- Step 登録単位の `WithConfig<TConfig>(string sectionPath)` による Config 型と YAML 区画 path メタ情報
-- 単一 `--config` YAML ファイル内の複数区画読み込み
-- CLI `run` の宣言済み Step Config 型変換、CLI override 適用、Config 検証
-- CLI `run` の `--set` 区画接頭辞剥がしと Config 検証前適用
-- 対象 Step 実行直前の `StepContext.Set<TConfig>()` 登録
-- Entry の `WithConfig<TConfig>()` による Entry 全体 Config 互換 API
+- Step 内 `Config` 型
+- CompositeStep 境界 Config 型を宣言する `WithConfig<TConfig>()`
+- Step 登録単位の `WithConfig<TConfig>(string sectionPath)` による Step Config 型と境界 Config プロパティ path メタ情報
+- 単一 `--config` YAML ファイル全体の境界 Config 型への読み込み
+- CLI `run` の境界 Config 型変換、CLI override 適用、Config 検証
+- CLI `run` の `--set` プロパティ path override と Config 検証前適用
+- 対象 Step 実行直前の `StepContext.Set<TStep.Config>()` 登録
+- Step 登録単位 Config がない場合の `WithConfig<TConfig>()` による Entry 全体 Config 互換 API
 - `engine validate` での Config path 存在確認
 - 値を含む `ExecutionTrace`
 - `TraceValueCapture.Serialized` と `TraceValueCapture.Redacted`
@@ -1989,15 +2026,17 @@ retry の標準契約には以下を含めない。
 
 標準 Config 読み込みはエンジン実行前処理として提供する。
 
-Entry 側は Step 登録単位の `WithConfig<TConfig>(string sectionPath)` で Config 型と YAML 区画 path を明示する。
+Entry 側は `WithConfig<TBoundaryConfig>()` で CompositeStep 境界 Config 型を宣言し、Step 登録単位の `WithConfig<TConfig>(string sectionPath)` で Step Config 型と境界 Config 型上のプロパティ path を明示する。
 
-CLI `run` は `.csx` ロード後、Entry の Step Config メタ情報と `--config` の path を使って YAML 区画を型付き Config に変換する。
+CLI `run` は `.csx` ロード後、Entry の境界 Config 型、Step Config メタ情報、`--config` の path を使って YAML 全体を境界 Config 型へ変換する。
 
-宣言された Step Config はすべて最初の Step 実行前に読み込み、型変換、override 適用、`DataAnnotations` と `IValidatableObject` による検証まで完了する。
+宣言された境界 Config と Step Config はすべて最初の Step 実行前に読み込み、型変換、override 適用、`DataAnnotations` と `IValidatableObject` による検証まで完了する。
 
-対象 Step の実行直前に、検証済み Config を `StepContext.Set<TConfig>(config)` で登録する。同じ Config 型を別区画で複数回使う場合、後続 Step の Config が同じ型の値を上書きしうる。
+対象 Step の実行直前に、境界 Config 型上の `sectionPath` プロパティ値を `StepContext.Set<TConfig>(config)` で登録する。同じ Config 型を別プロパティ path で複数回使う場合、後続 Step の Config が同じ型の値を上書きしうる。
 
-既存の `WithConfig<TConfig>()` は Entry 全体 Config 互換 API として残す。
+Step 登録単位 Config があるのに境界 Config 型宣言がない場合は `CONFIG_LOAD_FAILED` とする。
+
+Step 登録単位 Config がない場合、既存の `WithConfig<TConfig>()` は Entry 全体 Config 互換 API として残す。
 
 `--set` は `EngineArguments.Settings` に保持し、標準 Config へも適用する。
 
@@ -2005,25 +2044,24 @@ CLI `run` は `.csx` ロード後、Entry の Step Config メタ情報と `--con
 
 ### 21.3 CLI override の仕様
 
-`--set` は Step 登録単位 Config に対する YAML 区画 path 接頭辞付きのプロパティ path override として扱う。
+`--set` は CompositeStep 境界 Config 型に対するプロパティ path override として扱う。
 
 適用順は以下とする。
 
-1. `--config` の YAML から宣言済み区画 path を選択する
-2. 区画 YAML を Step 登録の `TConfig` に変換する
-3. `--set` の区画接頭辞を剥がして Config に適用する
-4. `DataAnnotations` と `IValidatableObject` を検証する
-5. 対象 Step の実行直前に検証済み Config を `StepContext` に登録する
+1. `--config` の YAML 全体を境界 Config 型へ変換する
+2. `--set` を境界 Config 型のプロパティ path override として適用する
+3. `DataAnnotations` と `IValidatableObject` を検証する
+4. 対象 Step の実行直前に、宣言済み `sectionPath` のプロパティ値を `StepContext` に登録する
 
-区画 path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は、宣言済み区画 path `Convert` に対する override として扱う。適用時は接頭辞 `Convert` を剥がし、`ToUpper=false` を `ConvertConfig.ToUpper` に適用する。`ConvertExtra.ToUpper` は `Convert` 区画に一致しない。
+プロパティ path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は、境界 Config 型の `Convert.ToUpper` に対する override として扱う。対象 Step 実行直前には、`Convert` プロパティ値を `StepContext.Set<ConvertStep.Config>()` に登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
 
-同一 Entry 内の宣言済み区画 path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済み区画に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
+同一 Entry 内の宣言済みプロパティ path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済みプロパティ path に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
 
-区画接頭辞を剥がした後のプロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名の照合は実行環境の言語設定に依存しない `StringComparison.Ordinal` 相当の完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
+プロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名の照合は実行環境の言語設定に依存しない `StringComparison.Ordinal` 相当の完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
 
 入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
 
-配列またはリストは、区画接頭辞を剥がした後に `Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は標準 Config override には含めない。
+配列またはリストは、`Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は標準 Config override には含めない。
 
 型変換は override 対象プロパティの型に対して行う。標準契約では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。
 
