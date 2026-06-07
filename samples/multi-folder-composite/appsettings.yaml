@@ -1,0 +1,7 @@
+Load:
+  Path: input/source.txt
+Convert:
+  Prefix: "converted: "
+  ToUpper: true
+Save:
+  Path: output/result.txt
