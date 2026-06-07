@@ -148,6 +148,315 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
+    /// 名前空間付き Entry を公開完全修飾名で実行できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "CompositeStep の名前空間付き Entry は公開完全修飾名で実行できる")]
+    public void ExecuteQualifiedNamespaceEntryByPublicName()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input) => "deploy";
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            """);
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath, "Deploy.Build");
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Deploy.Build", result.EntryName);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal("DeployBuildStep", traceStep.StepName);
+    }
+
+    /// <summary>
+    /// 異なる名前空間で同じ短い Entry 名を持つ Entry が共存できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "異なる名前空間の同名 Entry は共存して実行できる")]
+    public void ExecuteAllowsSameShortNameInDifferentNamespaces()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input) => "deploy";
+            }
+
+            /// <summary>
+            /// Test 名前空間の Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class TestBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Test Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Test Build の固定値。</returns>
+                public string Execute(StepInput input) => "test";
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            var TestBuild = CompositeStep.Define("Build", namespaceName: "Test")
+                .Run<TestBuildStep, string>()
+                    .StoreAs();
+            """);
+
+        WorkflowResult deployResult = new CsxEntryLoader().Execute(scriptPath, "Deploy.Build");
+        WorkflowResult testResult = new CsxEntryLoader().Execute(scriptPath, "Test.Build");
+
+        Assert.True(deployResult.Succeeded);
+        Assert.Equal("Deploy.Build", deployResult.EntryName);
+        Assert.Equal("DeployBuildStep", Assert.Single(deployResult.Trace!.Steps).StepName);
+        Assert.True(testResult.Succeeded);
+        Assert.Equal("Test.Build", testResult.EntryName);
+        Assert.Equal("TestBuildStep", Assert.Single(testResult.Trace!.Steps).StepName);
+    }
+
+    /// <summary>
+    /// 名前空間なし候補がなく短い Entry 名候補が一意なら短い Entry 名で互換解決できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "短い Entry 名は名前空間付き候補が一意なら互換解決できる")]
+    public void ExecuteShortEntryNameResolvesSingleNamespaceCandidate()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input) => "deploy";
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            """);
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath, "Build");
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Deploy.Build", result.EntryName);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal("DeployBuildStep", traceStep.StepName);
+    }
+
+    /// <summary>
+    /// 短い Entry 名が複数の名前空間付き候補に一致すると曖昧指定として失敗することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "短い Entry 名が複数名前空間候補に一致すると ENTRY_STEP_NOT_FOUND になる")]
+    public void ExecuteShortEntryNameAmbiguityFailsWithEntryStepNotFound()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input) => "deploy";
+            }
+
+            /// <summary>
+            /// Test 名前空間の Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class TestBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Test Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Test Build の固定値。</returns>
+                public string Execute(StepInput input) => "test";
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            var TestBuild = CompositeStep.Define("Build", namespaceName: "Test")
+                .Run<TestBuildStep, string>()
+                    .StoreAs();
+            """);
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath, "Build");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("Build", result.EntryName);
+        Assert.Equal(WorkflowErrorCodes.EntryStepNotFound, result.ErrorCode);
+        Assert.Contains("multiple", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Deploy.Build", result.ErrorMessage, StringComparison.Ordinal);
+        Assert.Contains("Test.Build", result.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// load 先で定義された名前空間付き Entry を公開完全修飾名で実行できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "load 先の名前空間付き Entry は公開完全修飾名で実行できる")]
+    public void ExecuteLoadedNamespaceEntryByQualifiedName()
+    {
+        string scriptPath = CreateScript(
+            """
+            #load "./deploy.csx"
+            """,
+            ("deploy.csx",
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// load 先の Deploy Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class LoadedDeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// load 先の Deploy Build 固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>load 先の Deploy Build 固定値。</returns>
+                public string Execute(StepInput input) => "loaded";
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<LoadedDeployBuildStep, string>()
+                    .StoreAs();
+            """));
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath, "Deploy.Build");
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Deploy.Build", result.EntryName);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal("LoadedDeployBuildStep", traceStep.StepName);
+    }
+
+    /// <summary>
+    /// WithConfig と RunAsync の chain 後も名前空間付き Entry metadata が維持されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "WithConfig と RunAsync chain 後も名前空間付き Entry metadata は維持される")]
+    public void ExecutePreservesNamespaceMetadataAfterConfigRunAndRunAsyncChain()
+    {
+        string scriptPath = CreateScript(
+            """
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// chain 維持検査用 Config です。
+            /// </summary>
+            public sealed class ChainConfig
+            {
+                /// <summary>
+                /// 検査用 title を取得または設定します。
+                /// </summary>
+                public string Title { get; set; } = "";
+            }
+
+            /// <summary>
+            /// chain の先頭で固定値を返す Step です。
+            /// </summary>
+            public sealed class ChainFirstStep : IStep<int>
+            {
+                /// <summary>
+                /// 固定の整数値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>固定の整数値。</returns>
+                public int Execute(StepInput input) => 1;
+            }
+
+            /// <summary>
+            /// chain の末尾で非同期に固定値を返す Step です。
+            /// </summary>
+            public sealed class ChainAsyncStep : IAsyncStep<string>
+            {
+                /// <summary>
+                /// 固定の文字列値を非同期に返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <param name="cancellationToken">キャンセル通知。</param>
+                /// <returns>固定の文字列値。</returns>
+                public async Task<string> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
+                {
+                    await Task.Yield();
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    return "chain";
+                }
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<ChainFirstStep, int>()
+                .WithConfig<ChainConfig>()
+                .RunAsync<ChainAsyncStep, string>()
+                    .StoreAs();
+            """);
+        string configPath = Path.Combine(Path.GetDirectoryName(scriptPath)!, "appsettings.yaml");
+        File.WriteAllText(configPath, "Title: chain");
+
+        WorkflowResult result = new CsxEntryLoader().Execute(
+            scriptPath,
+            "Deploy.Build",
+            new WorkflowExecutionOptions(engineArguments: new EngineArguments
+            {
+                EntryPath = scriptPath,
+                ConfigPath = configPath,
+            }));
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Deploy.Build", result.EntryName);
+        Assert.Collection(
+            result.Trace!.Steps,
+            first => Assert.Equal("ChainFirstStep", first.StepName),
+            second => Assert.Equal("ChainAsyncStep", second.StepName));
+    }
+
+    /// <summary>
     /// Verifies that a missing entry file is returned as a SCRIPT_LOAD_FAILED workflow failure.
     /// </summary>
     [Fact(DisplayName = "Entry file が存在しない場合は SCRIPT_LOAD_FAILED の失敗結果になる")]

@@ -5,6 +5,36 @@ namespace Devo6.WorkFlow.Tests;
 
 public sealed class CompositeStepTests
 {
+    /// <summary>
+    /// 名前空間なし Entry metadata が短い Entry 名だけで構成されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "名前空間なし Entry は短い名前と完全修飾名が一致する")]
+    public void DefineWithoutNamespaceUsesShortNameAsQualifiedName()
+    {
+        CompositeStepDefinition definition = CompositeStep.Define("Build");
+
+        Assert.Equal("Build", definition.Name);
+        Assert.Null(definition.NamespaceName);
+        Assert.Equal("Build", definition.QualifiedName);
+    }
+
+    /// <summary>
+    /// 名前空間付き Entry metadata が chain 後も維持されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "名前空間付き Entry metadata は chain 後も維持される")]
+    public void DefineWithNamespacePreservesMetadataAfterChain()
+    {
+        CompositeStep<FirstOutput> step = CompositeStep
+            .Define("Build", namespaceName: "Deploy")
+            .Run<FirstStep, FirstOutput>()
+            .WithConfig<string>();
+
+        Assert.Equal("Build", step.Name);
+        Assert.Equal("Deploy", step.NamespaceName);
+        Assert.Equal("Deploy.Build", step.QualifiedName);
+        Assert.Equal(typeof(string), step.ConfigType);
+    }
+
     [Fact(DisplayName = "CompositeStep は定義順に Step を実行し Produce で型付き値を下流へ渡す")]
     public void CompositeStepは定義順にStepを実行しProduceで型付き値を下流へ渡す()
     {

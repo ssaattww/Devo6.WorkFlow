@@ -85,26 +85,33 @@ public sealed class CsxEntryLoader
             }
 
             ScriptState<object> state = script.RunAsync(new object()).GetAwaiter().GetResult();
-            object? entry = state.Variables
-                .Where(variable => variable.Name == resolvedEntryName)
-                .Select(variable => variable.Value)
-                .FirstOrDefault(IsCompositeStep);
+            IReadOnlyList<CsxEntryCandidate> entryCandidates = GetEntryCandidates(state.Variables);
+            CsxEntryCandidate? duplicatedEntry = FindDuplicateQualifiedEntry(entryCandidates);
+            if (duplicatedEntry is not null)
+            {
+                return Failure(
+                    duplicatedEntry.QualifiedName,
+                    WorkflowErrorCodes.DuplicateStepName,
+                    $"Duplicate public step name was found: {duplicatedEntry.QualifiedName}");
+            }
 
-            if (entry is null)
+            CsxEntryResolution entryResolution = ResolveEntry(entryCandidates, resolvedEntryName);
+            if (!entryResolution.Succeeded)
             {
                 return Failure(
                     resolvedEntryName,
                     WorkflowErrorCodes.EntryStepNotFound,
-                    $"Entry step was not found: {resolvedEntryName}");
+                    entryResolution.ErrorMessage);
             }
 
-            WorkflowExecutionOptions? preparedOptions = PrepareExecutionOptions(resolvedEntryName, entry, options, out WorkflowResult? failure);
+            CsxEntryCandidate entry = entryResolution.Entry!;
+            WorkflowExecutionOptions? preparedOptions = PrepareExecutionOptions(entry.QualifiedName, entry.Value, options, out WorkflowResult? failure);
             if (failure is not null)
             {
                 return failure;
             }
 
-            return ExecuteEntry(entry, preparedOptions);
+            return ExecuteEntry(entry.Value, preparedOptions);
         }
         catch (CsxReferenceValidationException exception)
         {
@@ -165,15 +172,13 @@ public sealed class CsxEntryLoader
             }
 
             ScriptState<object> state = script.RunAsync(new object()).GetAwaiter().GetResult();
-            IReadOnlyList<ScriptVariable> entryVariables = state.Variables
-                .Where(variable => IsCompositeStep(variable.Value))
-                .ToArray();
-            List<IGrouping<string, ScriptVariable>> duplicateStepNames = entryVariables
-                .GroupBy(variable => GetCompositeStepName(variable.Value), StringComparer.Ordinal)
+            IReadOnlyList<CsxEntryCandidate> entryCandidates = GetEntryCandidates(state.Variables);
+            List<IGrouping<string, CsxEntryCandidate>> duplicateStepNames = entryCandidates
+                .GroupBy(candidate => candidate.QualifiedName, StringComparer.Ordinal)
                 .Where(group => group.Key.Length > 0 && group.Count() > 1)
                 .ToList();
 
-            foreach (IGrouping<string, ScriptVariable> duplicate in duplicateStepNames)
+            foreach (IGrouping<string, CsxEntryCandidate> duplicate in duplicateStepNames)
             {
                 errors.Add(ToValidationError(
                     duplicate.Key,
@@ -181,12 +186,16 @@ public sealed class CsxEntryLoader
                     $"Duplicate public step name was found: {duplicate.Key}"));
             }
 
-            if (duplicateStepNames.Count == 0 && !entryVariables.Any(variable => variable.Name == resolvedEntryName))
+            if (duplicateStepNames.Count == 0)
             {
-                errors.Add(ToValidationError(
-                    resolvedEntryName,
-                    WorkflowErrorCodes.EntryStepNotFound,
-                    $"Entry step was not found: {resolvedEntryName}"));
+                CsxEntryResolution entryResolution = ResolveEntry(entryCandidates, resolvedEntryName);
+                if (!entryResolution.Succeeded)
+                {
+                    errors.Add(ToValidationError(
+                        resolvedEntryName,
+                        WorkflowErrorCodes.EntryStepNotFound,
+                        entryResolution.ErrorMessage));
+                }
             }
         }
         catch (CsxReferenceValidationException exception)
@@ -800,6 +809,12 @@ public sealed class CsxEntryLoader
             .AddImports("Devo6.WorkFlow.Abstractions", "Devo6.WorkFlow.Engine");
     }
 
+    /// <summary>
+    /// 解決済み Entry を engine 経路で実行します。
+    /// </summary>
+    /// <param name="entry">実行する CompositeStep instance。</param>
+    /// <param name="options">workflow 実行 option。</param>
+    /// <returns>Entry 実行結果。</returns>
     private static WorkflowResult ExecuteEntry(object entry, WorkflowExecutionOptions? options)
     {
         MethodInfo? method = entry.GetType().GetMethod(
@@ -862,6 +877,11 @@ public sealed class CsxEntryLoader
         }
     }
 
+    /// <summary>
+    /// script 変数値が CompositeStep instance かどうかを判定します。
+    /// </summary>
+    /// <param name="value">判定する script 変数値。</param>
+    /// <returns>CompositeStep instance の場合は true。</returns>
     private static bool IsCompositeStep(object? value)
     {
         Type? type = value?.GetType();
@@ -869,9 +889,108 @@ public sealed class CsxEntryLoader
         return type is { IsGenericType: true } && type.GetGenericTypeDefinition() == typeof(CompositeStep<>);
     }
 
+    /// <summary>
+    /// script 変数一覧から CompositeStep の Entry 候補を取得します。
+    /// </summary>
+    /// <param name="variables">script 実行で得た変数一覧。</param>
+    /// <returns>CompositeStep の Entry 候補一覧。</returns>
+    private static IReadOnlyList<CsxEntryCandidate> GetEntryCandidates(IEnumerable<ScriptVariable> variables)
+    {
+        return variables
+            .Where(variable => IsCompositeStep(variable.Value))
+            .Select(variable => new CsxEntryCandidate(
+                GetCompositeStepName(variable.Value),
+                GetCompositeStepNamespaceName(variable.Value),
+                GetCompositeStepQualifiedName(variable.Value),
+                variable.Value!))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// 完全修飾名が重複する Entry 候補を取得します。
+    /// </summary>
+    /// <param name="entryCandidates">検査する Entry 候補一覧。</param>
+    /// <returns>重複した Entry 候補。重複がない場合は null。</returns>
+    private static CsxEntryCandidate? FindDuplicateQualifiedEntry(IReadOnlyList<CsxEntryCandidate> entryCandidates)
+    {
+        return entryCandidates
+            .GroupBy(candidate => candidate.QualifiedName, StringComparer.Ordinal)
+            .Where(group => group.Key.Length > 0 && group.Count() > 1)
+            .Select(group => group.First())
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// 指定 Entry 名から実行対象 Entry を解決します。
+    /// </summary>
+    /// <param name="entryCandidates">解決対象の Entry 候補一覧。</param>
+    /// <param name="requestedEntryName">要求された Entry 名。</param>
+    /// <returns>Entry 解決結果。</returns>
+    private static CsxEntryResolution ResolveEntry(
+        IReadOnlyList<CsxEntryCandidate> entryCandidates,
+        string requestedEntryName)
+    {
+        CsxEntryCandidate? qualifiedMatch = entryCandidates
+            .FirstOrDefault(candidate => candidate.QualifiedName == requestedEntryName);
+        if (qualifiedMatch is not null)
+        {
+            return CsxEntryResolution.Success(qualifiedMatch);
+        }
+
+        CsxEntryCandidate? rootMatch = entryCandidates
+            .FirstOrDefault(candidate => candidate.NamespaceName is null && candidate.Name == requestedEntryName);
+        if (rootMatch is not null)
+        {
+            return CsxEntryResolution.Success(rootMatch);
+        }
+
+        List<CsxEntryCandidate> shortMatches = entryCandidates
+            .Where(candidate => candidate.Name == requestedEntryName)
+            .ToList();
+        if (shortMatches.Count == 1)
+        {
+            return CsxEntryResolution.Success(shortMatches[0]);
+        }
+
+        if (shortMatches.Count > 1)
+        {
+            string candidates = string.Join(", ", shortMatches.Select(candidate => candidate.QualifiedName));
+
+            return CsxEntryResolution.Failure(
+                $"Entry step name '{requestedEntryName}' matched multiple entries: {candidates}. Specify the qualified entry name.");
+        }
+
+        return CsxEntryResolution.Failure($"Entry step was not found: {requestedEntryName}");
+    }
+
+    /// <summary>
+    /// CompositeStep から短い Entry 名を取得します。
+    /// </summary>
+    /// <param name="value">CompositeStep instance。</param>
+    /// <returns>短い Entry 名。</returns>
     private static string GetCompositeStepName(object? value)
     {
         return value?.GetType().GetProperty(nameof(CompositeStep<Unit>.Name))?.GetValue(value) as string ?? "";
+    }
+
+    /// <summary>
+    /// CompositeStep から Entry の名前空間名を取得します。
+    /// </summary>
+    /// <param name="value">CompositeStep instance。</param>
+    /// <returns>Entry の名前空間名。名前空間なし Entry の場合は null。</returns>
+    private static string? GetCompositeStepNamespaceName(object? value)
+    {
+        return value?.GetType().GetProperty(nameof(CompositeStep<Unit>.NamespaceName))?.GetValue(value) as string;
+    }
+
+    /// <summary>
+    /// CompositeStep から Entry の完全修飾名を取得します。
+    /// </summary>
+    /// <param name="value">CompositeStep instance。</param>
+    /// <returns>Entry の完全修飾名。</returns>
+    private static string GetCompositeStepQualifiedName(object? value)
+    {
+        return value?.GetType().GetProperty(nameof(CompositeStep<Unit>.QualifiedName))?.GetValue(value) as string ?? "";
     }
 
     /// <summary>
@@ -1314,6 +1433,99 @@ public sealed class CsxEntryLoader
             Code = code,
             Message = message,
         };
+    }
+
+    /// <summary>
+    /// script から見つかった CompositeStep の Entry 候補を表します。
+    /// </summary>
+    private sealed class CsxEntryCandidate
+    {
+        /// <summary>
+        /// Entry 候補を初期化します。
+        /// </summary>
+        /// <param name="name">短い Entry 名。</param>
+        /// <param name="namespaceName">Entry の名前空間名。</param>
+        /// <param name="qualifiedName">Entry の完全修飾名。</param>
+        /// <param name="value">実行対象の CompositeStep instance。</param>
+        public CsxEntryCandidate(string name, string? namespaceName, string qualifiedName, object value)
+        {
+            Name = name;
+            NamespaceName = namespaceName;
+            QualifiedName = qualifiedName;
+            Value = value;
+        }
+
+        /// <summary>
+        /// 短い Entry 名を取得します。
+        /// </summary>
+        public string Name { get; }
+
+        /// <summary>
+        /// Entry の名前空間名を取得します。名前空間なし Entry の場合は null を返します。
+        /// </summary>
+        public string? NamespaceName { get; }
+
+        /// <summary>
+        /// Entry の完全修飾名を取得します。
+        /// </summary>
+        public string QualifiedName { get; }
+
+        /// <summary>
+        /// 実行対象の CompositeStep instance を取得します。
+        /// </summary>
+        public object Value { get; }
+    }
+
+    /// <summary>
+    /// Entry 名解決の結果を表します。
+    /// </summary>
+    private sealed class CsxEntryResolution
+    {
+        /// <summary>
+        /// Entry 名解決の結果を初期化します。
+        /// </summary>
+        /// <param name="entry">解決済み Entry 候補。</param>
+        /// <param name="errorMessage">解決失敗時の説明文。</param>
+        private CsxEntryResolution(CsxEntryCandidate? entry, string errorMessage)
+        {
+            Entry = entry;
+            ErrorMessage = errorMessage;
+        }
+
+        /// <summary>
+        /// Entry 解決が成功したかどうかを取得します。
+        /// </summary>
+        public bool Succeeded => Entry is not null;
+
+        /// <summary>
+        /// 解決済み Entry 候補を取得します。失敗時は null を返します。
+        /// </summary>
+        public CsxEntryCandidate? Entry { get; }
+
+        /// <summary>
+        /// 解決失敗時の説明文を取得します。
+        /// </summary>
+        public string ErrorMessage { get; }
+
+        /// <summary>
+        /// 成功した Entry 解決結果を作成します。
+        /// </summary>
+        /// <param name="entry">解決済み Entry 候補。</param>
+        /// <returns>成功した Entry 解決結果。</returns>
+        public static CsxEntryResolution Success(CsxEntryCandidate entry)
+        {
+            return new CsxEntryResolution(entry, "");
+        }
+
+        /// <summary>
+        /// 失敗した Entry 解決結果を作成します。
+        /// </summary>
+        /// <param name="errorMessage">解決失敗時の説明文。</param>
+        /// <returns>失敗した Entry 解決結果。</returns>
+        public static CsxEntryResolution Failure(string errorMessage)
+        {
+            return new CsxEntryResolution(null, errorMessage);
+        }
     }
 
     /// <summary>

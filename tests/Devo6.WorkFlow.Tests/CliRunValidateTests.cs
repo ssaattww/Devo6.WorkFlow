@@ -1,3 +1,4 @@
+using Devo6.WorkFlow.Abstractions;
 using System.Diagnostics;
 
 namespace Devo6.WorkFlow.Tests;
@@ -125,6 +126,181 @@ public sealed class CliRunValidateTests
         CliResult result = await RunCliAsync("validate", scriptPath, "--entry", "Build");
 
         AssertSuccess(result);
+    }
+
+    /// <summary>
+    /// CLI run が名前空間付き Entry を公開完全修飾名の --entry で実行できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine run main.csx --entry Deploy.Build は名前空間付き Entry を実行する")]
+    public async Task EngineRunMainCsxEntryDeployBuildExecutesNamespaceEntry()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の実行 marker を書き込みます。
+                /// </summary>
+                /// <param name="input">EngineArguments を取得する Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "deploy-build-ran.txt"), "Deploy.Build");
+
+                    return "deploy";
+                }
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            """);
+        string markerPath = Path.Combine(Path.GetDirectoryName(scriptPath)!, "deploy-build-ran.txt");
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--entry", "Deploy.Build");
+
+        AssertSuccess(result);
+        Assert.Contains("Succeeded: Deploy.Build", result.StandardOutput);
+        Assert.Equal("Deploy.Build", File.ReadAllText(markerPath));
+    }
+
+    /// <summary>
+    /// CLI validate が名前空間付き Entry を公開完全修飾名の --entry で検証できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine validate main.csx --entry Deploy.Build は名前空間付き Entry を検証する")]
+    public async Task EngineValidateMainCsxEntryDeployBuildValidatesNamespaceEntry()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で検証対象にする Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input) => "deploy";
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync("validate", scriptPath, "--entry", "Deploy.Build");
+
+        AssertSuccess(result);
+    }
+
+    /// <summary>
+    /// CLI run の短い --entry が名前空間付き候補 1 件へ互換解決できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine run main.csx --entry Build は名前空間付き候補が一意なら互換解決する")]
+    public async Task EngineRunShortEntryBuildResolvesSingleNamespaceCandidate()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で実行する Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の実行 marker を書き込みます。
+                /// </summary>
+                /// <param name="input">EngineArguments を取得する Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "short-build-ran.txt"), "Deploy.Build");
+
+                    return "deploy";
+                }
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            """);
+        string markerPath = Path.Combine(Path.GetDirectoryName(scriptPath)!, "short-build-ran.txt");
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--entry", "Build");
+
+        AssertSuccess(result);
+        Assert.Contains("Succeeded: Deploy.Build", result.StandardOutput);
+        Assert.Equal("Deploy.Build", File.ReadAllText(markerPath));
+    }
+
+    /// <summary>
+    /// CLI validate の短い --entry が複数名前空間候補に一致すると曖昧指定として失敗することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine validate main.csx --entry Build は複数名前空間候補で ENTRY_STEP_NOT_FOUND になる")]
+    public async Task EngineValidateShortEntryBuildFailsWhenNamespaceCandidatesAreAmbiguous()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で検証対象にする Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input) => "deploy";
+            }
+
+            /// <summary>
+            /// Test 名前空間の Build Entry で検証対象にする Step です。
+            /// </summary>
+            public sealed class TestBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Test Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Test Build の固定値。</returns>
+                public string Execute(StepInput input) => "test";
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            var TestBuild = CompositeStep.Define("Build", namespaceName: "Test")
+                .Run<TestBuildStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync("validate", scriptPath, "--entry", "Build");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.EntryStepNotFound, result.StandardError);
+        Assert.Contains("Deploy.Build", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Test.Build", result.StandardError, StringComparison.Ordinal);
     }
 
     /// <summary>

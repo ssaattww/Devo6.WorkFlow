@@ -14,11 +14,12 @@ public static class CompositeStep
     /// <summary>
     /// 指定した Entry 名で composite entry 定義を開始します。
     /// </summary>
-    /// <param name="name">作成する Entry 名。</param>
+    /// <param name="name">作成する短い Entry 名。</param>
+    /// <param name="namespaceName">Entry の名前空間名。未指定の場合は名前空間なし Entry として扱います。</param>
     /// <returns>最初の Step を登録できる composite entry 定義。</returns>
-    public static CompositeStepDefinition Define(string name)
+    public static CompositeStepDefinition Define(string name, string? namespaceName = null)
     {
-        return new CompositeStepDefinition(name);
+        return new CompositeStepDefinition(name, namespaceName);
     }
 }
 
@@ -30,18 +31,35 @@ public sealed class CompositeStepDefinition
     /// <summary>
     /// composite entry 定義を初期化します。
     /// </summary>
-    /// <param name="name">Entry 名。</param>
-    internal CompositeStepDefinition(string name)
+    /// <param name="name">短い Entry 名。</param>
+    /// <param name="namespaceName">Entry の名前空間名。</param>
+    internal CompositeStepDefinition(string name, string? namespaceName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (namespaceName is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(namespaceName);
+        }
 
         Name = name;
+        NamespaceName = namespaceName;
+        QualifiedName = CreateQualifiedName(name, namespaceName);
     }
 
     /// <summary>
-    /// Entry 名を取得します。
+    /// 短い Entry 名を取得します。
     /// </summary>
     public string Name { get; }
+
+    /// <summary>
+    /// Entry の名前空間名を取得します。名前空間なし Entry の場合は null を返します。
+    /// </summary>
+    public string? NamespaceName { get; }
+
+    /// <summary>
+    /// Entry の完全修飾名を取得します。
+    /// </summary>
+    public string QualifiedName { get; }
 
     /// <summary>
     /// 最初の同期 Step を登録します。
@@ -52,7 +70,7 @@ public sealed class CompositeStepDefinition
     public CompositeStep<TOut> Run<TStep, TOut>()
         where TStep : IStep<TOut>, new()
     {
-        return new CompositeStep<TOut>(Name, [StepRegistration.Create<TStep, TOut>()]);
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, [StepRegistration.Create<TStep, TOut>()]);
     }
 
     /// <summary>
@@ -64,7 +82,18 @@ public sealed class CompositeStepDefinition
     public CompositeStep<TOut> RunAsync<TStep, TOut>()
         where TStep : IAsyncStep<TOut>, new()
     {
-        return new CompositeStep<TOut>(Name, [StepRegistration.CreateAsync<TStep, TOut>()]);
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, [StepRegistration.CreateAsync<TStep, TOut>()]);
+    }
+
+    /// <summary>
+    /// 短い Entry 名と名前空間名から完全修飾名を作成します。
+    /// </summary>
+    /// <param name="name">短い Entry 名。</param>
+    /// <param name="namespaceName">Entry の名前空間名。</param>
+    /// <returns>Entry の完全修飾名。</returns>
+    private static string CreateQualifiedName(string name, string? namespaceName)
+    {
+        return namespaceName is null ? name : $"{namespaceName}.{name}";
     }
 }
 
@@ -79,20 +108,39 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     /// <summary>
     /// composite entry を初期化します。
     /// </summary>
-    /// <param name="name">Entry 名。</param>
+    /// <param name="name">短い Entry 名。</param>
+    /// <param name="namespaceName">Entry の名前空間名。</param>
+    /// <param name="qualifiedName">Entry の完全修飾名。</param>
     /// <param name="steps">登録済み Step 列。</param>
     /// <param name="configType">Entry が要求する標準 Config 型。</param>
-    internal CompositeStep(string name, IReadOnlyList<StepRegistration> steps, Type? configType = null)
+    internal CompositeStep(
+        string name,
+        string? namespaceName,
+        string qualifiedName,
+        IReadOnlyList<StepRegistration> steps,
+        Type? configType = null)
     {
         Name = name;
+        NamespaceName = namespaceName;
+        QualifiedName = qualifiedName;
         this.steps = steps.ToArray();
         ConfigType = configType;
     }
 
     /// <summary>
-    /// Entry 名を取得します。
+    /// 短い Entry 名を取得します。
     /// </summary>
     public string Name { get; }
+
+    /// <summary>
+    /// Entry の名前空間名を取得します。名前空間なし Entry の場合は null を返します。
+    /// </summary>
+    public string? NamespaceName { get; }
+
+    /// <summary>
+    /// Entry の完全修飾名を取得します。
+    /// </summary>
+    public string QualifiedName { get; }
 
     /// <summary>
     /// Entry が要求する標準 Config 型を取得します。未指定の場合は null を返します。
@@ -108,7 +156,12 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     public CompositeStep<TNext> Run<TStep, TNext>()
         where TStep : IStep<TNext>, new()
     {
-        return new CompositeStep<TNext>(Name, Append(StepRegistration.Create<TStep, TNext>()), ConfigType);
+        return new CompositeStep<TNext>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(StepRegistration.Create<TStep, TNext>()),
+            ConfigType);
     }
 
     /// <summary>
@@ -120,7 +173,12 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     public CompositeStep<TNext> RunAsync<TStep, TNext>()
         where TStep : IAsyncStep<TNext>, new()
     {
-        return new CompositeStep<TNext>(Name, Append(StepRegistration.CreateAsync<TStep, TNext>()), ConfigType);
+        return new CompositeStep<TNext>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(StepRegistration.CreateAsync<TStep, TNext>()),
+            ConfigType);
     }
 
     /// <summary>
@@ -130,7 +188,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     /// <returns>標準 Config 型 metadata を持つ composite entry。</returns>
     public CompositeStep<TOut> WithConfig<TConfig>()
     {
-        return new CompositeStep<TOut>(Name, steps, typeof(TConfig));
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, steps, typeof(TConfig));
     }
 
     /// <summary>
@@ -282,7 +340,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
         using IDisposable? entryScope = engineLogger.BeginScope(new Dictionary<string, object?>
         {
-            ["EntryName"] = Name,
+            ["EntryName"] = QualifiedName,
             ["Attempt"] = 1,
         });
 
@@ -301,7 +359,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                 Stopwatch stopwatch = Stopwatch.StartNew();
                 using IDisposable? stepScope = engineLogger.BeginScope(new Dictionary<string, object?>
                 {
-                    ["EntryName"] = Name,
+                    ["EntryName"] = QualifiedName,
                     ["StepName"] = step.Name,
                     ["Attempt"] = attempt,
                 });
@@ -392,7 +450,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
                     return new WorkflowResult
                     {
-                        EntryName = Name,
+                        EntryName = QualifiedName,
                         Succeeded = false,
                         ErrorCode = WorkflowErrorCodes.StepExecutionFailed,
                         ErrorMessage = exception.Message,
@@ -408,7 +466,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
             using IDisposable? produceScope = engineLogger.BeginScope(new Dictionary<string, object?>
             {
-                ["EntryName"] = Name,
+                ["EntryName"] = QualifiedName,
                 ["StepName"] = step.Name,
                 ["Attempt"] = succeededAttempt,
             });
@@ -448,7 +506,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
                 return new WorkflowResult
                 {
-                    EntryName = Name,
+                    EntryName = QualifiedName,
                     Succeeded = false,
                     ErrorCode = WorkflowErrorCodes.StepExecutionFailed,
                     ErrorMessage = exception.Message,
@@ -461,7 +519,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
         return new WorkflowResult
         {
-            EntryName = Name,
+            EntryName = QualifiedName,
             Succeeded = true,
             Trace = new ExecutionTrace(traceSteps),
         };
@@ -576,7 +634,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
         return new WorkflowResult
         {
-            EntryName = Name,
+            EntryName = QualifiedName,
             Succeeded = false,
             ErrorCode = failure.ErrorCode,
             ErrorMessage = failure.Message,
@@ -650,7 +708,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         StepRegistration[] nextSteps = steps.ToArray();
         nextSteps[^1] = registration;
 
-        return new CompositeStep<TOut>(Name, nextSteps, ConfigType);
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, nextSteps, ConfigType);
     }
 
     /// <summary>

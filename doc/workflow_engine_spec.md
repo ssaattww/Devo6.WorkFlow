@@ -953,6 +953,13 @@ public sealed class StepContext
 ### 14.4 CompositeStep
 
 ```csharp
+public static class CompositeStep
+{
+    public static CompositeStepDefinition Define(
+        string name,
+        string? namespaceName = null);
+}
+
 public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 {
     public CompositeStep<TOut> WithConfig<TConfig>();
@@ -974,10 +981,22 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         CancellationToken cancellationToken = default);
 
     public Type? ConfigType { get; }
+
+    public string Name { get; }
+
+    public string? NamespaceName { get; }
+
+    public string QualifiedName { get; }
 }
 ```
 
 `WithConfig<TConfig>()` は Entry に標準 Config 型メタ情報を設定する。T23 では 1 つの Entry に設定できる Config 型は 1 つだけとする。
+
+`CompositeStep.Define("Build", namespaceName: "Deploy")` は、短い名前 `Build`、名前空間 `Deploy`、完全修飾名 `Deploy.Build` を持つ Entry を定義する。
+
+`CompositeStep.Define("Build")` は従来互換のため名前空間なしの Entry を定義し、完全修飾名は短い名前と同じ `Build` とする。
+
+`WithConfig<TConfig>()`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()`、`Produce`、`StoreAs`、`Discard` など、`CompositeStep<TOut>` を返す連鎖呼び出しの後も、名前空間メタ情報と完全修飾名は維持する。
 
 ### 14.5 `WorkflowExecutionOptions`
 
@@ -1075,6 +1094,7 @@ CLI で実行入口を明示しない場合、エンジンは `Main` を既定�
 ```bash
 engine run main.csx
 engine run main.csx --entry Build
+engine run main.csx --entry Deploy.Build
 ```
 
 `.csx` 上では以下のように名前付き Step を定義する。
@@ -1086,9 +1106,24 @@ var Main = CompositeStep.Define("Main")
         .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
     .Run<ConvertStep, ConvertResult>()
         .StoreAs();
+
+var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+    .Run<DeployBuildStep, Unit>();
 ```
 
-エンジンはロード済み `.csx` から、指定名に一致する `CompositeStep` を取得して実行する。
+エンジンはロード済み `.csx` から、指定 Entry 名に一致する `CompositeStep` を取得して実行する。
+
+Entry 名の解決は script 変数名ではなく、`CompositeStep` の公開名で行う。公開名は短い `Name` と完全修飾名の `QualifiedName` である。script 変数名は C# script 上の識別子であり、Entry の契約ではない。
+
+`CompositeStep.Define("Build", namespaceName: "Deploy")` の完全修飾名は `Deploy.Build` とする。CLI は `--entry Deploy.Build` で名前空間付き Entry を指定する。
+
+名前空間なしの既存 `CompositeStep.Define("Build")` は互換維持し、完全修飾名は短い名前と同じ `Build` とする。
+
+短い `--entry Build` は、名前空間なしの `Build` が存在する場合はその Entry へ解決する。名前空間なしの `Build` が存在しない場合は、短い名前が `Build` である Entry が 1 件だけなら互換解決する。複数の名前空間に同じ短い名前がある場合、短い `--entry Build` は曖昧として検証と実行を失敗させ、利用者に `Deploy.Build` のような完全修飾名指定を求める。
+
+曖昧な短い Entry 指定は、完全修飾名の重複ではないため `DUPLICATE_STEP_NAME` ではなく `ENTRY_STEP_NOT_FOUND` とする。エラーメッセージには、短い Entry 名が複数候補へ一致したことと、完全修飾名を指定すべきことを含める。
+
+`#load` 先で定義された名前空間付き Entry も、Entry `.csx` に直接定義された Entry と同じ規則で解決する。
 
 非同期 Step を含む Entry の通常実行では、エンジンは `ExecuteWorkflowAsync` を使って非同期 Step の完了を待つ。
 
@@ -1098,9 +1133,11 @@ var Main = CompositeStep.Define("Main")
 
 ### 15.2 Step 名の一意性
 
-ロード済み `.csx` 全体で、実行対象として公開される Step 名は一意でなければならない。
+ロード済み `.csx` 全体で、実行対象として公開される `CompositeStep` の完全修飾名は一意でなければならない。
 
-同名の `CompositeStep` が複数見つかった場合、エンジンは実行前の検証で失敗する。
+重複判定は完全修飾名単位とする。`Deploy.Build` と `Test.Build` は異なる完全修飾名なので共存できる。`Deploy.Build` が複数見つかった場合、エンジンは実行前の検証で `DUPLICATE_STEP_NAME` として失敗する。
+
+名前空間なしの `Build` と名前空間付きの `Deploy.Build` も異なる完全修飾名なので共存できる。この場合、短い `--entry Build` は名前空間なしの `Build` に解決する。
 
 外部 `.csx` を `#load` した場合も、読み込み後の全体で同じ規則を適用する。
 
@@ -1336,6 +1373,7 @@ CLI は実行前検証のために `validate` を提供する。
 ```bash
 engine validate main.csx
 engine validate main.csx --entry Build
+engine validate main.csx --entry Deploy.Build
 engine validate main.csx --config appsettings.yaml
 ```
 
@@ -1344,8 +1382,8 @@ engine validate main.csx --config appsettings.yaml
 検証対象は以下とする。
 
 - Entry `.csx` の存在
-- 指定 Entry 名の存在
-- 公開 Step 名の重複
+- 指定 Entry 名が `CompositeStep` の公開名へ解決できること
+- `CompositeStep` の完全修飾名の重複
 - `#load` の参照解決
 - `#load` の循環
 - `#r` の許可判定
@@ -1359,6 +1397,14 @@ engine validate main.csx --config appsettings.yaml
 - Config ファイル指定時の存在確認
 
 実行時の `StepInput` 内容に依存する型検証は、実行時に行う。
+
+Entry 解決と重複検証は、Entry `.csx` と `#load` 先を読み込んだ全 `CompositeStep` を対象にする。
+
+`--entry Deploy.Build` は `CompositeStep.QualifiedName` と完全一致する Entry を要求する。
+
+短い `--entry Build` は、名前空間なしの `Build` があればそれを優先し、なければ短い名前が一意な Entry に互換解決する。複数候補がある場合は `ENTRY_STEP_NOT_FOUND` として失敗させ、メッセージで完全修飾名指定を促す。
+
+完全修飾名が重複する場合は、指定 Entry の有無にかかわらず `DUPLICATE_STEP_NAME` として失敗する。
 
 T23 の `validate` は Config path の存在確認までを必須とする。Config 型変換と Config 値検証は `validate` の必須対象外であり、後続で扱う。
 
@@ -1431,6 +1477,8 @@ public sealed class WorkflowResult
     public ExecutionTrace? Trace { get; init; }
 }
 ```
+
+`EntryName` は実行された Entry の完全修飾名を記録する。名前空間なしの Entry では従来どおり短い名前と同じ値になる。名前空間付き Entry では `Deploy.Build` のような完全修飾名を記録する。
 
 CLI 実行では、成功時は終了コード 0、失敗時は 0 以外を返す。
 
@@ -1546,6 +1594,10 @@ trace 値を `System.Text.Json` で直列化できない場合でも、T26 の�
 
 ログには、Entry 名、Step 名、実行状態、失敗時のエラーコードを含める。
 
+ログの `EntryName` は `WorkflowResult.EntryName` と同じ完全修飾名とする。
+
+ログの `StepName` は従来どおり、実行された Step 型名を基本とする。T29 では個々の Step 型名を名前空間付き Entry 名へ変換しない。
+
 ログ出力では文字列連結ではなく、構造化ログを使う。
 
 エンジンは Entry 名、Step 名、試行番号をログのスコープへ含める。
@@ -1584,6 +1636,8 @@ trace 値は、`TraceValueCapture.Serialized` または `TraceValueCapture.Redac
 同期 Step と非同期 Step が混在する場合も、trace は定義順の実行履歴として記録する。
 
 `ExecutionTraceStep` には試行番号を追加する。
+
+`ExecutionTraceStep.StepName` は従来どおり、実行された Step 型名を基本とする。Entry の名前空間化は `WorkflowResult.EntryName` とログスコープの `EntryName` で表す。
 
 ```csharp
 public sealed record ExecutionTraceStep(
@@ -1718,7 +1772,6 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - 値を含む `ExecutionTrace`
 - NuGet ロックファイル
 - `#load "nuget: ..."`
-- Step 名の名前空間化
 
 NuGet ロックファイルは T27 で、`#r "nuget: package, version"` の再現性を扱う。
 
@@ -1923,6 +1976,43 @@ NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解�
 
 必要に応じてローカルの NuGet 参照元を使う追加検証を用意するが、通常の `dotnet test` の前提にはしない。
 
+### 21.7 Step 名の名前空間化
+
+T29 では、Entry として公開される `CompositeStep` に短い名前と任意の名前空間名を持たせる。
+
+採用する API は `CompositeStep.Define("Build", namespaceName: "Deploy")` とする。`CompositeStep.Define("Build")` は従来互換の名前空間なし Entry とする。
+
+名前空間付き Entry の完全修飾名は `Deploy.Build` とする。名前空間なし Entry の完全修飾名は短い名前と同じ `Build` とする。
+
+CLI は既存の `--entry` オプションを維持し、`--entry Deploy.Build` で名前空間付き Entry を指定する。新しいオプションは追加しない。
+
+ローダーは script 変数名だけで Entry を解決しない。ロード済み `.csx` と `#load` 先にある `CompositeStep` の `Name`、`NamespaceName`、`QualifiedName` を読み取り、公開名として解決する。
+
+短い `--entry Build` は、名前空間なしの `Build` を優先する。名前空間なしの `Build` がなければ、短い名前が `Build` である Entry が 1 件だけの場合に互換解決する。複数候補がある場合は `ENTRY_STEP_NOT_FOUND` で失敗し、完全修飾名指定を求める。
+
+重複検証は完全修飾名単位とする。`Deploy.Build` と `Test.Build` は共存でき、`Deploy.Build` 同士は `DUPLICATE_STEP_NAME` で失敗する。
+
+`WorkflowResult.EntryName`、CLI 成功出力、ログスコープの `EntryName` は完全修飾名を記録する。`ExecutionTraceStep.StepName` とログスコープの `StepName` は従来どおり Step 型名を基本とする。
+
+`WithConfig<TConfig>()`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()` 後も、短い名前、名前空間名、完全修飾名は維持する。
+
+T29 の実装では、追加または変更する API、ヘルパー、テストメソッドの関数名は英語にする。XMLコメントは日本語とし、パブリック以外の関数、コンストラクタ、プロパティ、レコードのプロパティ、入れ子型もコメント対象とする。T30/T31 で標準化する前提だが、T29 で追加または変更する箇所はこの前提で進める。
+
+T29 では検査先行で、少なくとも以下を確認する。
+
+- `CompositeStep.Define("Build", namespaceName: "Deploy")` が短い名前、名前空間名、完全修飾名 `Deploy.Build` を持つ
+- `CompositeStep.Define("Build")` が完全修飾名 `Build` を持ち、既存互換を維持する
+- `CsxEntryLoader.Execute(scriptPath, "Deploy.Build")` が名前空間付き Entry を実行し、`WorkflowResult.EntryName == "Deploy.Build"` になる
+- `CsxEntryLoader.Validate(scriptPath, "Deploy.Build")` が名前空間付き Entry を成功検証する
+- `Deploy.Build` と `Test.Build` が同じ読み込み単位に共存できる
+- `Deploy.Build` が 2 つある場合は `DUPLICATE_STEP_NAME` になる
+- 名前空間なしの `Build` と `Deploy.Build` が共存でき、短い `--entry Build` は名前空間なしの `Build` に解決する
+- 名前空間なしの `Build` がなく、短い名前 `Build` が 1 件だけなら短い `--entry Build` で互換解決できる
+- 名前空間なしの `Build` がなく、`Deploy.Build` と `Test.Build` がある状態で短い `--entry Build` を指定すると `ENTRY_STEP_NOT_FOUND` になる
+- CLI の `run` と `validate` が `--entry Deploy.Build` を透過し、成功時に `Succeeded: Deploy.Build` を出す
+- `#load` 先で定義された `Deploy.Build` を `--entry Deploy.Build` で解決できる
+- `WithConfig<TConfig>()`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()` 後も名前空間メタ情報が維持される
+
 ---
 
 ## 22. 最終整理
@@ -1937,6 +2027,7 @@ StepInput は可変長の型付き・名前付き入力集合である。
 StepContext は StepInput に自動で含まれる。
 Config は StepContext に置く。
 上流 Step の結果を下流に渡す場合は Produce で明示する。
+Entry の公開名は CompositeStep の完全修飾名として扱う。
 エンジンは Step 間の接続を自動推論しない。
 ```
 

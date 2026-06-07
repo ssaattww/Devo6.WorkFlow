@@ -65,6 +65,8 @@ entries:
     description: 利用者に公開する呼び出し口を表す略語。
   - term: CLI
     description: 命令行で実行する入口を表す略語。
+  - term: XML
+    description: C# 文書コメントの形式名に含まれる略語。
   - term: fan-out
     description: 複数の後続処理へ広がる接続形態。
   - term: ID
@@ -253,6 +255,8 @@ entries:
     description: ファイルをまとめて置く場所。
   - term: パス
     description: ファイルやディレクトリの参照位置。
+  - term: パブリック
+    description: C# の公開可視性を表す語。
   - term: コード
     description: 処理内容を記述した断片または実装内容。
   - term: プロパティ
@@ -439,3 +443,17 @@ entries:
     description: csx 内で読み込みや参照を指示する記述。
   - term: エッジ
     description: Flow 内の Step 接続。
+  - term: エラーメッセージ
+    description: 利用者に失敗理由を伝える文字列。
+  - term: コメント
+    description: コードや文書に補足説明を残す記述。
+  - term: テストメソッド
+    description: 検査を実行する C# のメソッド。
+  - term: ヘルパー
+    description: 主処理を補助する関数や型。
+  - term: メッセージ
+    description: 利用者や呼び出し元に渡す説明文字列。
+  - term: ローダー
+    description: script を読み込み Entry を解決する部品。
+  - term: ログスコープ
+    description: 記録出力に共通の属性を付ける範囲。

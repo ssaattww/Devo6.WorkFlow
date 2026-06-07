@@ -81,6 +81,41 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
+    /// 名前空間付き Entry を公開完全修飾名で検証できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "名前空間付き Entry は公開完全修飾名で検証できる")]
+    public void ValidateQualifiedNamespaceEntryByPublicName()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// Deploy 名前空間の Build Entry で検証対象にする Step です。
+            /// </summary>
+            public sealed class DeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// Deploy Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>Deploy Build の固定値。</returns>
+                public string Execute(StepInput input) => "deploy";
+            }
+
+            var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DeployBuildStep, string>()
+                    .StoreAs();
+            """);
+
+        WorkflowValidationResult result = new CsxEntryLoader().Validate(scriptPath, "Deploy.Build");
+
+        Assert.True(result.Succeeded);
+        Assert.Empty(result.Errors);
+    }
+
+    /// <summary>
     /// Verifies that duplicate public CompositeStep names across loaded script variables return DUPLICATE_STEP_NAME.
     /// </summary>
     [Fact(DisplayName = "公開 CompositeStep 名の重複は DUPLICATE_STEP_NAME が返る")]
@@ -121,6 +156,66 @@ public sealed class CsxEntryValidationTests
         ValidationError error = Assert.Single(result.Errors);
         Assert.False(result.Succeeded);
         Assert.Equal("Shared", error.Path);
+        Assert.Equal(WorkflowErrorCodes.DuplicateStepName, error.Code);
+    }
+
+    /// <summary>
+    /// 名前空間付き Entry の完全修飾名重複が DUPLICATE_STEP_NAME になることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "名前空間付き Entry の完全修飾名重複は DUPLICATE_STEP_NAME が返る")]
+    public void ValidateDuplicateQualifiedNamespaceEntryFailsWithDuplicateStepName()
+    {
+        string scriptPath = CreateScript(
+            """
+            #load "./deploy-copy.csx"
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// 直接定義された Deploy Build Entry で検証対象にする Step です。
+            /// </summary>
+            public sealed class DirectDeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// 直接定義された Deploy Build の固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>直接定義された Deploy Build の固定値。</returns>
+                public string Execute(StepInput input) => "direct";
+            }
+
+            var DirectDeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<DirectDeployBuildStep, string>()
+                    .StoreAs();
+            """,
+            ("deploy-copy.csx",
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            /// <summary>
+            /// load 先で重複定義された Deploy Build Entry の Step です。
+            /// </summary>
+            public sealed class LoadedDeployBuildStep : IStep<string>
+            {
+                /// <summary>
+                /// load 先の Deploy Build 固定値を返します。
+                /// </summary>
+                /// <param name="input">未使用の Step 入力。</param>
+                /// <returns>load 先の Deploy Build 固定値。</returns>
+                public string Execute(StepInput input) => "loaded";
+            }
+
+            var LoadedDeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+                .Run<LoadedDeployBuildStep, string>()
+                    .StoreAs();
+            """));
+
+        WorkflowValidationResult result = new CsxEntryLoader().Validate(scriptPath, "Deploy.Build");
+
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.False(result.Succeeded);
+        Assert.Equal("Deploy.Build", error.Path);
         Assert.Equal(WorkflowErrorCodes.DuplicateStepName, error.Code);
     }
 
