@@ -10,15 +10,16 @@ Step は `IStep<TOut>` または `IAsyncStep<TOut>` を実装します。Step �
 
 ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることと、`devo6.nuget.lock.yaml` がワークフロー root にあることも必要です。
 
-## ツールとして使う
+## 導入
 
-リポジトリからパッケージを作る場合は、次のように作成します。
+リポジトリからパッケージを作る場合は、CLI ツールと参照用パッケージをそれぞれ作成します。
 
 ```bash
 dotnet pack src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj -c Release -o ./artifacts/packages
+dotnet pack src/Devo6.WorkFlow.Engine/Devo6.WorkFlow.Engine.csproj -c Release -o ./artifacts/packages
 ```
 
-別の端末へパッケージを配置した後、配置先ディレクトリをパッケージ参照元として指定します。
+CLI ツールを別の端末で使う場合は、配置先ディレクトリをパッケージ参照元として指定します。
 
 ```bash
 dotnet tool install --global Devo6.WorkFlow.Cli --add-source ./artifacts/packages
@@ -37,10 +38,17 @@ engine validate main.csx --config appsettings.yaml
 dotnet tool update --global Devo6.WorkFlow.Cli --add-source ./artifacts/packages
 ```
 
+公開 API を利用するプロジェクトでは、参照用パッケージを追加します。このパッケージには Engine と `Abstractions` が含まれます。
+
+```bash
+dotnet add package Devo6.WorkFlow.Engine --source ./artifacts/packages
+```
+
 NuGet の公開先へ登録済みの安定版を導入する場合は、パッケージ参照元の指定は不要です。
 
 ```bash
 dotnet tool install --global Devo6.WorkFlow.Cli
+dotnet add package Devo6.WorkFlow.Engine
 ```
 
 ## 複数フォルダの例

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Xml.Linq;
 
 namespace Devo6.WorkFlow.Tests;
@@ -95,6 +96,74 @@ public sealed class ProjectSkeletonTests
     }
 
     /// <summary>
+    /// Engine プロジェクトが参照用パッケージとして作成できる設定を持つことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "Engine project は参照用パッケージとして設定されている")]
+    public void EngineProjectIsConfiguredAsReferencePackage()
+    {
+        XDocument project = LoadEngineProject();
+        XElement abstractionsReference = GetProjectReference(project, @"..\Devo6.WorkFlow.Abstractions\Devo6.WorkFlow.Abstractions.csproj");
+
+        Assert.Equal("true", GetProjectProperty(project, "IsPackable"));
+        Assert.Equal("Devo6.WorkFlow.Engine", GetProjectProperty(project, "PackageId"));
+        Assert.Equal("README.md", GetProjectProperty(project, "PackageReadmeFile"));
+        Assert.Equal("all", abstractionsReference.Attribute("PrivateAssets")?.Value);
+    }
+
+    /// <summary>
+    /// Engine パッケージに Engine と Abstractions の DLL が含まれることを検査します。
+    /// </summary>
+    /// <returns>非同期検査を表す task。</returns>
+    [Fact(DisplayName = "Engine package は Engine と Abstractions の DLL を含む")]
+    public async Task EnginePackageIncludesEngineAndAbstractionsAssemblies()
+    {
+        string packagePath = await PackEnginePackage();
+
+        try
+        {
+            using ZipArchive archive = ZipFile.OpenRead(packagePath);
+
+            Assert.Contains(archive.Entries, entry => entry.FullName == "lib/net8.0/Devo6.WorkFlow.Engine.dll");
+            Assert.Contains(archive.Entries, entry => entry.FullName == "lib/net8.0/Devo6.WorkFlow.Abstractions.dll");
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(packagePath)!, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Engine パッケージが Abstractions を別 NuGet 依存として公開しないことを検査します。
+    /// </summary>
+    /// <returns>非同期検査を表す task。</returns>
+    [Fact(DisplayName = "Engine package は Abstractions を NuGet 依存にしない")]
+    public async Task EnginePackageDoesNotDeclareAbstractionsDependency()
+    {
+        string packagePath = await PackEnginePackage();
+
+        try
+        {
+            using ZipArchive archive = ZipFile.OpenRead(packagePath);
+            ZipArchiveEntry nuspecEntry = archive.Entries.Single(entry => entry.FullName.EndsWith(".nuspec", StringComparison.Ordinal));
+            await using Stream nuspecStream = nuspecEntry.Open();
+            XDocument nuspec = await XDocument.LoadAsync(nuspecStream, LoadOptions.None, CancellationToken.None);
+
+            XNamespace ns = nuspec.Root?.Name.Namespace ?? XNamespace.None;
+            IEnumerable<string> dependencyIds = nuspec
+                .Descendants(ns + "dependency")
+                .Select(element => element.Attribute("id")?.Value)
+                .Where(id => id is not null)
+                .Cast<string>();
+
+            Assert.DoesNotContain("Devo6.WorkFlow.Abstractions", dependencyIds);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(packagePath)!, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// repository root path を探索します。
     /// </summary>
     /// <returns>検出した repository root path。</returns>
@@ -116,6 +185,17 @@ public sealed class ProjectSkeletonTests
     }
 
     /// <summary>
+    /// Engine プロジェクトファイルを読み込みます。
+    /// </summary>
+    /// <returns>読み込み済みプロジェクトファイル。</returns>
+    private static XDocument LoadEngineProject()
+    {
+        return XDocument.Load(Path.Combine(
+            RepositoryRoot,
+            "src/Devo6.WorkFlow.Engine/Devo6.WorkFlow.Engine.csproj"));
+    }
+
+    /// <summary>
     /// プロジェクトファイルから指定した MSBuild プロパティの値を取得します。
     /// </summary>
     /// <param name="project">読み込み済みプロジェクトファイル。</param>
@@ -127,5 +207,55 @@ public sealed class ProjectSkeletonTests
             .Descendants(propertyName)
             .Select(element => element.Value)
             .Single();
+    }
+
+    /// <summary>
+    /// 指定したプロジェクト参照を取得します。
+    /// </summary>
+    /// <param name="project">読み込み済みプロジェクトファイル。</param>
+    /// <param name="include">取得する参照パス。</param>
+    /// <returns>指定したプロジェクト参照。</returns>
+    private static XElement GetProjectReference(XDocument project, string include)
+    {
+        return project
+            .Descendants("ProjectReference")
+            .Single(element => element.Attribute("Include")?.Value == include);
+    }
+
+    /// <summary>
+    /// Engine プロジェクトを一時ディレクトリへパッケージ作成します。
+    /// </summary>
+    /// <returns>作成されたパッケージパス。</returns>
+    private static async Task<string> PackEnginePackage()
+    {
+        string outputDirectory = Path.Combine(Path.GetTempPath(), $"devo6-workflow-engine-pack-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+
+        using Process process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            ArgumentList =
+            {
+                "pack",
+                Path.Combine(RepositoryRoot, "src/Devo6.WorkFlow.Engine/Devo6.WorkFlow.Engine.csproj"),
+                "--configuration",
+                "Release",
+                "--output",
+                outputDirectory,
+                "-p:PackageVersion=0.0.0-test"
+            },
+            RedirectStandardError = true,
+            RedirectStandardOutput = true
+        }) ?? throw new InvalidOperationException("Engine package の作成に失敗しました。");
+
+        string standardOutput = await process.StandardOutput.ReadToEndAsync();
+        string standardError = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        Assert.True(
+            process.ExitCode == 0,
+            $"終了コード: {process.ExitCode}{Environment.NewLine}標準出力: {standardOutput}{Environment.NewLine}標準エラー: {standardError}");
+
+        return Directory.GetFiles(outputDirectory, "Devo6.WorkFlow.Engine.*.nupkg").Single();
     }
 }

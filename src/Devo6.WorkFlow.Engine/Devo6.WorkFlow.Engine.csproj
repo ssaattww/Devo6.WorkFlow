@@ -1,10 +1,30 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Devo6.WorkFlow.Engine</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Devo6</Authors>
+    <Description>Devo6 WorkFlow reference package for defining and running csx workflows.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);AddProjectReferenceOutputsToPackage</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Dotnet.Script.Core" Version="2.0.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
-    <ProjectReference Include="..\Devo6.WorkFlow.Abstractions\Devo6.WorkFlow.Abstractions.csproj" />
+    <ProjectReference Include="..\Devo6.WorkFlow.Abstractions\Devo6.WorkFlow.Abstractions.csproj" PrivateAssets="all" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <Target Name="AddProjectReferenceOutputsToPackage" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths->WithMetadataValue('ReferenceSourceTarget', 'ProjectReference'))" />
+    </ItemGroup>
+  </Target>
 
 </Project>
