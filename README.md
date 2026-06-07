@@ -52,8 +52,11 @@ samples/multi-folder-composite/
   main.csx
   appsettings.yaml
   shared/contracts.csx
+  steps/load/appsettings.yaml
   steps/load/load-text-step.csx
+  steps/convert/appsettings.yaml
   steps/convert/convert-text-step.csx
+  steps/save/appsettings.yaml
   steps/save/save-text-step.csx
 ```
 

@@ -1,5 +1,6 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using YamlDotNet.RepresentationModel;
 
 namespace Devo6.WorkFlow.Tests;
 
@@ -44,6 +45,29 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
+    /// 複数フォルダの Step ごとに置いた YAML 断片が実行用 Config と一致することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "複数フォルダの Step YAML 断片は実行用 Config と一致する")]
+    public void MultiFolderCompositeSampleYamlFragmentsMatchRuntimeConfig()
+    {
+        string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
+        string rootConfigPath = Path.Combine(sampleDirectory, "appsettings.yaml");
+
+        Assert.Equal(
+            ReadYamlScalar(rootConfigPath, "Load", "Path"),
+            ReadYamlScalar(Path.Combine(sampleDirectory, "steps/load/appsettings.yaml"), "Path"));
+        Assert.Equal(
+            ReadYamlScalar(rootConfigPath, "Convert", "Prefix"),
+            ReadYamlScalar(Path.Combine(sampleDirectory, "steps/convert/appsettings.yaml"), "Prefix"));
+        Assert.Equal(
+            ReadYamlScalar(rootConfigPath, "Convert", "ToUpper"),
+            ReadYamlScalar(Path.Combine(sampleDirectory, "steps/convert/appsettings.yaml"), "ToUpper"));
+        Assert.Equal(
+            ReadYamlScalar(rootConfigPath, "Save", "Path"),
+            ReadYamlScalar(Path.Combine(sampleDirectory, "steps/save/appsettings.yaml"), "Path"));
+    }
+
+    /// <summary>
     /// リポジトリルートを探索します。
     /// </summary>
     /// <returns>検出したリポジトリルート。</returns>
@@ -62,5 +86,29 @@ public sealed class SampleWorkflowTests
         }
 
         throw new InvalidOperationException("リポジトリルートを特定できませんでした。");
+    }
+
+    /// <summary>
+    /// YAML ファイルから指定された path の scalar 値を読み取ります。
+    /// </summary>
+    /// <param name="yamlPath">読み取る YAML ファイル。</param>
+    /// <param name="segments">読み取る path の区切り。</param>
+    /// <returns>読み取った scalar 値。</returns>
+    private static string ReadYamlScalar(string yamlPath, params string[] segments)
+    {
+        var yaml = new YamlStream();
+        using StreamReader reader = File.OpenText(yamlPath);
+        yaml.Load(reader);
+
+        YamlNode current = yaml.Documents[0].RootNode;
+        foreach (string segment in segments)
+        {
+            var mapping = Assert.IsType<YamlMappingNode>(current);
+            KeyValuePair<YamlNode, YamlNode> pair = mapping.Children.Single(child =>
+                child.Key is YamlScalarNode scalar && string.Equals(scalar.Value, segment, StringComparison.Ordinal));
+            current = pair.Value;
+        }
+
+        return Assert.IsType<YamlScalarNode>(current).Value ?? "";
     }
 }
