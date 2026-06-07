@@ -4,6 +4,39 @@
 
 Step は `IStep<TOut>` または `IAsyncStep<TOut>` を実装します。Step 間の値は `Produce` や `StoreAs` で明示的に渡し、Step は必要な値を `StepInput` から取得します。Config は Step 専用引数ではなく、対象 Step の実行直前に `StepContext` へ登録されます。
 
+## 必要な環境
+
+別の端末に導入して使う場合は、.NET 8 以降の開発環境を入れてください。`dotnet tool install`、`dotnet tool update`、手元のパッケージ作成、`.csx` の実行検証に `dotnet` CLI が必要です。開発環境には通常の実行に必要な実行環境も含まれます。
+
+ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることと、`devo6.nuget.lock.yaml` がワークフロー root にあることも必要です。
+
+## ツールとして使う
+
+リポジトリからパッケージを作る場合は、次のように作成します。
+
+```bash
+dotnet pack src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj -c Release -o ./artifacts/packages
+```
+
+別の端末へパッケージを配置した後、配置先ディレクトリをパッケージ参照元として指定します。
+
+```bash
+dotnet tool install --global Devo6.WorkFlow.Cli --add-source ./artifacts/packages
+```
+
+導入後は `engine` コマンドを使います。
+
+```bash
+engine run main.csx --config appsettings.yaml
+engine validate main.csx --config appsettings.yaml
+```
+
+更新する場合は同じパッケージ参照元を指定します。
+
+```bash
+dotnet tool update --global Devo6.WorkFlow.Cli --add-source ./artifacts/packages
+```
+
 ## 最小例
 
 `main.csx`:

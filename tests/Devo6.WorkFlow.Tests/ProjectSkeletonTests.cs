@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Xml.Linq;
 
 namespace Devo6.WorkFlow.Tests;
 
@@ -74,6 +75,24 @@ public sealed class ProjectSkeletonTests
     }
 
     /// <summary>
+    /// CLI プロジェクトがツール用パッケージとして作成できる設定を持つことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "CLI プロジェクトはツール用パッケージとして設定されている")]
+    public void CliProjectIsConfiguredAsDotnetToolPackage()
+    {
+        XDocument project = XDocument.Load(Path.Combine(
+            RepositoryRoot,
+            "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"));
+
+        Assert.Equal("Exe", GetProjectProperty(project, "OutputType"));
+        Assert.Equal("true", GetProjectProperty(project, "IsPackable"));
+        Assert.Equal("true", GetProjectProperty(project, "PackAsTool"));
+        Assert.Equal("engine", GetProjectProperty(project, "ToolCommandName"));
+        Assert.Equal("Devo6.WorkFlow.Cli", GetProjectProperty(project, "PackageId"));
+        Assert.Equal("README.md", GetProjectProperty(project, "PackageReadmeFile"));
+    }
+
+    /// <summary>
     /// repository root path を探索します。
     /// </summary>
     /// <returns>検出した repository root path。</returns>
@@ -92,5 +111,19 @@ public sealed class ProjectSkeletonTests
         }
 
         throw new InvalidOperationException("repository root を特定できませんでした。");
+    }
+
+    /// <summary>
+    /// プロジェクトファイルから指定した MSBuild プロパティの値を取得します。
+    /// </summary>
+    /// <param name="project">読み込み済みプロジェクトファイル。</param>
+    /// <param name="propertyName">取得するプロパティ名。</param>
+    /// <returns>指定したプロパティの値。</returns>
+    private static string GetProjectProperty(XDocument project, string propertyName)
+    {
+        return project
+            .Descendants(propertyName)
+            .Select(element => element.Value)
+            .Single();
     }
 }
