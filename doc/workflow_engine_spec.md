@@ -1,1435 +1,1624 @@
-# C# / YAML / csx ワークフローエンジン設計仕様書 rev4
+# csx 完結型ワークフローエンジン設計資料
 
-## 1. 概要
+## 1. 目的
 
-本仕様書は、C#、YAML、C# Script（`.csx`）を用いて構成するワークフローエンジンの設計仕様を定義する。
+本設計資料は、C# Script（`.csx`）上で定義できるワークフローエンジンのライブラリ要件および基本設計をまとめる。
 
-本エンジンでは、ワークフロー構造をYAMLで定義し、Message型、Config型、Step処理をC# Scriptまたは登録済みBuilt-in Stepで定義する。エンジンはYAMLとcsxを読み込み、`Dotnet.Script.Core` を用いたcsx依存解決とコンパイル、型解決、型検証、Message検証、Config binding、Config検証、Step実行、Flow実行、retry、timeout、ログ出力、実行トレース生成を行う。
+本ライブラリは、処理定義を C# で組み立てられる書き心地を参考にしつつ、実体としては以下を目的とする。
 
-本仕様の中心方針は以下である。
-
-- Workflowは複数のFlowから構成される。
-- Flowは型付きのStep集合であり、Input型とOutput型を持つ。
-- StepはC#ジェネリック型でInput / Config / Output型を明示する。
-- Message型はYAMLではなくcsxで定義する。
-- Config型もcsxで定義する。
-- ConfigはWorkflow全体ConfigとStep個別Configに分ける。
-- Workflow ConfigはYAML既定値、実行時Config、実行時Overrideから解決する。
-- Step ConfigはYAML、Message、Workflow Config、またはそれらのmergeから解決する。
-- MessageおよびConfigの検証はエンジン側で行う。
-- csxの `#load`、`#r`、インラインNuGet参照は、初期実装では `Dotnet.Script.Core` を `IScriptCompiler` の一実装として利用して対応する。
-- `dotnet script` CLIをStep実行ごとに外部プロセス起動する方式は通常実行経路では採用しない。
-- If、ForEach、Whileなどの制御処理はYAML予約構文ではなく、通常のStepとして表現する。
-- 初期実装のFlow実行モデルは単一路線とし、Stepの `next` は0または1件のみ許可する。
-- ログは独自実装せず、`Microsoft.Extensions.Logging` を経由して外部logger providerへ委譲する。
-- ExecutionTraceはログとは別の構造化実行履歴として扱う。
-- 初期実装ではcsxは信頼済みWorkflowのみを対象とし、未信頼コード実行のサンドボックスは提供しない。
+- `.csx` で Step を組み合わせたワークフローを定義できること
+- Step と Flow を別概念にせず、すべて Step として扱うこと
+- 上流 Step の結果を下流 Step へ明示的に渡せること
+- Step の入力を可変長に扱えること
+- Config、StepContext、上流出力を統一的に扱えること
+- ワークフロー定義に YAML を使わず、名前付きの `CompositeStep` を `.csx` で定義すること
+- Config は実行時入力として `StepContext` に保持できること
+- `.csx` の解決、NuGet 解決、外部 `.csx` 解決には `Dotnet.Script.Core` を利用すること
 
 ---
 
-## 2. 設計原則
+## 2. 基本方針
 
-### 2.1 エンジンが特別な制御構文を持たない
+### 2.1 Step が唯一の実行単位
 
-本エンジンは、YAML上に `if`、`for`、`while`、`switch` などの予約制御構文を持たない。
+本エンジンでは、Step を唯一の実行単位とする。
 
-条件分岐、繰り返し、Flow呼び出し、例外処理、並列実行などは、すべてStepとして表現する。
+従来の意味での Flow は、独立した概念としては持たない。
+
+代わりに、複数の Step を順番に実行する Step を **CompositeStep** として扱う。
+
+```text
+Step
+├─ 通常Step
+└─ CompositeStep
+   ├─ Step
+   ├─ Step
+   └─ Step
+```
+
+### 2.2 Flow 関数は持たない
+
+`Step` と `Flow` を同じものとして扱うため、`Flow(...)` のような特別な API は持たない。
+
+ワークフロー定義は、名前付きの CompositeStep として定義する。
 
 例:
 
-```yaml
-- id: branch
-  use: Workflow.Control.IfStep
-  config:
-    provider: yaml
-    value:
-      condition: current.IsValid == true
-      then: accepted-flow
-      else: rejected-flow
-  next:
-    to: end
-```
-
-この `branch` は制御構文ではなく、`Workflow.Control.IfStep` という通常Stepである。
-
-### 2.2 型の真実はC#側に置く
-
-Script StepのInput / Config / Output型は、原則としてC#の継承階層から推論する。
-
 ```csharp
-public sealed class ValidateOrderStep
-    : WorkflowStep<OrderCreated, ValidationResult>
-{
-    public override Task<ValidationResult> ExecuteAsync(
-        OrderCreated input,
-        StepContext context)
-    {
-        ...
-    }
-}
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .Produce<ConvertInput>(x => new ConvertInput
+        {
+            Text = x.Text
+        })
+    .Run<ConvertStep, ConvertResult>()
+        .Produce<SaveInput>(x => new SaveInput
+        {
+            Content = x.ConvertedText
+        })
+    .Run<SaveStep, Unit>()
+        .Discard();
 ```
-
-この定義から、エンジンは以下を推論する。
-
-```text
-Input  = OrderCreated
-Config = none
-Output = ValidationResult
-```
-
-ConfigありStepでは以下のように推論する。
-
-```csharp
-public sealed class SendMailStep
-    : WorkflowStep<SendMailRequest, SendMailConfig, SendMailResult>
-{
-    public override Task<SendMailResult> ExecuteAsync(
-        SendMailRequest input,
-        SendMailConfig config,
-        StepContext context)
-    {
-        ...
-    }
-}
-```
-
-```text
-Input  = SendMailRequest
-Config = SendMailConfig
-Output = SendMailResult
-```
-
-### 2.3 YAMLは構造とbindingを定義する
-
-YAMLは以下を定義する。
-
-- Workflow ID、version、schemaVersion
-- 型定義csx一覧
-- csx参照、復元、コンパイル方針
-- Workflow Config型と既定値
-- Entry Flow
-- Flow一覧
-- Step一覧
-- Step間の接続
-- Step input binding
-- Step config binding
-- retry、timeout、trace、検証、制限
-
-YAMLはScript Stepの入出力型を原則として重複定義しない。ただし、デバッグまたは検証補助のため、`inputType`、`configType`、`outputType` を任意で明示できる。この場合、YAML明示型はC#から推論した型と一致しなければならない。
-
-### 2.4 実行ラップはユーザーから隠す
-
-ユーザーが通常利用する公開APIは以下に限定する。
-
-```text
-WorkflowStep<TInput, TOutput>
-WorkflowStep<TInput, TConfig, TOutput>
-StepContext
-Unit
-IFlowInvoker
-WorkflowStepException
-```
-
-以下の内部実装詳細はユーザーAPIとして公開しない。
-
-```text
-ICompiledStep
-CompiledStep<TInput, TOutput>
-StepExecutionEnvelope
-Reflection呼び出し
-object変換
-StepResult変換
-型検証処理
-retry/timeout/cancel制御
-Config binding実装
-ExecutionTrace構築処理
-```
-
-### 2.5 初期実装は単一路線Flowに限定する
-
-初期実装では、Flow内のStep接続は単一路線とする。
-
-- `next` は0または1件のみ指定できる。
-- `next` 未指定は `end` への到達と同義とする。
-- 複数後続Stepへのfan-outは初期実装では扱わない。
-- 合流、並列接続、エッジ条件は初期実装では扱わない。
-- 分岐は `IfStep` などのControl Stepが内部で子Flowを実行することで表現する。
-
-これにより、`end` 到達時のFlow Outputは「その実行パスで最後に実行されたStepのOutput」と一意に定まる。
 
 ---
 
-## 3. ファイル構成
+## 3. 実行モデル
 
-標準的なWorkflow定義ディレクトリは以下とする。
+### 3.1 逐次実行
+
+Step は定義順に逐次実行する。
+
+以下は逐次実行モデルには含めない。
+
+- 並列実行
+- 分岐実行
+- 統合実行
+- 複雑な依存関係解決
+- Step の自動依存解決
+
+### 3.2 自動推論しない
+
+エンジンは以下を行わない。
+
+- Step の入力型を見て依存 Step を自動実行する
+- 上流 Step の出力から下流 Step の入力を自動生成する
+- Config を Step に自動注入する
+- 前 Step の出力型と次 Step の入力型を自動接続する
+
+Step 間のデータ受け渡しは、CompositeStep 定義内でユーザーが明示する。
+
+---
+
+## 4. StepInput
+
+### 4.1 StepInput の役割
+
+`StepInput` は、Step に渡される唯一の入口である。
+
+Step は `StepInput` 以外から入力を受け取らない。
+
+```csharp
+public interface IStep<TOut>
+{
+    TOut Execute(StepInput input);
+}
+```
+
+### 4.2 StepInput は可変長入力集合
+
+`StepInput` は、型付き・名前付きの可変長入力集合である。
+
+`StepInput` は、`Produce` と `StoreAs` で追加された値を同一 `CompositeStep` 実行中の後続すべての Step へ保持する追記型集合である。
+
+登録前の上流 Step 以前からは、追加予定の値を読めない。
+
+含まれる値の例:
+
+- 上流 Step の出力全体
+- 上流 Step の出力の一部
+- 上流 Step の出力から生成した下流用の型
+- Config から作成された値
+- 固定値
+- エンジン引数
+- 実行中に生成された任意の共有値
+
+### 4.3 StepInput の識別キー
+
+値は以下のいずれかで識別する。
 
 ```text
-workflow-root/
-├── workflow.yaml
-├── NuGet.Config
-├── messages/
-│   └── order-messages.csx
-├── configs/
-│   └── mail-configs.csx
-├── shared/
-│   └── common.csx
-├── lib/
-│   └── custom-helper.dll
-├── steps/
-│   ├── validate-order.csx
-│   ├── accepted.csx
-│   ├── rejected.csx
-│   ├── send-mail.csx
-│   └── process-item.csx
-└── README.md
+Type
+Type + name
 ```
 
-`messages` と `configs` は物理ディレクトリとして分けてもよいが、どちらもC#型定義であるため、同一csxにまとめてもよい。
+同じ型の値を複数扱う場合は、名前付き登録を使用する。
 
-`shared` は `#load` で読み込む共通csxを置く任意ディレクトリである。`lib` は `#r` で参照するローカルassemblyを置く任意ディレクトリである。`NuGet.Config` はインラインNuGet参照を許可する場合のパッケージソース定義に使用できる。
+同じ型と名前の組み合わせを複数登録してはならない。
 
-相対パスの基準は、原則として `workflow.yaml` が存在するディレクトリとする。
+`Produce` または `StoreAs` により既存キーへ再登録しようとした場合、エンジンは実行時エラーとして扱う。
+
+この制約は、複数 Step にまたがる再登録にも適用する。暗黙上書きは行わない。
+
+型キーと名前付きキーは、同じ CLR 型でも別キーとして扱う。
+
+例えば `string`、`string` + `title`、`string` + `body` は別の値として共存できる。
+
+例:
+
+```csharp
+string title = input.Get<string>("title");
+string body = input.Get<string>("body");
+```
+
+### 4.4 StepInput API 案
+
+```csharp
+public sealed class StepInput
+{
+    public StepContext Context { get; }
+
+    public T Get<T>();
+
+    public T Get<T>(string name);
+
+    public bool TryGet<T>(out T value);
+
+    public bool TryGet<T>(string name, out T value);
+}
+```
 
 ---
 
-## 4. 基本概念
+## 5. StepContext
 
-### 4.1 Workflow
+### 5.1 StepContext は StepInput に自動で含める
 
-Workflowは実行定義全体を表す。
+`StepContext` は、エンジンが自動で生成し、`StepInput` に含める。
 
-Workflowは以下を持つ。
-
-- Workflow ID
-- schemaVersion
-- version
-- 型定義csx一覧
-- csx参照、復元、コンパイル方針
-- Workflow Config型
-- Workflow Config既定値
-- 実行時Config merge方針
-- Entry Flow
-- Flow一覧
-- 検証設定
-- trace設定
-- 実行制限
-
-### 4.2 Flow
-
-FlowはStepの集合である。
-
-Flowは以下を持つ。
-
-- Flow ID
-- Input型
-- Output型
-- Start Step ID
-- Step一覧
-
-FlowはWorkflow内で名前付き定義として管理される。Flow自体はC#クラスではなく、YAMLで定義される。
-
-Flowは以下の方法で実行できる。
-
-- Workflowの `entryFlow` として実行する。
-- `flow` 指定のFlow Call Stepとして実行する。
-- ユーザーStepまたはBuilt-in Stepから `StepContext.Flows` 経由で呼び出す。
-
-### 4.3 Step
-
-Stepは最小実行単位である。
-
-Stepには以下の種類がある。
-
-| 種類 | 説明 |
-|---|---|
-| Script Step | ユーザーがcsxで定義するStep |
-| Built-in Step | エンジンまたはライブラリが提供するStep |
-| Flow Call Step | FlowをStepとして呼び出すStep |
-
-これらはすべて、エンジン内部では同じ `StepDefinition` として扱う。
-
-### 4.4 Message
-
-MessageはStep間、Flow間で受け渡されるデータ型である。
-
-Message型はYAMLではなくcsxで定義する。
+Step から見た入口は引き続き `StepInput` のみである。
 
 ```csharp
-namespace Workflows.Messages;
-
-public sealed record OrderCreated(
-    string OrderId,
-    string CustomerId,
-    decimal Amount
-);
+StepContext context = input.Context;
 ```
 
-Message型は原則として不変な `record` を推奨する。
-
-### 4.5 Config
-
-ConfigはWorkflowまたはStepに与える設定値である。
-
-本仕様では、以下を区別する。
-
-| 種類 | 説明 | 主な用途 |
-|---|---|---|
-| Workflow Config | Workflow実行全体で共有するRun単位の設定 | 対象フォルダ、出力先、環境名、外部ツールパス |
-| Step Config | 特定Stepだけで使う設定 | SMTP設定、処理パラメータ、Step固有オプション |
-
-Config型もcsxで定義する。
+または、実装上は以下のように `StepInput` 内に含めてもよい。
 
 ```csharp
-namespace Workflows.Messages;
-
-public sealed record FileWorkflowConfig(
-    string TargetDirectory,
-    string OutputDirectory,
-    string? TemporaryDirectory
-);
-
-public sealed record SendMailConfig(
-    string SmtpHost,
-    int Port,
-    bool UseSsl,
-    string From
-);
+StepContext context = input.Get<StepContext>();
 ```
 
-Workflow ConfigはRun 開始時に解決し、Run中は不変のスナップショットとして扱う。
+ただし、API としては `input.Context` を用意する方が明確である。
 
-Step ConfigはStep実行直前に解決し、Stepの `TConfig` として渡す。
+### 5.2 StepContext の責務
 
----
+`StepContext` は、実行全体で共有される値を保持する。
 
-## 5. YAML仕様
+主な用途:
 
-### 5.1 最小構成
+- Config
+- ConfigStore
+- EngineArguments
+- 記録出力
+- 実行全体で共有したい値
 
-```yaml
-id: order-workflow
-schemaVersion: 1
-version: 1.0.0
+### 5.3 StepInput と StepContext の使い分け
 
-scripts:
-  - messages/order-messages.csx
-  - configs/mail-configs.csx
+```text
+StepInput:
+  Step 間で明示的に受け渡す追記型の可変長入力集合
+  Produce と StoreAs で追加した値を後続 Step へ保持する
+  既存値を削除せず、同じキーを暗黙上書きしない
 
-scriptOptions:
-  engine: dotnet-script-core
-  allowLoad: true
-  allowAssemblyReferences: true
-  allowNuGetReferences: true
-  load:
-    allowOutsideWorkflowRoot: false
-  references:
-    allowedAssemblies:
-      - System.Text.Json
-    allowedPaths:
-      - lib/
-  nuget:
-    requireExactVersion: true
-    allowedPackages:
-      - id: CsvHelper
-        versions:
-          - 33.0.1
-    packageSources:
-      - https://api.nuget.org/v3/index.json
-
-entryFlow: main
-
-config:
-  type: Workflows.Messages.FileWorkflowConfig
-  value:
-    targetDirectory: ./input
-    outputDirectory: ./output
-    temporaryDirectory: ./tmp
-  runtime:
-    merge: deep
-    precedence: runtime
-    nullOverride: false
-
-limits:
-  maxFlowDepth: 32
-
-flows:
-  - id: main
-    input: Workflows.Messages.OrderCreated
-    output: Workflows.Messages.OrderProcessResult
-    start: validate-order
-
-    steps:
-      - id: validate-order
-        script: steps/validate-order.csx
-        class: ValidateOrderStep
-        next:
-          to: branch
-
-      - id: branch
-        use: Workflow.Control.IfStep
-        config:
-          provider: yaml
-          value:
-            condition: current.IsValid == true
-            then: accepted-flow
-            else: rejected-flow
-        next:
-          to: end
-
-  - id: accepted-flow
-    input: Workflows.Messages.ValidationResult
-    output: Workflows.Messages.OrderProcessResult
-    start: accepted
-
-    steps:
-      - id: accepted
-        script: steps/accepted.csx
-        class: AcceptedStep
-        next:
-          to: end
-
-  - id: rejected-flow
-    input: Workflows.Messages.ValidationResult
-    output: Workflows.Messages.OrderProcessResult
-    start: rejected
-
-    steps:
-      - id: rejected
-        script: steps/rejected.csx
-        class: RejectedStep
-        next:
-          to: end
+StepContext:
+  実行全体で共有される長寿命の値
+  Set により同じキーを明示上書きできる
 ```
 
-### 5.2 トップレベル項目
+Config は `StepContext` に置く方針とする。
 
-| 項目 | 必須 | 説明 |
-|---|---:|---|
-| `id` | 必須 | Workflow ID |
-| `schemaVersion` | 必須 | YAML schema version。初期値は `1` |
-| `version` | 必須 | Workflow定義バージョン |
-| `scripts` | 任意 | Message型、Config型、補助型のcsx一覧。未指定時は空配列 |
-| `scriptOptions` | 任意 | `#load`、`#r`、インラインNuGet参照、コンパイルキャッシュ、AssemblyLoadContextの方針 |
-| `entryFlow` | 必須 | 実行開始Flow ID |
-| `config` | 任意 | Workflow Configの型、既定値、実行時merge方針 |
-| `flows` | 必須 | Flow定義一覧 |
-| `validation` | 任意 | 検証設定 |
-| `trace` | 任意 | ExecutionTrace設定 |
-| `limits` | 任意 | 実行制限 |
-
-### 5.3 Flow定義
-
-```yaml
-flows:
-  - id: main
-    input: Workflows.Messages.OrderCreated
-    output: Workflows.Messages.OrderProcessResult
-    start: validate-order
-    steps:
-      - id: validate-order
-        script: steps/validate-order.csx
-        class: ValidateOrderStep
-```
-
-| 項目 | 必須 | 説明 |
-|---|---:|---|
-| `id` | 必須 | Flow ID |
-| `input` | 必須 | Flow Input型の完全修飾名 |
-| `output` | 必須 | Flow Output型の完全修飾名 |
-| `start` | 必須 | 開始Step ID |
-| `steps` | 必須 | Step定義一覧 |
-
-Flow IDはWorkflow内で一意でなければならない。
-
-### 5.4 Step定義
-
-Step定義は以下の統一モデルを持つ。
-
-```yaml
-- id: some-step
-  script: steps/some-step.csx
-  class: SomeStep
-  use: SomeBuiltInStep
-  flow: some-flow
-  input:
-    from: previousOutput.Request
-  config:
-    provider: yaml
-    value:
-      key: value
-  inputType: Workflows.Messages.SomeInput
-  configType: Workflows.Messages.SomeConfig
-  outputType: Workflows.Messages.SomeOutput
-  retry:
-    maxAttempts: 3
-    interval: 00:00:05
-  timeout: 00:00:30
-  next:
-    to: next-step
-```
-
-| 項目 | 必須 | 説明 |
-|---|---:|---|
-| `id` | 必須 | Step ID |
-| `script` | 条件付き | Script Stepのcsxファイル |
-| `class` | 条件付き | Script Stepのクラス名 |
-| `use` | 条件付き | Built-in Step ID |
-| `flow` | 条件付き | 呼び出すFlow ID |
-| `input` | 任意 | Step input binding |
-| `config` | 任意 | Step config binding |
-| `inputType` | 任意 | YAML明示Input型 |
-| `configType` | 任意 | YAML明示Config型 |
-| `outputType` | 任意 | YAML明示Output型 |
-| `retry` | 任意 | Step retry設定 |
-| `timeout` | 任意 | Step timeout設定 |
-| `next` | 任意 | 次Step定義。未指定時は `end` と同義 |
-
-`script + class`、`use`、`flow` のいずれか1つだけを指定する。
-
-Step IDはFlow内で一意でなければならない。
-
-`end` は予約Step IDであり、ユーザー定義Stepの `id` として使用できない。
-
-### 5.5 next定義
-
-初期実装では、`next` は単一の後続Stepだけを表す。
-
-```yaml
-next:
-  to: next-step
-```
-
-`end` に遷移する場合は以下のように書く。
-
-```yaml
-next:
-  to: end
-```
-
-`next` を省略した場合は、以下と同義とする。
-
-```yaml
-next:
-  to: end
-```
-
-初期実装では以下を検証時にエラーとする。
-
-```yaml
-next:
-  - to: step-a
-  - to: step-b
-```
-
-複数後続Step、条件付きedge、fan-out、合流、DAG実行は将来拡張とする。
-
----
-
-## 6. 公開C# API
-
-### 6.1 ConfigなしStep
-
-```csharp
-public abstract class WorkflowStep<TInput, TOutput>
-{
-    public abstract Task<TOutput> ExecuteAsync(
-        TInput input,
-        StepContext context);
-}
-```
-
-### 6.2 ConfigありStep
-
-```csharp
-public abstract class WorkflowStep<TInput, TConfig, TOutput>
-{
-    public abstract Task<TOutput> ExecuteAsync(
-        TInput input,
-        TConfig config,
-        StepContext context);
-}
-```
-
-### 6.3 Unit
-
-入力なし、または出力なしを表す型として `Unit` を提供する。
-
-```csharp
-public readonly record struct Unit
-{
-    public static readonly Unit Value = new();
-}
-```
-
-入力なしStep:
-
-```csharp
-public sealed class StartStep
-    : WorkflowStep<Unit, OrderCreated>
-{
-    public override Task<OrderCreated> ExecuteAsync(
-        Unit input,
-        StepContext context)
-    {
-        return Task.FromResult(new OrderCreated(...));
-    }
-}
-```
-
-出力なしStep:
-
-```csharp
-public sealed class SendNotificationStep
-    : WorkflowStep<SendNotificationRequest, Unit>
-{
-    public override Task<Unit> ExecuteAsync(
-        SendNotificationRequest input,
-        StepContext context)
-    {
-        ...
-        return Task.FromResult(Unit.Value);
-    }
-}
-```
-
-### 6.4 StepContext
+### 5.4 StepContext API 案
 
 ```csharp
 public sealed class StepContext
 {
-    public string WorkflowId { get; }
-    public string RunId { get; }
-    public string FlowId { get; }
-    public string StepId { get; }
-
-    public IReadOnlyDictionary<string, object?> Variables { get; }
-
-    public object? WorkflowConfig { get; }
-
-    public TWorkflowConfig GetWorkflowConfig<TWorkflowConfig>();
-
     public ILogger Logger { get; }
 
-    public CancellationToken CancellationToken { get; }
+    public T Get<T>();
 
-    public IFlowInvoker Flows { get; }
+    public T Get<T>(string name);
 
-    public IServiceProvider Services { get; }
+    public void Set<T>(T value);
+
+    public void Set<T>(string name, T value);
+
+    public bool TryGet<T>(out T value);
+
+    public bool TryGet<T>(string name, out T value);
 }
 ```
 
-`WorkflowConfig` はRun 開始時に解決済みのWorkflow Config スナップショットである。
+`StepContext.Set<T>()` と `StepContext.Set<T>(name, value)` は、同じ型と名前の組み合わせが既に存在する場合、明示的な上書きとして扱う。
 
-ユーザーStepは `GetWorkflowConfig<TWorkflowConfig>()` により、csxで定義したWorkflow Config型として取得できる。
+`StepInput` は Step 間の入力集合であり、`StepContext` は実行全体の共有値であるため、重複登録の扱いを分ける。
 
-`Variables` はRun 開始時に渡された読み取り専用値である。初期実装では、Stepから `Variables` を更新できない。
+---
 
-### 6.5 Flow呼び出しAPI
+## 6. Config
+
+### 6.1 Config の基本方針
+
+Config は Step 専用引数として渡さない。
+
+Step の入口は `StepInput` のみであり、Config は `StepInput.Context` から取得する。
+
+例:
 
 ```csharp
-public interface IFlowInvoker
+public sealed class ConvertStep : IStep<ConvertResult>
 {
-    Task<TOutput> RunAsync<TInput, TOutput>(
-        string flowId,
-        TInput input,
+    public sealed class Config
+    {
+        public bool ToUpper { get; set; }
+    }
+
+    public ConvertResult Execute(StepInput input)
+    {
+        Config config = input.Context.Get<Config>();
+        ConvertInput convertInput = input.Get<ConvertInput>();
+
+        return new ConvertResult
+        {
+            ConvertedText = config.ToUpper
+                ? convertInput.Text.ToUpperInvariant()
+                : convertInput.Text
+        };
+    }
+}
+```
+
+### 6.2 Config 入力形式
+
+ワークフロー定義には YAML を使わない。
+
+Config は `.csx` 内で生成する値、エンジン引数、環境変数、または Config ファイルから生成した値として扱う。
+
+Config ファイルの標準形式は YAML とする。
+
+この YAML は実行時設定の入力であり、ワークフロー定義ではない。
+
+Config ファイルの相対パスは、Entry `.csx` の存在するディレクトリを基準に解決する。
+
+`appsettings.yaml` の例:
+
+```yaml
+Load:
+  Path: ./input.txt
+
+Convert:
+  ToUpper: true
+  Mode: Normal
+
+Save:
+  Path: ./output.txt
+```
+
+`Load`、`Convert`、`Save` は CompositeStep 境界 Config 型上のプロパティ path である。
+
+標準契約では、各 Step は `public sealed class Config` などの自分の Config 型を Step 型の内側に持つ。CompositeStep は `MainConfig` のような境界 Config 型を持ち、`MainConfig.Load` は `LoadStep.Config`、`MainConfig.Convert` は `ConvertStep.Config`、`MainConfig.Save` は `SaveStep.Config` を保持する。YAML の区画名は Step 実行順を定義しない。Step 実行順は `.csx` の `CompositeStep` 定義で決める。
+
+### 6.3 Config 読み込み
+
+標準 Config 読み込みは、エンジンの実行前処理として行う。
+
+推奨契約では、Entry 側は CompositeStep 境界 Config 型と、Step 登録単位の Config 型および境界 Config 型上のプロパティ path を明示する。
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .WithConfig<MainConfig>()
+        .WithConfig<LoadStep.Config>("Load")
+        .Produce<ConvertInput>(x => new ConvertInput
+        {
+            Text = x.Text
+        })
+    .Run<ConvertStep, ConvertResult>()
+        .WithConfig<ConvertStep.Config>("Convert")
+        .Produce<SaveInput>(x => new SaveInput
+        {
+            Content = x.ConvertedText
+        })
+    .Run<SaveStep, Unit>()
+        .WithConfig<SaveStep.Config>("Save")
+        .Discard();
+```
+
+`WithConfig<TConfig>()` は、Step 登録単位 Config がある場合は CompositeStep 境界 Config 型の宣言として扱う。
+
+`WithConfig<TConfig>(string sectionPath)` は、直前に登録した Step のメタ情報として Step Config 型と境界 Config 型上のプロパティ path を保持する。Step 専用引数は増やさない。
+
+CLI `run` は Entry `.csx` をロードした後、単一 `--config` YAML ファイル全体を境界 Config 型へ変換する。
+
+`run` は最初の Step を実行する前に、境界 Config 型への型変換、CLI override 適用、`DataAnnotations` と `IValidatableObject` の検証をすべて完了する。いずれか 1 つでも失敗した場合、最初の Step は実行しない。
+
+実行時は、対象 Step の実行直前に、境界 Config 型上の `sectionPath` プロパティ値を取り出し、`StepContext.Set<TConfig>(config)` で登録する。たとえば `WithConfig<LoadStep.Config>("Load")` は、`MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録する宣言である。
+
+Step 登録単位 Config があるのに `WithConfig<MainConfig>()` のような境界 Config 型宣言がない場合は、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
+
+旧 `.WithConfig<TConfig>()` だけを使う Entry 全体 Config 互換 API は維持する。Step 登録単位 Config がない場合は従来どおり YAML 全体を `TConfig` に変換し、最初の Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。
+
+複数 Config ファイル統合、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は採用しない。
+
+Config 読み込み用 Step をユーザーが明示的に定義する方式は、標準外の拡張として許可する。
+
+Config 読み込み Step を使用する場合は、標準 Config 読み込み、CLI override、実行前 Config 検証の対象外とする。
+
+### 6.4 標準 Config の定義と取得
+
+```csharp
+public sealed class LoadStep : IStep<LoadResult>
+{
+    public sealed class Config
+    {
+        public string Path { get; set; } = "";
+    }
+
+    public LoadResult Execute(StepInput input)
+    {
+        Config config = input.Context.Get<Config>();
+
+        string text = File.ReadAllText(config.Path);
+
+        return new LoadResult
+        {
+            Text = text,
+            FilePath = config.Path
+        };
+    }
+}
+
+public sealed class ConvertStep : IStep<ConvertResult>
+{
+    public sealed class Config
+    {
+        public bool ToUpper { get; set; }
+
+        public string Mode { get; set; } = "";
+    }
+
+    public ConvertResult Execute(StepInput input)
+    {
+        Config config = input.Context.Get<Config>();
+        ConvertInput convertInput = input.Get<ConvertInput>();
+
+        return new ConvertResult
+        {
+            ConvertedText = config.ToUpper
+                ? convertInput.Text.ToUpperInvariant()
+                : convertInput.Text,
+            Mode = config.Mode
+        };
+    }
+}
+
+public sealed class SaveStep : IStep<Unit>
+{
+    public sealed class Config
+    {
+        public string Path { get; set; } = "";
+    }
+
+    public Unit Execute(StepInput input)
+    {
+        Config config = input.Context.Get<Config>();
+        SaveInput saveInput = input.Get<SaveInput>();
+
+        File.WriteAllText(config.Path, saveInput.Content);
+
+        return Unit.Value;
+    }
+}
+
+public sealed class MainConfig
+{
+    public LoadStep.Config Load { get; set; } = new();
+
+    public ConvertStep.Config Convert { get; set; } = new();
+
+    public SaveStep.Config Save { get; set; } = new();
+}
+```
+
+各 Step は `StepContext.Get<TConfig>()` で自分の Config 型を取得する。
+
+| Step | 境界 Config プロパティ path | Step Config 参照例 |
+| --- | --- | --- |
+| `LoadStep` | `Load` | `input.Context.Get<LoadStep.Config>().Path` |
+| `ConvertStep` | `Convert` | `input.Context.Get<ConvertStep.Config>().ToUpper`, `input.Context.Get<ConvertStep.Config>().Mode` |
+| `SaveStep` | `Save` | `input.Context.Get<SaveStep.Config>().Path` |
+
+対応関係は、`MainConfig` のプロパティ、Step 登録時の `WithConfig<TConfig>(sectionPath)`、Step 実装の `StepContext.Get<TConfig>()` で明示する。Step ごとの Config 専用引数や、Step 型に対する Config 自動注入は追加しない。
+
+`Convert` プロパティの複数プロパティを使う場合も、Step は同じ `ConvertStep.Config` から必要な値だけを読む。
+
+```csharp
+public sealed class ConvertStep : IStep<ConvertResult>
+{
+    public sealed class Config
+    {
+        public string Mode { get; set; } = "";
+    }
+
+    public ConvertResult Execute(StepInput input)
+    {
+        Config config = input.Context.Get<Config>();
+
+        return new ConvertResult
+        {
+            Mode = config.Mode
+        };
+    }
+}
+```
+
+Entry 側の宣言例:
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<ConvertStep, ConvertResult>()
+        .WithConfig<MainConfig>()
+        .WithConfig<ConvertStep.Config>("Convert");
+```
+
+Step は Config 専用引数を受け取らない。標準 Config は対象 Step の実行直前に `StepContext` へ登録され、Step は `StepContext.Get<TConfig>()` で取得する。
+
+### 6.5 CLI による Config 指定
+
+エンジン起動時に Config ファイルを指定できる。
+
+```bash
+engine run main.csx --config config/appsettings.yaml
+```
+
+`--config` は Config ファイルパスとして `EngineArguments` に保持する。
+
+Entry が Step 登録単位 Config を使っている場合、CLI `run` は `--config` の YAML 全体を CompositeStep 境界 Config 型に変換し、Step 実行前に検証する。
+
+Entry が旧 Entry 全体 Config 互換 API だけを使っている場合、CLI `run` は従来どおり `--config` の YAML 全体をその `TConfig` に変換し、Step 実行前に検証する。
+
+`--config` 未指定で、Entry が Config API を使っていない場合は既存どおり成功する。
+
+`--config` 未指定で、Entry が Config API を使っている場合は、Step 実行前に `CONFIG_NOT_FOUND` で失敗する。利用者へ早く原因を返すためである。
+
+### 6.6 CLI による Config 上書き
+
+CLI 引数で Config の一部を上書きできることを要件とする。
+
+例:
+
+```bash
+engine run main.csx --config config/appsettings.yaml --set Convert.ToUpper=false
+engine run main.csx --config config/appsettings.yaml --set Save.Path=./override.txt
+```
+
+`--set` は、CompositeStep 境界 Config 型に対するプロパティ path override として扱う。
+
+書式は `--set Key=value` とする。CLI 解析層は最初の `=` より前を key、最初の `=` 以降を値として保持する。値の中の `=` は許可する。
+
+CLI 解析層で `--set` に値がない場合、`key=value` になっていない場合、または key が空の場合は、Config 型を見ない CLI 解析エラーとして終了コード 2 で失敗する。
+
+Step 登録単位 Config では、key の先頭は宣言済みの境界 Config プロパティ path と一致しなければならない。プロパティ path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は `MainConfig.Convert.ToUpper` への override として扱い、対象 Step 実行直前には `MainConfig.Convert` を `StepContext.Set<ConvertStep.Config>()` へ登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
+
+同一 Entry 内の宣言済みプロパティ path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済みプロパティ path に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
+
+プロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名は大小文字を区別する完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
+
+Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を `TConfig` のプロパティ path として扱う。
+
+入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
+
+配列またはリストは、`Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は標準 Config override には含めない。添字が範囲外、負数、または数値でない場合は `CONFIG_LOAD_FAILED` とする。
+
+型変換は override 対象プロパティの型に対して行う。標準契約では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。型変換に失敗した場合は `CONFIG_LOAD_FAILED` とする。
+
+複数 override は、同一 key について最後の指定を有効にする。これは `EngineArguments.Settings` の既存 `Dictionary` 契約と合わせる。
+
+`EngineArguments.Settings` は、override 適用後も CLI から受け取った元の文字列を保持する。Step は標準 Config の検証済み値と、CLI 指定そのものの両方を参照できる。
+
+---
+
+## 7. CompositeStep
+
+### 7.1 CompositeStep の役割
+
+`CompositeStep` は、複数の Step を順番に実行する Step である。
+
+役割:
+
+1. `StepInput` を保持する
+2. Step を定義順に実行する
+3. Step の戻り値を受け取る
+4. ユーザーが明示した `Produce` に従って、戻り値から 0 個以上の値を `StepInput` に追加する
+5. 必要であれば戻り値を破棄する
+
+### 7.2 上流から下流への値渡し
+
+上流 Step の結果を下流 Step に渡す場合は、CompositeStep 定義内で `Produce` によって明示する。
+
+例:
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .Produce<ConvertInput>(x => new ConvertInput
+        {
+            Text = x.Text
+        })
+    .Run<ConvertStep, ConvertResult>()
+        .Produce<SaveInput>(x => new SaveInput
+        {
+            Content = x.ConvertedText
+        })
+    .Run<SaveStep, Unit>()
+        .Discard();
+```
+
+この例では、`LoadResult` 全体は `ConvertStep` に渡さない。
+
+`LoadResult.Text` から `ConvertInput` を生成し、それだけを `StepInput` に登録する。
+
+登録された `ConvertInput` は、この `CompositeStep` 実行中の後続すべての Step から読める。
+
+### 7.3 Produce
+
+`Produce` は、Step の戻り値から `StepInput` に追加する値を生成する。
+
+```csharp
+.Produce<TValue>(Func<TOut, TValue> selector)
+```
+
+名前付き登録も許可する。
+
+```csharp
+.Produce<TValue>(string name, Func<TOut, TValue> selector)
+```
+
+`Produce` で追加された値は、登録した Step より後に実行されるすべての Step から読める。
+
+登録前の Step からは読めない。
+
+同じ型キー、または同じ型と名前のキーへ再登録しようとした場合は実行時エラーとする。
+
+型キーと名前付きキーは、同じ CLR 型でも別キーである。
+
+trace 値を保存する場合は、`Produce` ごとに明示する。
+
+```csharp
+.Produce<TValue>(Func<TOut, TValue> selector, TraceValueCapture traceValueCapture)
+.Produce<TValue>(string name, Func<TOut, TValue> selector, TraceValueCapture traceValueCapture)
+```
+
+既存の `Produce` と名前付き `Produce` は値を trace に保存しない。
+
+`TraceValueCapture.Serialized` は値本文を `System.Text.Json` の直列化文字列として保存する。
+
+`TraceValueCapture.Redacted` は型名、任意の名前、登録元、保存状態だけを保存し、値本文は保存しない。
+
+### 7.4 StoreAs
+
+`StoreAs` は、現在の Step 戻り値をその型のまま登録する省略 API として扱う。
+
+```csharp
+.StoreAs()
+```
+
+これは以下の省略形である。
+
+```csharp
+.Produce<TOut>(x => x)
+```
+
+ここでの `TOut` は、現在の `Run<TStep, TOut>()` の戻り値型である。
+
+ただし、主要 API は `Produce` とする。
+
+理由は、`StoreAs` だけでは上流出力の一部を下流用入力として生成できないためである。
+
+`StoreAs` で登録された値の寿命、可視範囲、重複キーの扱いは `Produce` と同じである。
+
+trace 値を保存する場合は、`StoreAs` にも明示する。
+
+```csharp
+.StoreAs(TraceValueCapture traceValueCapture)
+```
+
+既存の `StoreAs` は値を trace に保存しない。
+
+### 7.5 Discard
+
+`Discard` は Step の戻り値を `StepInput` に登録しない。
+
+`Discard` は現在 Step の戻り値登録を抑止するだけであり、既に `StepInput` に登録済みの値を削除しない。
+
+`Discard` は trace 値を生成しない。
+
+```csharp
+.Run<SaveStep, Unit>()
+    .Discard();
+```
+
+---
+
+## 8. Step 定義
+
+### 8.1 通常 Step はクラスで定義する
+
+Step はメソッドの連続呼び出しで定義せず、通常の C# クラスとして定義する。
+
+```csharp
+public sealed class LoadStep : IStep<LoadResult>
+{
+    public sealed class Config
+    {
+        public string Path { get; set; } = "";
+    }
+
+    public LoadResult Execute(StepInput input)
+    {
+        Config config = input.Context.Get<Config>();
+
+        string text = File.ReadAllText(config.Path);
+
+        return new LoadResult
+        {
+            Text = text,
+            FilePath = config.Path
+        };
+    }
+}
+```
+
+### 8.2 Step は必要な入力を StepInput から明示的に取得する
+
+```csharp
+public sealed class ConvertStep : IStep<ConvertResult>
+{
+    public sealed class Config
+    {
+        public bool ToUpper { get; set; }
+    }
+
+    public ConvertResult Execute(StepInput input)
+    {
+        ConvertInput convertInput = input.Get<ConvertInput>();
+        Config config = input.Context.Get<Config>();
+
+        return new ConvertResult
+        {
+            ConvertedText = config.ToUpper
+                ? convertInput.Text.ToUpperInvariant()
+                : convertInput.Text
+        };
+    }
+}
+```
+
+### 8.3 Step は前後の Step を知らない
+
+Step は以下を知らない。
+
+- 自分の前にどの Step があるか
+- 自分の後にどの Step があるか
+- 自分の入力がどの Step から生成されたか
+
+Step は `StepInput` から必要な値を取得するだけである。
+
+---
+
+## 9. ネスト
+
+### 9.1 CompositeStep は Step として扱える
+
+CompositeStep は `IStep<TOut>` を実装する。
+
+そのため、CompositeStep を別の CompositeStep の中で実行できる。
+
+```text
+MainStep
+├─ CleanStep
+├─ BuildCompositeStep
+│  ├─ RestoreStep
+│  └─ CompileStep
+└─ TestStep
+```
+
+### 9.2 csx 分割
+
+CompositeStep 定義は外部 `.csx` に分割できる必要がある。
+
+`#load` による外部 `.csx` 解決を想定する。
+
+```csharp
+#load "./build.csx"
+#load "./test.csx"
+```
+
+`.csx` の実行、NuGet 解決、外部 `.csx` 解決には `Dotnet.Script.Core` を利用する。
+
+---
+
+## 10. Dotnet.Script.Core 利用
+
+### 10.1 必須要件
+
+エンジンは `Dotnet.Script.Core` を利用する。
+
+目的:
+
+- `.csx` の実行
+- NuGet パッケージ解決
+- `#r "nuget: ..."` の解決
+- `#load` による外部 `.csx` 解決
+
+### 10.2 エンジンの役割
+
+エンジンは以下を行う。
+
+1. CLI 引数を解析する
+2. 初期 `StepContext` を生成する
+3. 初期 `StepInput` を生成する
+4. `StepInput` に `StepContext` を含める
+5. `.csx` を `Dotnet.Script.Core` 経由でロードする
+6. `.csx` 上の CompositeStep 定義を取得する
+7. Entry の Step Config メタ情報を確認する
+8. 必要な場合は `--config` の YAML 全体を境界 Config 型または Entry 全体 Config 型へ変換する
+9. `--set` のプロパティ path override を Config に適用する
+10. `DataAnnotations` と `IValidatableObject` で Config を検証する
+11. 検証済み Config を対象 Step の実行直前に `StepContext` に登録する
+12. 指定された Step を実行する
+
+---
+
+## 11. エラー処理
+
+### 11.1 基本方針
+
+Step 実行中に例外が発生した場合、エンジンは失敗として扱う。
+
+既定動作は停止とする。
+
+### 11.2 FailurePolicy
+
+Step 単位の失敗時動作を拡張する場合は、次の列挙型を使う。
+
+```csharp
+public enum FailurePolicy
+{
+    Stop,
+    Continue
+}
+```
+
+`Continue` の実行継続動作は標準実行契約には含めない。
+
+### 11.3 エラー対象
+
+以下はエラーとする。
+
+- 存在しない Step 名の実行
+- `StepInput.Get<T>()` で値が存在しない
+- `StepInput.Get<T>(name)` で値が存在しない
+- Entry が標準 Config 型を要求しているが `--config` が未指定
+- 指定された Config ファイルが存在しない
+- Config ファイルの読み込み、YAML 構文、型変換、または検証の失敗
+- `--set` の存在しないプロパティ、型変換失敗、または配列またはリストの添字不正
+- Step 実行時例外
+- `.csx` のロード失敗
+- NuGet 解決失敗
+- NuGet ロックファイルの欠落
+- NuGet ロックファイルと参照または解決済み依存関係の不一致
+- `#load` 解決失敗
+
+Entry が標準 Config 型を要求している場合の `--config` 未指定と、存在しない Config ファイルは `CONFIG_NOT_FOUND` とする。
+
+読み込み不能、YAML 構文エラー、型変換失敗、`--set` の Config 適用失敗、`DataAnnotations` または `IValidatableObject` の失敗は `CONFIG_LOAD_FAILED` とする。
+
+### 11.4 retry と timeout
+
+Step 本体の通常例外に対する retry を提供する。
+
+retry は `WorkflowExecutionOptions.Retry` で指定する。
+
+`RetryOptions.MaxAttempts` は初回を含む最大試行回数とする。
+
+`Retry = null` または `MaxAttempts <= 1` の場合、retry は行わない。
+
+例えば `MaxAttempts = 3` は、対象 Step を最大 3 回実行することを意味する。
+
+retry は全 Step 一律の指定に限定する。
+
+Step 別 retry、待機時間制御、例外型による絞り込み、CLI 指定、Config 指定は標準 retry 契約には含めない。
+
+retry 対象は Step 本体の通常例外に限定する。
+
+最終的に `STEP_EXECUTION_FAILED` になる候補だけを retry 対象とする。
+
+入力取得失敗、Config 検証失敗、`.csx` ロード失敗、`.csx` コンパイル失敗、参照解決失敗は retry 対象外とする。
+
+`Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とする。
+
+失敗した試行の `Produce`、`StoreAs`、`Discard` は実行しない。
+
+失敗した試行の戻り値由来の値は `StepInput` に残さない。
+
+途中の試行が成功した場合、成功した最後の試行の戻り値だけに `Produce` を実行し、後続 Step は 1 回だけ開始する。
+
+全試行が失敗した場合、後続 Step は開始しない。
+
+timeout は `WorkflowExecutionOptions.StepTimeout` で指定する。
+
+`StepTimeout` の既定値は `null` とし、timeout を設定しない現行動作を維持する。
+
+timeout は強制停止ではなく、`CancellationToken` による協調キャンセルとして扱う。
+
+timeout と外部キャンセルは retry 対象外とする。
+
+timeout は `STEP_TIMEOUT`、外部キャンセルは `STEP_CANCELED` として扱い、どちらも retry を止める。
+
+timeout と外部キャンセルの両方が観測される場合は、外部キャンセルを優先して `STEP_CANCELED` とする。
+
+各試行の timeout は、試行開始時に作成した Step 単位の timeout 用 `CancellationTokenSource` で判定する。
+
+timeout または外部キャンセルで失敗した Step は `Produce`、`StoreAs`、`Discard` を実行せず、値を `StepInput` に残さない。
+
+実行中 Step の強制停止、workflow 全体 timeout は標準実行契約には含めない。
+
+---
+
+## 12. 非同期対応
+
+### 12.1 方針
+
+既存の同期 Step API を維持したまま、非同期 Step 用の明示 API を提供する。
+
+既存の `IStep<TOut>` は同期 Step の契約として維持する。
+
+```csharp
+public interface IStep<TOut>
+{
+    TOut Execute(StepInput input);
+}
+```
+
+非同期 Step は `IAsyncStep<TOut>` として定義する。
+
+```csharp
+public interface IAsyncStep<TOut>
+{
+    Task<TOut> ExecuteAsync(StepInput input, CancellationToken cancellationToken);
+}
+```
+
+`IStep<TOut>` を `Task<TOut>` 系へ統一しない。
+
+`IStep<Task<T>>` は非同期 Step として特別扱いしない。
+
+この型は通常の同期 Step の戻り値型として扱い、エンジンは `IAsyncStep<TOut>` として登録された Step だけを非同期待機対象にする。
+
+非同期 Step は `RunAsync<TStep, TOut>()` などの明示 API で登録する。
+
+同期 Step と非同期 Step が混在する場合も、エンジンは定義順に 1 Step ずつ実行する。
+
+非同期 Step は `ExecuteAsync` の完了を待ってから、その戻り値に対して `Produce` または `StoreAs` を実行する。
+
+非同期 Step の実行中に例外が発生した場合、同期 Step と同じく `STEP_EXECUTION_FAILED` の実行結果と trace に変換する。
+
+`ExecuteWorkflowAsync` が受け取った外部 `CancellationToken` は、各 Step の実行制御に使う。
+
+`WorkflowExecutionOptions.StepTimeout` が設定されている場合、エンジンは Step 実行ごとに timeout 用の `CancellationTokenSource` を作る。
+
+外部 `CancellationToken` と timeout 用の `CancellationToken` は Step 実行ごとに合成する。
+
+非同期 Step には合成した `CancellationToken` を `IAsyncStep<TOut>.ExecuteAsync` へ渡す。
+
+同期 Step は `CancellationToken` を受け取らないため、実行中の timeout や外部キャンセルで強制中断しない。
+
+同期 Step 実行中に timeout または外部キャンセルが要求された場合、エンジンは同期 Step の完了を待つ。
+
+同期 Step 完了後にキャンセルが要求済みであれば、`Produce`、`StoreAs`、`Discard`、後続 Step を実行せず、失敗結果に変換する。
+
+timeout と外部キャンセルは区別する。
+
+timeout は `STEP_TIMEOUT`、外部キャンセルは `STEP_CANCELED` の失敗結果として扱う。
+
+採用しない案:
+
+```csharp
+public interface IStep<TOut>
+{
+    Task<TOut> ExecuteAsync(StepInput input, CancellationToken cancellationToken);
+}
+```
+
+この案は既存の `IStep<TOut>` 実装を破壊するため、採用しない。
+
+---
+
+## 13. 定義 API 案
+
+### 13.1 基本形
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .Produce<ConvertInput>(x => new ConvertInput
+        {
+            Text = x.Text
+        })
+        .Produce<AuditInput>(x => new AuditInput
+        {
+            FilePath = x.FilePath,
+            Length = x.Length
+        })
+    .Run<ConvertStep, ConvertResult>()
+        .Produce<SaveInput>(x => new SaveInput
+        {
+            Content = x.ConvertedText
+        })
+    .Run<SaveStep, Unit>()
+        .Discard();
+```
+
+### 13.2 名前付き Produce
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<ReadTitleStep, string>()
+        .Produce<string>("title", x => x)
+    .Run<ReadBodyStep, string>()
+        .Produce<string>("body", x => x)
+    .Run<MergeStep, Article>()
+        .StoreAs();
+```
+
+取得側:
+
+```csharp
+public sealed class MergeStep : IStep<Article>
+{
+    public Article Execute(StepInput input)
+    {
+        string title = input.Get<string>("title");
+        string body = input.Get<string>("body");
+
+        return new Article
+        {
+            Title = title,
+            Body = body
+        };
+    }
+}
+```
+
+### 13.3 非同期 Step
+
+非同期 Step は `RunAsync` で明示的に登録する。
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .Produce<ConvertInput>(x => new ConvertInput
+        {
+            Text = x.Text
+        })
+    .RunAsync<ConvertStep, ConvertResult>()
+        .Produce<SaveInput>(x => new SaveInput
+        {
+            Content = x.ConvertedText
+        })
+    .Run<SaveStep, Unit>()
+        .Discard();
+```
+
+`RunAsync` で登録された Step は、非同期待機後の戻り値を `Produce`、`StoreAs`、`Discard` の対象にする。
+
+### 13.4 Step 登録単位 Config の例
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .WithConfig<MainConfig>()
+        .WithConfig<LoadStep.Config>("Load")
+        .Produce<ConvertInput>(x => new ConvertInput
+        {
+            Text = x.Text
+        })
+    .Run<ConvertStep, ConvertResult>()
+        .WithConfig<ConvertStep.Config>("Convert")
+        .Produce<SaveInput>(x => new SaveInput
+        {
+            Content = x.ConvertedText
+        })
+    .Run<SaveStep, Unit>()
+        .WithConfig<SaveStep.Config>("Save")
+        .Discard();
+```
+
+---
+
+## 14. 主要公開 API 案
+
+### 14.1 Step 契約
+
+```csharp
+public interface IStep<TOut>
+{
+    TOut Execute(StepInput input);
+}
+
+public interface IAsyncStep<TOut>
+{
+    Task<TOut> ExecuteAsync(StepInput input, CancellationToken cancellationToken);
+}
+```
+
+`IStep<TOut>` は同期 Step 用の既存契約として維持する。
+
+`IAsyncStep<TOut>` は非同期 Step 用の追加契約とする。
+
+### 14.2 StepInput
+
+```csharp
+public sealed class StepInput
+{
+    public StepContext Context { get; }
+
+    public T Get<T>();
+
+    public T Get<T>(string name);
+
+    public bool TryGet<T>(out T value);
+
+    public bool TryGet<T>(string name, out T value);
+}
+```
+
+### 14.3 StepContext
+
+```csharp
+public sealed class StepContext
+{
+    public ILogger Logger { get; }
+
+    public T Get<T>();
+
+    public T Get<T>(string name);
+
+    public void Set<T>(T value);
+
+    public void Set<T>(string name, T value);
+
+    public bool TryGet<T>(out T value);
+
+    public bool TryGet<T>(string name, out T value);
+}
+```
+
+### 14.4 CompositeStep
+
+```csharp
+public static class CompositeStep
+{
+    public static CompositeStepDefinition Define(
+        string name,
+        string? namespaceName = null);
+}
+
+public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
+{
+    public CompositeStep<TOut> WithConfig<TConfig>();
+
+    public CompositeStep<TOut> WithConfig<TConfig>(string sectionPath);
+
+    public CompositeStep<TStepOut> Run<TStep, TStepOut>()
+        where TStep : IStep<TStepOut>, new();
+
+    public CompositeStep<TStepOut> RunAsync<TStep, TStepOut>()
+        where TStep : IAsyncStep<TStepOut>, new();
+
+    public TOut Execute(StepInput input);
+
+    public Task<TOut> ExecuteAsync(StepInput input, CancellationToken cancellationToken);
+
+    public WorkflowResult ExecuteWorkflow(WorkflowExecutionOptions? options = null);
+
+    public Task<WorkflowResult> ExecuteWorkflowAsync(
+        WorkflowExecutionOptions? options = null,
         CancellationToken cancellationToken = default);
+
+    public Type? ConfigType { get; }
+
+    public IReadOnlyList<StepConfigRegistration> StepConfigRegistrations { get; }
+
+    public string Name { get; }
+
+    public string? NamespaceName { get; }
+
+    public string QualifiedName { get; }
 }
-```
 
-このAPIにより、ユーザー定義StepやBuilt-in Stepから別Flowを呼び出せる。
-
-### 6.6 WorkflowStepException
-
-ユーザーStepで業務エラーを明示する場合は `WorkflowStepException` を投げる。
-
-```csharp
-public sealed class WorkflowStepException : Exception
+public sealed class StepConfigRegistration
 {
-    public string ErrorCode { get; }
-    public bool Retryable { get; }
-    public IReadOnlyDictionary<string, object?> Details { get; }
+    public Type StepType { get; }
 
-    public WorkflowStepException(
-        string errorCode,
-        string message,
-        bool retryable = false,
-        IReadOnlyDictionary<string, object?>? details = null,
-        Exception? innerException = null);
+    public string SectionPath { get; }
+
+    public Type ConfigType { get; }
 }
 ```
 
-例:
+`WithConfig<TConfig>(string sectionPath)` は直前に登録した Step に Step Config 型と境界 Config 型上のプロパティ path のメタ情報を設定する。`StepConfigRegistrations` は Entry 内の Step 登録順で保持する。
+
+`WithConfig<TConfig>()` は、Step 登録単位 Config がある場合は CompositeStep 境界 Config 型メタ情報を設定する。Step 登録単位 Config がない場合は、互換 API として Entry 全体 Config 型メタ情報を設定する。1 つの Entry に設定できる Config 型は 1 つだけとする。
+
+`CompositeStep.Define("Build", namespaceName: "Deploy")` は、短い名前 `Build`、名前空間 `Deploy`、完全修飾名 `Deploy.Build` を持つ Entry を定義する。
+
+`CompositeStep.Define("Build")` は従来互換のため名前空間なしの Entry を定義し、完全修飾名は短い名前と同じ `Build` とする。
+
+`WithConfig<TConfig>()`、`WithConfig<TConfig>(string sectionPath)`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()`、`Produce`、`StoreAs`、`Discard` など、`CompositeStep<TOut>` を返す連鎖呼び出しの後も、名前空間メタ情報と完全修飾名は維持する。
+
+### 14.5 `WorkflowExecutionOptions`
 
 ```csharp
-throw new WorkflowStepException(
-    errorCode: "INVALID_ORDER",
-    message: "Order is invalid.",
-    retryable: false);
+public sealed class WorkflowExecutionOptions
+{
+    /// <summary>
+    /// Step ごとの timeout 時間を取得または設定します。null の場合は timeout を設定しません。
+    /// </summary>
+    public TimeSpan? StepTimeout { get; init; }
+
+    /// <summary>
+    /// Step 本体の通常例外に対する retry 設定を取得または設定します。null の場合は retry しません。
+    /// </summary>
+    public RetryOptions? Retry { get; init; }
+
+    /// <summary>
+    /// エンジンと Step のログ出力に使う logger factory を取得または設定します。
+    /// </summary>
+    public ILoggerFactory? LoggerFactory { get; init; }
+
+    /// <summary>
+    /// CLI 由来の config path と set override を StepContext に渡すための引数を取得または設定します。
+    /// </summary>
+    public EngineArguments? EngineArguments { get; init; }
+}
+
+public sealed class RetryOptions
+{
+    /// <summary>
+    /// 初回を含む最大試行回数を取得または設定します。1 以下の場合は retry しません。
+    /// </summary>
+    public int MaxAttempts { get; init; }
+}
 ```
+
+`StepTimeout` は workflow 全体ではなく、Step 実行ごとの timeout として扱う。
+
+`StepTimeout` が `null` の場合、timeout 用の `CancellationTokenSource` は作らず、外部 `CancellationToken` だけを使う。
+
+`StepTimeout` は CLI オプションではなく、エンジン実行時オプションとして扱う。
+
+`Retry` は全 Step 一律の retry 設定として扱う。
+
+`Retry` が `null`、または `Retry.MaxAttempts <= 1` の場合、retry は行わない。
+
+`Retry.MaxAttempts` は初回を含む最大試行回数であり、`MaxAttempts = 3` は最大 3 回の Step 本体実行を表す。
+
+`Retry` は CLI オプションまたは Config から直接指定しない。
+
+標準 Config 型と境界 Config プロパティ path は `WorkflowExecutionOptions` ではなく、Entry の `CompositeStep` メタ情報から取得する。
+
+CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `ConfigType`、`StepConfigRegistrations`、`EngineArguments.ConfigPath`、`EngineArguments.Settings` を使って Step 登録単位 Config を読み込む。Entry 全体 Config 互換 API を使う場合は、互換メタ情報の `ConfigType` を使う。
+
+`EngineArguments.Settings` は元の文字列を保持する。標準 Config に適用された後も、Step は CLI 指定値そのものを参照できる。
+
+YAML 解析器は実装時に .NET 依存を追加してよい。候補として `YamlDotNet` を利用できるが、設計は特定ライブラリに強く依存しない。
+
+### 14.6 Unit
+
+```csharp
+public readonly struct Unit
+{
+    public static readonly Unit Value = new Unit();
+}
+```
+
+### 14.7 型定義方針
+
+Step の入力、出力、Config は C# 型として `.csx` に定義する。
+
+Step 間で受け渡す値は `Message` として特別な基底型を要求しない。
+
+ただし、設計上は以下を推奨する。
+
+- `#nullable enable` を有効にする
+- 入出力値は `record` などの不変な型で定義する
+- 入出力値と Config は `DataAnnotations` による検証対象にできるようにする
+- 業務固有の複雑な検証が必要な場合は `IValidatableObject` を利用できるようにする
+
+Config は `StepContext` に登録した後、Run 中は読み取り専用のスナップショットとして扱う。
+
+Config を差し替える場合は、別名の値として登録するか、明示的な上書き規則を持つ Config 読み込み Step で行う。
 
 ---
 
-## 7. Message型定義
+## 15. 実行入口とファイル構成
 
-Message型はcsxで定義する。
+### 15.1 Entry
 
-```csharp
-#nullable enable
+ワークフローの実行入口は、名前付きの `CompositeStep` とする。
 
-using System.ComponentModel.DataAnnotations;
+CLI で実行入口を明示しない場合、エンジンは `Main` を既定の Entry 名として扱う。
 
-namespace Workflows.Messages;
-
-public sealed record OrderItem(
-    [Required]
-    string ItemId,
-
-    [Range(1, int.MaxValue)]
-    int Quantity
-);
-
-public sealed record OrderCreated(
-    [Required]
-    string OrderId,
-
-    [Required]
-    string CustomerId,
-
-    [MinLength(1)]
-    IReadOnlyList<OrderItem> Items
-);
-
-public sealed record ValidationResult(
-    bool IsValid,
-    string? Reason
-);
-
-public sealed record OrderProcessResult(
-    bool Success,
-    string Message
-);
+```bash
+engine run main.csx
+engine run main.csx --entry Build
+engine run main.csx --entry Deploy.Build
 ```
 
-Message型は以下を推奨する。
-
-- `#nullable enable` を有効にする。
-- `record` を使う。
-- 不変にする。
-- `System.ComponentModel.DataAnnotations` を使う。
-- 業務固有の複雑な検証が必要な場合は `IValidatableObject` を実装する。
-
----
-
-## 8. Config型定義
-
-Config型もcsxで定義する。
+`.csx` 上では以下のように名前付き Step を定義する。
 
 ```csharp
-#nullable enable
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, LoadResult>()
+        .WithConfig<MainConfig>()
+        .WithConfig<LoadStep.Config>("Load")
+        .Produce<ConvertInput>(x => new ConvertInput { Text = x.Text })
+    .Run<ConvertStep, ConvertResult>()
+        .WithConfig<ConvertStep.Config>("Convert")
+        .StoreAs();
 
-using System.ComponentModel.DataAnnotations;
-
-namespace Workflows.Messages;
-
-public sealed record FileWorkflowConfig(
-    [Required]
-    string TargetDirectory,
-
-    [Required]
-    string OutputDirectory,
-
-    string? TemporaryDirectory,
-
-    MailDefaults? Mail
-);
-
-public sealed record MailDefaults(
-    string SmtpHost,
-    int Port,
-    bool UseSsl,
-    string From
-);
-
-public sealed record SendMailConfig(
-    [Required]
-    string SmtpHost,
-
-    [Range(1, 65535)]
-    int Port,
-
-    bool UseSsl,
-
-    [Required]
-    string From
-);
+var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
+    .Run<DeployBuildStep, Unit>();
 ```
 
-Config型はMessage型と同じ検証対象である。
+エンジンはロード済み `.csx` から、指定 Entry 名に一致する `CompositeStep` を取得して実行する。
 
----
+Entry 名の解決は script 変数名ではなく、`CompositeStep` の公開名で行う。公開名は短い `Name` と完全修飾名の `QualifiedName` である。script 変数名は C# script 上の識別子であり、Entry の契約ではない。
 
-## 9. Step実装
+`CompositeStep.Define("Build", namespaceName: "Deploy")` の完全修飾名は `Deploy.Build` とする。CLI は `--entry Deploy.Build` で名前空間付き Entry を指定する。
 
-### 9.1 ConfigなしStep
+名前空間なしの既存 `CompositeStep.Define("Build")` は互換維持し、完全修飾名は短い名前と同じ `Build` とする。
 
-```csharp
-#nullable enable
+短い `--entry Build` は、名前空間なしの `Build` が存在する場合はその Entry へ解決する。名前空間なしの `Build` が存在しない場合は、短い名前が `Build` である Entry が 1 件だけなら互換解決する。複数の名前空間に同じ短い名前がある場合、短い `--entry Build` は曖昧として検証と実行を失敗させ、利用者に `Deploy.Build` のような完全修飾名指定を求める。
 
-#load "../shared/common.csx"
-#r "nuget: CsvHelper, 33.0.1"
+曖昧な短い Entry 指定は、完全修飾名の重複ではないため `DUPLICATE_STEP_NAME` ではなく `ENTRY_STEP_NOT_FOUND` とする。エラーメッセージには、短い Entry 名が複数候補へ一致したことと、完全修飾名を指定すべきことを含める。
 
-using Workflow.Abstractions;
-using Workflows.Messages;
+`#load` 先で定義された名前空間付き Entry も、Entry `.csx` に直接定義された Entry と同じ規則で解決する。
 
-public sealed class ValidateOrderStep
-    : WorkflowStep<OrderCreated, ValidationResult>
-{
-    public override Task<ValidationResult> ExecuteAsync(
-        OrderCreated input,
-        StepContext context)
-    {
-        var result = input.Items.Count > 0
-            ? new ValidationResult(true, null)
-            : new ValidationResult(false, "Order must have at least one item.");
+非同期 Step を含む Entry の通常実行では、エンジンは `ExecuteWorkflowAsync` を使って非同期 Step の完了を待つ。
 
-        return Task.FromResult(result);
-    }
-}
-```
+同期 Step だけの Entry では、既存の `ExecuteWorkflow` を維持する。
 
-### 9.2 ConfigありStep
+指定された Entry が存在しない場合は検証エラーとする。
 
-```csharp
-#nullable enable
+### 15.2 Step 名の一意性
 
-using Workflow.Abstractions;
-using Workflows.Messages;
+ロード済み `.csx` 全体で、実行対象として公開される `CompositeStep` の完全修飾名は一意でなければならない。
 
-public sealed class SendMailStep
-    : WorkflowStep<SendMailRequest, SendMailConfig, SendMailResult>
-{
-    public override Task<SendMailResult> ExecuteAsync(
-        SendMailRequest input,
-        SendMailConfig config,
-        StepContext context)
-    {
-        context.Logger.LogInformation(
-            "Sending mail. To={To}, SmtpHost={SmtpHost}, Port={Port}",
-            input.To,
-            config.SmtpHost,
-            config.Port);
+重複判定は完全修飾名単位とする。`Deploy.Build` と `Test.Build` は異なる完全修飾名なので共存できる。`Deploy.Build` が複数見つかった場合、エンジンは実行前の検証で `DUPLICATE_STEP_NAME` として失敗する。
 
-        return Task.FromResult(new SendMailResult(true));
-    }
-}
-```
+名前空間なしの `Build` と名前空間付きの `Deploy.Build` も異なる完全修飾名なので共存できる。この場合、短い `--entry Build` は名前空間なしの `Build` に解決する。
 
-### 9.3 CancellationTokenの扱い
+外部 `.csx` を `#load` した場合も、読み込み後の全体で同じ規則を適用する。
 
-Step実装は `context.CancellationToken` を尊重する。
+### 15.3 ファイル構成
 
-```csharp
-public override async Task<SendMailResult> ExecuteAsync(
-    SendMailRequest input,
-    SendMailConfig config,
-    StepContext context)
-{
-    context.CancellationToken.ThrowIfCancellationRequested();
-
-    await mailClient.SendAsync(input, config, context.CancellationToken);
-
-    return new SendMailResult(true);
-}
-```
-
-Step timeoutは協調キャンセルである。C#の任意Taskを安全に強制停止することはできないため、StepがCancellationTokenを無視した場合、実処理が継続する可能性がある。Step実装は冪等に設計することを推奨する。
-
----
-
-## 10. Binding式仕様
-
-### 10.1 Binding式の目的
-
-Binding式は、Step input、Step config、Control Stepの条件式、Workflow Config参照などで使用する軽量な式である。
-
-Binding式はC#コードではない。初期実装では、プロパティ参照と基本演算のみをサポートする。
-
-### 10.2 予約root識別子
-
-式中で使用できるroot識別子は以下とする。
-
-| 識別子 | 意味 |
-|---|---|
-| `flowInput` | 現在Flowの開始Input |
-| `previousOutput` | 直前StepのOutput。開始Stepでは未定義またはnull |
-| `current` | 現在Stepに渡されるInput。Step input binding解決後に使用可能 |
-| `workflowConfig` | Run 開始時に解決済みのWorkflow Config スナップショット |
-| `variables` | Run 開始時に渡された読み取り専用値 |
-| `config` | 現在Stepに渡されるConfig。条件式評価時に使用可能 |
-
-`input` は曖昧さを避けるため、式root識別子として使用しない。
-
-### 10.3 Step input bindingの評価スコープ
-
-Step input bindingは、Step Inputを決定するためにStep実行前に評価する。
-
-この時点で使用できるroot識別子は以下である。
+標準的な構成は以下とする。
 
 ```text
-flowInput
-previousOutput
-workflowConfig
-variables
+workflow-root/
+├── main.csx
+├── build.csx
+├── test.csx
+├── steps/
+│   ├── load-step.csx
+│   └── save-step.csx
+├── shared/
+│   └── common.csx
+├── config/
+│   └── appsettings.yaml
+└── lib/
+    └── custom-helper.dll
 ```
 
-`current` はStep input bindingの結果を表すため、Step input binding式の中では使用できない。
+`main.csx` はワークフロー定義の入口であり、必要な外部 `.csx` を `#load` する。
 
-例:
+相対パスの基準は、原則として実行対象に指定した Entry `.csx` の存在するディレクトリとする。
 
-```yaml
-input:
-  from: flowInput.Request
-```
+`#load` 内の相対パスは、`#load` を書いた `.csx` の存在するディレクトリを基準とする。
 
-```yaml
-input:
-  from: previousOutput.Customer
-```
+### 15.4 トップレベルステートメント
 
-```yaml
-input:
-  from: workflowConfig.TargetDirectory
-```
+Entry `.csx` と外部 `.csx` のトップレベルステートメントは、Step 定義、型定義、`using`、`#load`、`#r` に限定することを推奨する。
 
-### 10.4 Step input binding未指定時
+検証時にも `.csx` のロードや評価が必要になるため、トップレベルでファイル削除、外部通信、環境変更などの副作用を起こしてはならない。
 
-`input.from` が未指定の場合、Step Inputは以下の規則で決定する。
+副作用のあるトップレベルステートメントを完全には検出しない。
 
-| 対象Step | Step Input |
-|---|---|
-| Flowの開始Step | `flowInput` |
-| 2番目以降のStep | `previousOutput` |
+利用者は、同期処理を `IStep<TOut>.Execute` 内に置く。
 
-この規則により、線形Flowでは前StepのOutputが次StepのInputにそのまま渡る。
-
-### 10.5 Config bindingと条件式の評価スコープ
-
-Step Config binding、Control Step条件式では、Step Input解決後の `current` を使用できる。
-
-例:
-
-```yaml
-config:
-  provider: yaml
-  value:
-    condition: current.IsValid == true
-    then: accepted-flow
-    else: rejected-flow
-```
-
-### 10.6 サポートするプロパティ参照
-
-初期実装では以下をサポートする。
-
-```text
-flowInput
-flowInput.Property
-flowInput.Property.Child
-previousOutput
-previousOutput.Property
-current
-current.Property
-current.Property.Child
-workflowConfig
-workflowConfig.Property
-workflowConfig.Property.Child
-variables.Property
-config.Property
-```
-
-### 10.7 条件式の演算子
-
-条件式では以下をサポートする。
-
-```text
-==
-!=
->
->=
-<
-<=
-&&
-||
-!
-()
-```
-
-文字列、数値、真偽値、nullリテラルを扱う。
-
-例:
-
-```yaml
-condition: current.IsValid == true
-condition: current.Amount > 1000 && current.CustomerId != null
-condition: workflowConfig.Environment == "production"
-```
+非同期処理は `IAsyncStep<TOut>.ExecuteAsync` 内に置く。
 
 ---
 
-## 11. Step Config仕様
+## 16. csx 解決と参照方針
 
-### 11.1 Config bindingの基本形
+### 16.1 Dotnet.Script.Core の利用範囲
 
-Step Config bindingは `config.provider` で供給元を指定する。
+`Dotnet.Script.Core` は、`.csx` のロード、`#load` 解決、`#r` 解決、NuGet 復元、Roslyn コンパイルに使う。
 
-```yaml
-config:
-  provider: yaml
-  value:
-    key: value
-```
+Step 実行、`StepInput` 構築、Config 保持、検証、ログ、実行結果の生成はエンジン側で制御する。
 
-`provider` はConfig供給元を表すメタ情報である。Step固有Configの値は必ず `value` または各provider固有の項目に格納する。
+通常実行経路では、Step ごとに外部プロセスとして `dotnet script` CLI を起動しない。
 
-これにより、ForEachStepなどのStep固有Configに `source`、`itemsFrom`、`body` などのプロパティがあっても、Config供給元の指定と衝突しない。
+### 16.2 `#load` 解決
 
-### 11.2 YAML config
-
-```yaml
-steps:
-  - id: send-mail
-    script: steps/send-mail.csx
-    class: SendMailStep
-    config:
-      provider: yaml
-      value:
-        smtpHost: smtp.example.com
-        port: 587
-        useSsl: true
-        from: noreply@example.com
-```
-
-YAML configは静的設定として扱う。
-
-### 11.3 Message config
-
-Flow inputまたは現在Step Inputからconfigを渡す。
+ローカルファイルの `#load` に対応する。
 
 ```csharp
-namespace Workflows.Messages;
-
-public sealed record MailFlowInput(
-    SendMailRequest Request,
-    SendMailConfig Config
-);
+#load "./build.csx"
+#load "./steps/load-step.csx"
 ```
 
-```yaml
-steps:
-  - id: send-mail
-    script: steps/send-mail.csx
-    class: SendMailStep
-    input:
-      from: flowInput.Request
-    config:
-      provider: message
-      from: flowInput.Config
-```
-
-`provider: message` の `from` は、Binding式である。
-
-### 11.4 Workflow ConfigからのStep Config binding
-
-Step ConfigはWorkflow Configからも生成できる。
-
-```yaml
-steps:
-  - id: send-mail
-    script: steps/send-mail.csx
-    class: SendMailStep
-    config:
-      provider: workflow
-      from: workflowConfig.Mail
-```
-
-`provider: workflow` の `from` はWorkflow Configを起点とするBinding式である。
-
-### 11.5 YAML / Message / Workflow Configのmerge
-
-Step Configは複数供給元をmergeして生成できる。
-
-```yaml
-steps:
-  - id: send-mail
-    script: steps/send-mail.csx
-    class: SendMailStep
-    input:
-      from: flowInput.Request
-    config:
-      provider: merge
-      yaml:
-        smtpHost: smtp.example.com
-        port: 587
-        useSsl: true
-        from: noreply@example.com
-      message:
-        from: flowInput.ConfigOverride
-      workflow:
-        from: workflowConfig.Mail
-      merge:
-        strategy: deep
-        precedence:
-          - message
-          - workflow
-          - yaml
-        nullOverride: false
-```
-
-`precedence` は優先度の高い順に指定する。上記では `message` が最優先、`yaml` が最下位である。
-
-### 11.6 Step Config merge規則
-
-Step Config mergeは以下の規則で行う。
+解決規則は以下とする。
 
 | 項目 | 規則 |
-|---|---|
-| オブジェクト | `strategy: deep` の場合、プロパティ単位で再帰mergeする |
-| スカラー | 優先度の高い値で置換する |
-| 配列 / リスト | 優先度の高い値で全体を置換する |
-| null | `nullOverride: false` の場合は未指定扱いとする |
-| null | `nullOverride: true` の場合はnullで上書きする |
-| 未知キー | `validation.strictUnknownProperties` がtrueの場合はエラー |
+| --- | --- |
+| 相対パス基準 | `#load` を書いた `.csx` のディレクトリ |
+| パス正規化 | `..` とシンボリックリンクを解決した正規パス |
+| root 制限 | `workflow-root` 配下のみ許可 |
+| 循環読み込み | 検出して検証エラー |
+| 重複読み込み | 同一正規パスは 1 回だけ読み込む |
 
-初期実装では `strategy: deep` のみ必須対応とする。`strategy: shallow` は将来拡張とする。
+`dotnet-script` 互換の NuGet script パッケージ読み込みに対応する。
 
-### 11.7 Step Configの解決順序
-
-Step ConfigはStep実行前に以下の順で解決する。
-
-```text
-1. Step Input bindingを解決する
-2. Step Input検証を実行する
-3. Step定義のconfig.providerを読む
-4. YAML / Message / Workflow / merge のいずれかからraw config値を生成する
-5. Stepが要求するTConfigへbindする
-6. Config検証を実行する
-7. 検証済みConfigをStepへ渡す
+```csharp
+#load "nuget: Simple.Targets.Csx, 6.0.0"
 ```
 
-ConfigなしStepに `config` が指定された場合は検証時にエラーとする。
+文法は `#load "nuget: PackageId, Version"` のみとする。
 
-ConfigありStepに `config` が指定されていない場合、エンジンは以下の扱いとする。
+`#load "nuget: PackageId, Version, path/to/file.csx"` のようにパッケージ内 path をディレクティブで指定する独自文法は採用しない。
 
-- `TConfig` が `Unit` の場合は `Unit.Value` を渡す。
-- `TConfig` がnullableの場合はnullを許可する。
-- それ以外の場合は `CONFIG_BINDING_FAILED` とする。
+NuGet script パッケージのパッケージ内 `.csx` 探索、`contentFiles` または `content` 配下の script 選択、入口判定、`project.assets.json` 解析、実行時 assembly 解決は、`Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
+
+エンジン側では NuGet キャッシュの配置、パッケージ内 `contentFiles` 選択規則、`project.assets.json` 解析、実行時 assembly 解決を再実装しない。
+
+provider 契約は、`RuntimeDependency.Scripts` 相当のパッケージ script 解決情報、または最終コンパイル時に `NuGetSourceReferenceResolver` へ渡せる script 解決情報を返せる必要がある。
+
+`#load "nuget: ..."` のディレクティブを source に残す経路では、最終コンパイルに `NuGetSourceReferenceResolver` が有効な `ScriptOptions` または同等の `ScriptCompilationContext` を使う。
+
+ローカル `#load` の循環は、読み込み中の正規パス一覧で検出し、`SCRIPT_LOAD_CYCLE_DETECTED` とする。
+
+ローカル `#load` の重複は、同一正規パスを 1 回だけ読み込む。
+
+NuGet script 読み込みの循環は、パッケージ ID、解決済み version、パッケージ内 script path からなる script 識別子で扱う。
+
+ローカル script と NuGet script をまたぐ循環を検出できる場合も `SCRIPT_LOAD_CYCLE_DETECTED` とする。
+
+NuGet source 解決機構または Roslyn 側で循環が検出された場合も、識別できる範囲では `SCRIPT_LOAD_CYCLE_DETECTED` に正規化する。
+
+NuGet script 読み込みの重複は、同一パッケージ ID、解決済み version、パッケージ内 script path の script 識別子を 1 回だけ読み込む。
+
+同一パッケージの複数 script 入口やパッケージ内 script からの相対 `#load` の展開順は、`dotnet-script` の `NuGetSourceReferenceResolver` と script パッケージ解決規則に従う。
+
+### 16.3 `#r` と NuGet 参照
+
+以下を明示許可された場合に限り対応する。
+
+```csharp
+#r "System.Text.Json"
+#r "./lib/custom-helper.dll"
+#r "nuget: CsvHelper, 33.0.1"
+```
+
+参照規則は以下とする。
+
+| 項目 | 規則 |
+| --- | --- |
+| assembly 名参照 | 許可一覧に登録された名前のみ許可 |
+| ファイル参照 | 許可一覧に登録されたディレクトリ配下のみ許可 |
+| NuGet 参照 | 許可一覧に登録されたパッケージ ID とバージョンのみ許可 |
+| 浮動バージョン | 禁止 |
+| パッケージ参照元 | 既定の参照元または明示許可された参照元のみ許可 |
+
+NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` の仕組みを利用する。
+
+エンジン側では `dotnet restore` の起動、一時 `.csproj` の生成、`project.assets.json` の解析、実行時 assembly 解決を再実装しない。
+
+NuGet ロックファイルは `#r "nuget: package, version"` と `#load "nuget: package, version"` の再現性を対象とする。
+
+`#load "nuget: package, version"` も NuGet 直接参照として扱い、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
+
+`directReferences` はディレクティブ種別を区別しないパッケージ ID、version、参照元の正規化集合とし、`#r` と `#load` の両方から得た直接 NuGet パッケージ参照を含める。
+
+`#load "nuget: ..."` はパッケージ内 script を実行可能 source として取り込むが、新しい許可一覧を増やさず、NuGet `#r` と同じ許可済みパッケージ ID と version の規則を適用する。
+
+ロックファイルは Entry `.csx` の workflow root に置く YAML とし、ファイル名は `devo6.nuget.lock.yaml` とする。
+
+ロックファイルには以下を記録する。
+
+- 直接参照 (`directReferences`)
+- 解決済み依存関係 (`resolvedDependencies`)
+- 対象 (`targetFramework`)
+- 実行時識別子 (`runtimeIdentifier`)
+- パッケージ参照元 (`packageSources`)
+- `Dotnet.Script.Core` version
+
+絶対実行時 assembly path は実行環境に依存するため、ロックファイルには記録しない。
+
+ロック検証の順序は以下とする。
+
+1. 許可外 NuGet 参照、浮動バージョン、`dotnet-script` 互換でない NuGet `#load` 文法を `SCRIPT_REFERENCE_NOT_ALLOWED` として拒否する
+2. NuGet 直接参照がある場合、復元前に `devo6.nuget.lock.yaml` の欠落を `SCRIPT_NUGET_LOCK_MISSING` として拒否する
+3. 直接参照のパッケージ ID と version がロックファイルと一致しない場合、復元前に `SCRIPT_NUGET_LOCK_MISMATCH` として拒否する
+4. `Dotnet.Script.Core` による依存関係解決を行う
+5. 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする
+6. 解決済み依存関係または `metadata` がロックファイルと一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする
+
+リポジトリ側はロックファイルの読み書き、欠落、不一致、許可済み直接参照の完全一致、解決済み依存関係の比較だけを薄く持つ。
+
+通常の `dotnet test` が外部通信に依存しないよう、依存関係 provider は注入できる設計にする。
+
+本番 provider は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` を使い、検査 provider は固定データを返す。
+
+通常検査では偽 provider などの固定データを使い、外部 NuGet source への通信を必須にしない。
+
+必要な場合だけ、ローカルの NuGet 参照元を使う追加検証を分けて用意する。
+
+ただし、NuGet 参照は実行できるコードを増やすため、信頼済みワークフローでのみ使う。
+
+### 16.4 AssemblyLoadContext
+
+ワークフロー単位で `AssemblyLoadContext` を分離してよい。
+
+エンジンが公開する API の assembly はホスト側と共有する。
+
+Script 側で公開 API assembly の別コピーが読み込まれた場合、型名が同じでも CLR 上は別型になる。
+
+その場合、`IStep<TOut>`、`StepInput`、`StepContext` の受け渡しが壊れるため、検証エラーとする。
+
+### 16.5 キャッシュ
+
+コンパイルキャッシュを使う場合、最低限以下をキャッシュキーに含める。
+
+- Entry `.csx` の正規パスと内容ハッシュ
+- `#load` された全 `.csx` の正規パスと内容ハッシュ
+- `#r` の参照一覧
+- `#load "nuget: ..."` から解決されたパッケージ script のパッケージ ID、version、パッケージ内 script 識別子
+- NuGet パッケージ ID、バージョン、参照元
+- エンジンのバージョン
+
+いずれかが変わった場合、該当キャッシュは無効化する。
+
+`Dotnet.Script.DependencyModel.Context.CachedRestorer` は復元結果を再利用するための性能キャッシュであり、利用者向け NuGet ロックファイルではない。
+
+`script.csproj.cache` や `project.assets.json` をリポジトリの公開ロックファイル仕様として扱わない。
+
+### 16.6 信頼境界
+
+`.csx` は信頼済みワークフローのみを実行対象とする。
+
+未信頼ユーザーがアップロードした `.csx` を、このエンジンで直接実行してはならない。
+
+以下は提供しない。
+
+- 完全なサンドボックス
+- プロセス分離
+- OS 権限制御
+- ネットワーク制限
+- ファイル入出力制限
+- NuGet 利用制限の完全強制
+- 署名検証
+- シークレットアクセス制限
+
+`.csx` は任意の C# コードであり、ファイル入出力、ネットワークアクセス、環境変数参照、プロセス起動、リフレクション、シークレットアクセスを行える可能性がある。
+
+参照許可一覧は誤用を減らすための検証規則であり、未信頼コード実行を安全化する境界ではない。
+
+`Dotnet.Script.Core` は依存解決とコンパイルを簡略化するが、セキュリティ境界ではない。
 
 ---
 
-## 12. Workflow Config仕様
+## 17. 検証
 
-### 12.1 基本方針
+### 17.1 検証コマンド
 
-Workflow Configは、Workflow実行全体で共有する設定である。
-
-Workflow ConfigはStep間で受け渡す業務Messageではなく、Run単位の実行環境設定として扱う。
-
-主な用途は以下である。
-
-- Workflowを実行する対象フォルダ
-- 成果物の出力先フォルダ
-- 一時作業フォルダ
-- 実行環境名
-- 外部ツールのパス
-- 複数Stepで共有する共通パラメータ
-
-Workflow ConfigはWorkflow開始時に一度だけ解決し、Run中は不変のスナップショットとして扱う。
-
-### 12.2 Workflow Config型
-
-Workflow Config型もcsxで定義する。
-
-```csharp
-#nullable enable
-
-using System.ComponentModel.DataAnnotations;
-
-namespace Workflows.Messages;
-
-public sealed record FileWorkflowConfig(
-    [Required]
-    string TargetDirectory,
-
-    [Required]
-    string OutputDirectory,
-
-    string? TemporaryDirectory
-);
-```
-
-Workflow Config型は、Message型やStep Config型と同じ検証対象である。
-
-### 12.3 YAML既定値
-
-Workflow定義には、Workflow Configの既定値を書ける。
-
-```yaml
-config:
-  type: Workflows.Messages.FileWorkflowConfig
-  value:
-    targetDirectory: ./input
-    outputDirectory: ./output
-    temporaryDirectory: ./tmp
-```
-
-YAMLに書かれたWorkflow Configは、定義側の既定値として扱う。
-
-### 12.4 実行時Config
-
-Workflow Configは、実行時に差し替えられる。
-
-CLI例:
+CLI は実行前検証のために `validate` を提供する。
 
 ```bash
-workflow run workflow.yaml --input input.yaml --config run-config.yaml
+engine validate main.csx
+engine validate main.csx --entry Build
+engine validate main.csx --entry Deploy.Build
+engine validate main.csx --config appsettings.yaml
 ```
 
-`run-config.yaml` 例:
-
-```yaml
-targetDirectory: /work/orders/2026-06-02
-outputDirectory: /work/results/2026-06-02
-temporaryDirectory: /work/tmp/2026-06-02
-```
-
-同じWorkflow定義を使いながら、実行対象フォルダや出力先をRunごとに変更できる。
-
-### 12.5 実行時Override
-
-CLIではkey-value形式のoverrideを指定できる。
-
-```bash
-workflow run workflow.yaml \
-  --input input.yaml \
-  --config run-config.yaml \
-  --config-override targetDirectory=/tmp/job-001 \
-  --config-override temporaryDirectory=null
-```
-
-Overrideは常に最優先とする。
+### 17.2 検証対象
 
-### 12.6 Workflow Config merge規則
+検証対象は以下とする。
 
-Workflow Configは以下の層から構成する。
+- Entry `.csx` の存在
+- 指定 Entry 名が `CompositeStep` の公開名へ解決できること
+- `CompositeStep` の完全修飾名の重複
+- `#load` の参照解決
+- `#load` の循環
+- `#r` の許可判定
+- NuGet 参照の許可判定
+- NuGet ロックファイルの欠落
+- NuGet ロックファイルと直接参照の不一致
+- NuGet ロックファイルと解決済み依存関係の不一致
+- `.csx` のコンパイル
+- `IStep<TOut>` または `IAsyncStep<TOut>` 実装の確認
+- `StepInput` と `StepContext` の API 互換
+- Config ファイル指定時の存在確認
 
-```text
-Layer 1: workflow.yaml の config.value
-Layer 2: WorkflowRunOptions.WorkflowConfig または --config run-config.yaml
-Layer 3: WorkflowRunOptions.WorkflowConfigOverrides または --config-override
-```
+実行時の `StepInput` 内容に依存する型検証は、実行時に行う。
 
-標準優先順位は以下とする。
+Entry 解決と重複検証は、Entry `.csx` と `#load` 先を読み込んだ全 `CompositeStep` を対象にする。
 
-```text
-Layer 3 > Layer 2 > Layer 1
-```
+`--entry Deploy.Build` は `CompositeStep.QualifiedName` と完全一致する Entry を要求する。
 
-`config.runtime.precedence` はLayer 1とLayer 2の優先関係を指定する。Layer 3のOverrideは常に最優先であり、`precedence` の影響を受けない。
+短い `--entry Build` は、名前空間なしの `Build` があればそれを優先し、なければ短い名前が一意な Entry に互換解決する。複数候補がある場合は `ENTRY_STEP_NOT_FOUND` として失敗させ、メッセージで完全修飾名指定を促す。
 
-```yaml
-config:
-  type: Workflows.Messages.FileWorkflowConfig
-  value:
-    targetDirectory: ./input
-    outputDirectory: ./output
-    temporaryDirectory: ./tmp
-  runtime:
-    merge: deep
-    precedence: runtime
-    nullOverride: false
-```
+完全修飾名が重複する場合は、指定 Entry の有無にかかわらず `DUPLICATE_STEP_NAME` として失敗する。
 
-| 項目 | 値 | 説明 |
-|---|---|---|
-| `merge` | `deep` | オブジェクトを再帰mergeする |
-| `precedence` | `runtime` | 実行時ConfigをYAML既定値より優先する |
-| `precedence` | `yaml` | YAML既定値を実行時Configより優先する |
-| `nullOverride` | `false` | nullは未指定扱いとする |
-| `nullOverride` | `true` | nullで上書きする |
+`validate` は Config path の存在確認までを必須とする。Config 型変換、`--set` の override 適用、Config 値検証は `validate` では行わず、`run` 時に行う。
 
-配列 / リストは結合せず、優先度の高い値で全体を置換する。
+### 17.3 StepInput 検証
 
-### 12.7 C# API
+`StepInput.Get<T>()` と `StepInput.Get<T>(name)` は、値が存在しない場合や型が一致しない場合に失敗する。
 
-Workflow実行時にWorkflow Configを渡すため、Run単位の設定型を持つ。
+失敗時は Step を実行せず、エンジンの実行結果を失敗にする。
 
-```csharp
-public sealed class WorkflowRunOptions
-{
-    public object? WorkflowConfig { get; init; }
+`TryGet` は失敗を戻り値で返し、エンジンの失敗にはしない。
 
-    public IReadOnlyDictionary<string, object?> WorkflowConfigOverrides { get; init; }
-        = new Dictionary<string, object?>();
+### 17.4 Config 検証
 
-    public IReadOnlyDictionary<string, object?> Variables { get; init; }
-        = new Dictionary<string, object?>();
-}
-```
+CLI `run` では、Entry が Step 登録単位 Config API または Entry 全体 Config 互換 API を使う場合に標準 Config 読み込みを行う。
 
-エンジンは以下の順でWorkflow Configを解決する。
+`--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
 
-```text
-1. workflow.yaml の config.value を読む
-2. WorkflowRunOptions.WorkflowConfig を読む
-3. WorkflowRunOptions.WorkflowConfigOverrides を読む
-4. config.runtime.merge / precedence / nullOverride に基づきmergeする
-5. Workflow Config型へbindする
-6. Workflow Config検証を実行する
-7. 解決済みsnapshotをRunに固定する
-```
+Step 登録単位 Config API では、`--config` の YAML 全体を CompositeStep 境界 Config 型に変換する。その後、`--set` を境界 Config 型のプロパティ path override として適用し、`DataAnnotations` と `IValidatableObject` を境界 Config 型から検証する。
 
-### 12.8 Stepからの参照
+宣言済み `sectionPath` が YAML に存在しない場合は、Config 型の生成や override 適用へ進まず、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
 
-Stepは `StepContext` からWorkflow Configを参照できる。
+Step 登録単位 Config があるのに CompositeStep 境界 Config 型が宣言されていない場合は、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
 
-```csharp
-public sealed class ScanFilesStep
-    : WorkflowStep<Unit, ScanFilesResult>
-{
-    public override Task<ScanFilesResult> ExecuteAsync(
-        Unit input,
-        StepContext context)
-    {
-        var workflowConfig =
-            context.GetWorkflowConfig<FileWorkflowConfig>();
+境界 Config と宣言済み Step Config の対応はすべて最初の Step 実行前に検証する。1 つでも検証に失敗した場合、最初の Step は実行せず `CONFIG_LOAD_FAILED` とする。
 
-        var targetDirectory = workflowConfig.TargetDirectory;
+検証に成功した Step Config は、Step 専用引数ではなく対象 Step の実行直前に `StepContext` に登録する。
 
-        ...
-    }
-}
-```
+検証に失敗した Config は `StepContext` に登録してはならない。
 
-Workflow Configは読み取り専用として扱う。StepがWorkflow Configを書き換えて後続Stepの挙動を変えることはできない。
+宣言済み `sectionPath` が YAML 上に存在し、その値が空または `{}` の場合は、Step Config 型を生成でき、検証に通れば成功とする。検証に失敗した場合は `CONFIG_LOAD_FAILED` とする。
 
-### 12.9 path値の扱い
+Entry 全体 Config 互換 API では、従来どおり YAML 全体を `TConfig` に型変換し、`--set` key 全体を `TConfig` へ適用してから検証する。
 
-Workflow Config内のフォルダやファイルパスは通常のConfig値として扱う。
+ユーザーが定義した Config 読み込み Step を使う場合は、その Step 内で型変換と検証を行う。
 
-相対パスの基準は、原則として `workflow.yaml` が存在するディレクトリである。
+### 17.5 Step 出力検証
 
-絶対パスが指定された場合、エンジンはその値をそのまま扱う。
+Step の戻り値が `null` であり、`TOut` が null を許さない型である場合、エンジンは Step 失敗として扱う。
 
-実行時Configで対象フォルダを差し替える場合は、絶対パスを推奨する。
+Step 出力に `DataAnnotations` または `IValidatableObject` が使われている場合、エンジンは検証対象にできる。
 
----
+Step 出力の `DataAnnotations` と `IValidatableObject` による自動検証は標準実行契約には含めない。
 
-## 13. Binding / Config結び付けの命名規則
+ただし、検証を無効にした場合でも、`Produce` の選択関数が失敗した場合は Step 失敗として扱う。
 
-YAML keyとC# プロパティ / コンストラクタ パラメータの対応は以下とする。
+### 17.6 検証エラー形式
 
-- YAML keyはキャメルケースを推奨する。
-- C# プロパティ / コンストラクタ パラメータはパスカルケースを推奨する。
-- Bindingは大文字小文字を区別しないとする。
-- キャメルケースとパスカルケースは同一名として扱う。
-- スネークケース対応は初期実装では任意とする。
-- 不明なkeyは `validation.strictUnknownProperties` がtrueの場合にエラーとする。
-
-例:
-
-```yaml
-outputDirectory: ./output
-```
-
-は以下に結び付けられる。
-
-```csharp
-public sealed record FileWorkflowConfig(
-    string OutputDirectory
-);
-```
-
-C#レコードのプライマリコンストラクタ引数に対しても同じ規則を適用する。
-
----
-
-## 14. 検証仕様
-
-### 14.1 基本方針
-
-Message型およびConfig型の検証はエンジン側で行う。
-
-ユーザーStepは、入力MessageおよびConfigが検証済みであることを前提に実装できる。
-
-### 14.2 検証実行タイミング
-
-エンジンは以下のタイミングで検証を行う。
-
-```text
-Workflow Config解決後
-Workflow開始Input
-Flow呼び出し前Input
-Flow終了時Output
-Step実行前Input
-Step実行前Config
-Step実行後Output
-Control Stepの参照先Flow入出力
-```
-
-### 14.3 検証対象
-
-| 対象 | 内容 |
-|---|---|
-| 型一致 | 期待型と実際の型が一致するか |
-| nullability | non-nullable参照型にnullが入っていないか |
-| DataAnnotations | `[Required]`, `[Range]`, `[StringLength]`, `[MinLength]` など |
-| ネスト型 | 子Message/Configも再帰的に検証する |
-| コレクション要素 | `IEnumerable<T>` の各要素を検証する |
-| IValidatableObject | 独自検証を実行する |
-| 未知プロパティ | YAMLに未知のkeyが含まれていないか |
-
-### 14.4 nullable参照型検証
-
-csxでは `#nullable enable` を推奨する。
-
-エンジンは `NullabilityInfoContext` を用いて、non-nullable参照型にnullが入っていないことを検証する。
-
-`[Required]` とnon-nullable参照型の両方が指定されている場合、どちらか一方でも違反すれば検証失敗とする。
-
-### 14.5 検証設定
-
-```yaml
-validation:
-  strictUnknownProperties: true
-  validateStepInputs: true
-  validateStepConfigs: true
-  validateStepOutputs: true
-  validateFlowInputs: true
-  validateFlowOutputs: true
-  nullableReferenceTypes: true
-```
-
-初期実装の推奨デフォルトは以下とする。
-
-```text
-strictUnknownProperties = true
-validateStepInputs = true
-validateStepConfigs = true
-validateStepOutputs = true
-validateFlowInputs = true
-validateFlowOutputs = true
-nullableReferenceTypes = true
-```
-
-### 14.6 検証失敗時
-
-Step実行前のInput / Config検証に失敗した場合、Stepは実行しない。
-
-Step実行後のOutput検証に失敗した場合、そのStepは失敗扱いとする。
-
-Workflow Config検証に失敗した場合、Workflowは開始しない。
-
-### 14.7 検証エラー形式
+検証エラーは最低限以下を持つ。
 
 ```csharp
 public sealed class ValidationError
@@ -1440,1617 +1629,591 @@ public sealed class ValidationError
 }
 ```
 
-例:
-
-```text
-$.OrderId: Required
-$.Items[0].Quantity: Range
-$.Config.SmtpHost: Required
-```
+`Path` には、`StepInput` の型名、名前付きキー、Config のプロパティのパス、Step 名など、利用者が原因を特定できる情報を入れる。
 
 ---
 
-## 15. Flow仕様
+## 18. 実行結果、ログ、トレース
 
-### 15.1 Flow実行
+### 18.1 実行結果
 
-Flowは以下の順で実行される。
+エンジンは実行後に `WorkflowResult` を返す。
 
-```text
-Flow Input検証
-  ↓
-start Step解決
-  ↓
-Step Input binding
-  ↓
-Step Input検証
-  ↓
-Step Config binding
-  ↓
-Step Config検証
-  ↓
-Step実行
-  ↓
-Step Output検証
-  ↓
-next解決
-  ↓
-次Step実行または終端到達
-  ↓
-Flow Output検証
-```
-
-### 15.2 `end`
-
-`end` は仮想Stepである。
-
-```yaml
-next:
-  to: end
-```
-
-`end` に到達した時点で、直前StepのOutputをFlow Outputとする。
-
-`end` は予約Step IDであり、通常Stepの `id` として使用できない。
-
-### 15.3 Flow Output型検証
-
-Flow定義の `output` と、`end` に到達した直前StepのOutput型は一致しなければならない。
-
-初期実装では完全一致を要求する。
-
-```text
-LastStep.OutputType == Flow.OutputType
-```
-
-将来的には `IsAssignableFrom` による代入互換を許可してもよい。
-
-### 15.4 Flow接続制約
-
-Step AからStep Bへ接続される場合、以下を満たす必要がある。
-
-```text
-StepA.OutputType == StepB.InputType
-```
-
-ただし、Step Bに `input.from` が指定されている場合は、`input.from` の評価結果型がStep BのInput型と一致しなければならない。
-
-初期実装では完全一致を要求する。
-
----
-
-## 16. 入れ子Flow仕様
-
-FlowはStepとして呼び出せる。
-
-```yaml
-- id: run-invoice-flow
-  flow: create-invoice-flow
-  next:
-    to: end
-```
-
-この定義は内部的には `FlowCallStep<TInput, TOutput>` として扱われる。
-
-型推論規則は以下とする。
-
-```text
-FlowCallStep.InputType  = 呼び出し先Flow.InputType
-FlowCallStep.OutputType = 呼び出し先Flow.OutputType
-```
-
-`input.from` が指定されている場合、binding結果型が呼び出し先Flow.InputTypeと一致しなければならない。
-
-### 16.1 Flow呼び出し制限
-
-循環呼び出しや無限再帰を避けるため、実行制限を持つ。
-
-```yaml
-limits:
-  maxFlowDepth: 32
-```
-
-エンジンはFlow呼び出し深度が制限を超えた場合、実行を失敗させる。
-
-エラーコード:
-
-```text
-FLOW_DEPTH_EXCEEDED
-```
-
----
-
-## 17. Control Step仕様
-
-### 17.1 基本方針
-
-If、ForEach、While、Switch、ParallelStepなどは、YAML予約構文ではなく通常Stepとして提供する。
-
-エンジン本体はYAML構文としての制御構文を持たない。
-
-一方で、Built-in Control Stepの型検証には、Stepごとの型推論規則が必要である。Built-in Stepは型推論Descriptorを提供できる。
-
-```csharp
-public interface IBuiltInStepTypeResolver
-{
-    StepTypeInfo ResolveTypes(
-        StepDefinition step,
-        FlowDefinition currentFlow,
-        WorkflowDefinition workflow,
-        TypeResolutionContext context);
-}
-
-public sealed record StepTypeInfo(
-    Type InputType,
-    Type? ConfigType,
-    Type OutputType);
-```
-
-このDescriptorはYAML構文を特別扱いするものではなく、Built-in Stepの型メタデータを解決するための仕組みである。
-
-### 17.2 IfStep
-
-YAML例:
-
-```yaml
-- id: branch
-  use: Workflow.Control.IfStep
-  config:
-    provider: yaml
-    value:
-      condition: current.IsValid == true
-      then: accepted-flow
-      else: rejected-flow
-  next:
-    to: end
-```
-
-IfStepのConfig型例:
-
-```csharp
-public sealed record IfStepConfig(
-    string Condition,
-    string Then,
-    string Else
-);
-```
-
-型推論規則:
-
-```text
-IfStep.InputType  = Stepに渡されるInput型
-IfStep.ConfigType = IfStepConfig
-IfStep.OutputType = then Flow OutputType
-```
-
-型制約:
-
-```text
-then Flow InputType  == IfStep InputType
-else Flow InputType  == IfStep InputType
-then Flow OutputType == else Flow OutputType
-IfStep OutputType    == then Flow OutputType
-```
-
-初期実装では完全一致を要求する。
-
-IfStepは実行時に `condition` を評価し、trueの場合は `then` Flow、falseの場合は `else` Flowを実行する。実行した子FlowのOutputをIfStepのOutputとして返す。
-
-### 17.3 ForEachStep
-
-YAML例:
-
-```yaml
-- id: process-items
-  use: Workflow.Control.ForEachStep
-  outputType: Workflows.Messages.ProcessItemsResult
-  config:
-    provider: yaml
-    value:
-      itemsFrom: current.Items
-      body: process-item-flow
-      resultProperty: Items
-      mode: sequential
-  next:
-    to: end
-```
-
-ForEachStepのConfig型例:
-
-```csharp
-public sealed record ForEachStepConfig(
-    string ItemsFrom,
-    string Body,
-    string ResultProperty,
-    string Mode = "sequential",
-    int? MaxDegreeOfParallelism = null
-);
-```
-
-`body` に指定するFlow例:
-
-```yaml
-- id: process-item-flow
-  input: Workflows.Messages.OrderItem
-  output: Workflows.Messages.ProcessedItem
-  start: process-item
-  steps:
-    - id: process-item
-      script: steps/process-item.csx
-      class: ProcessItemStep
-      next:
-        to: end
-```
-
-型推論規則:
-
-```text
-ForEachStep.InputType        = Stepに渡されるInput型
-ForEachStep.ConfigType       = ForEachStepConfig
-itemsFrom評価結果型          = IEnumerable<TItem>
-body Flow InputType          == TItem
-body Flow OutputType         = TBodyOutput
-ForEachStep.OutputType       = YAMLの outputType
-```
-
-`outputType` は必須とする。
-
-`resultProperty` は、`outputType` のプロパティのうち、`IEnumerable<TBodyOutput>` または代入互換な型でなければならない。
-
-初期実装では `mode: sequential` のみ必須対応とする。
-
-将来拡張として以下を許可する。
-
-```yaml
-mode: parallel
-maxDegreeOfParallelism: 4
-```
-
-### 17.4 WhileStep
-
-WhileStepは将来拡張として提供する。
-
-```yaml
-- id: retry-until-complete
-  use: Workflow.Control.WhileStep
-  config:
-    provider: yaml
-    value:
-      condition: current.IsCompleted == false
-      body: polling-flow
-      maxIterations: 10
-```
-
-初期実装ではWhileStepは必須対応範囲に含めない。
-
-### 17.5 SwitchStep / ParallelStep / TryCatchStep
-
-以下は将来拡張とする。
-
-- `Workflow.Control.SwitchStep`
-- `Workflow.Control.ParallelStep`
-- `Workflow.Control.TryCatchStep`
-
-これらを追加する場合も、YAML予約構文ではなく通常Stepとして実装する。
-
----
-
-## 18. 型検証仕様
-
-### 18.1 Script Step型推論
-
-Script Stepでは、エンジンが継承元から型を推論する。
-
-```csharp
-public sealed class MyStep
-    : WorkflowStep<MyInput, MyOutput>
-```
-
-または、
-
-```csharp
-public sealed class MyStep
-    : WorkflowStep<MyInput, MyConfig, MyOutput>
-```
-
-### 18.2 Built-in Step型推論
-
-Built-in Stepは、登録時に型情報または型推論Descriptorを提供する。
-
-固定型のBuilt-in Stepは登録時に型を持つ。
-
-Control StepのようにYAML定義や参照先Flowから型が決まるStepは、`IBuiltInStepTypeResolver` により型を解決する。
-
-### 18.3 YAML明示型
-
-デバッグ用途として、YAMLにInput / Config / Output型を任意で明示できる。
-
-```yaml
-- id: validate-order
-  script: steps/validate-order.csx
-  class: ValidateOrderStep
-  inputType: Workflows.Messages.OrderCreated
-  outputType: Workflows.Messages.ValidationResult
-```
-
-この場合、エンジンはC#またはBuilt-in Step Descriptorから推論した型とYAMLの型が一致するか検証する。
-
-不一致の場合は `TYPE_MISMATCH` とする。
-
----
-
-## 19. エラー処理
-
-### 19.1 Step失敗条件
-
-Stepは以下の場合に失敗する。
-
-- csxコンパイルに失敗した。
-- Step クラス探索に失敗した。
-- Stepインスタンス作成に失敗した。
-- input bindingに失敗した。
-- input検証に失敗した。
-- config bindingに失敗した。
-- config検証に失敗した。
-- Step実行中に例外が発生した。
-- timeoutした。
-- output検証に失敗した。
-- next解決に失敗した。
-- 型不一致が発生した。
-- Control Stepの参照先Flow検証に失敗した。
-
-### 19.2 retry
-
-Step単位でretryを指定できる。
-
-```yaml
-steps:
-  - id: send-mail
-    script: steps/send-mail.csx
-    class: SendMailStep
-    retry:
-      maxAttempts: 3
-      interval: 00:00:05
-```
-
-`maxAttempts` は初回実行を含む回数とする。
-
-retry対象は以下とする。
-
-- Step実行中に発生した一時的例外。
-- `WorkflowStepException` のうち `Retryable == true` のもの。
-- timeoutはStep設定によりretry対象に含めてもよい。
-
-retry対象外は以下とする。
-
-- YAML 解析エラー
-- Workflow schema エラー
-- csx コンパイルエラー
-- Step クラス未検出
-- 型不一致
-- Input binding エラー
-- Config binding エラー
-- Input検証エラー
-- Config検証エラー
-- Output検証エラー
-- Flow 未検出
-- Step 未検出
-- Condition 構文エラー
-
-### 19.3 timeout
-
-```yaml
-steps:
-  - id: send-mail
-    script: steps/send-mail.csx
-    class: SendMailStep
-    timeout: 00:00:30
-```
-
-Step timeout時は `StepContext.CancellationToken` をキャンセルし、Stepを失敗扱いにする。
-
-timeoutは協調キャンセルであり、強制停止ではない。
-
-### 19.4 エラーコード
-
-代表的なエラーコードは以下とする。
-
-```text
-YAML_PARSE_FAILED
-WORKFLOW_SCHEMA_INVALID
-SCRIPT_COMPILE_FAILED
-SCRIPT_DIRECTIVE_NOT_ALLOWED
-SCRIPT_LOAD_FAILED
-SCRIPT_LOAD_CYCLE_DETECTED
-SCRIPT_REFERENCE_NOT_ALLOWED
-SCRIPT_NUGET_RESTORE_FAILED
-SCRIPT_ABSTRACTIONS_IDENTITY_MISMATCH
-STEP_CLASS_NOT_FOUND
-STEP_CREATION_FAILED
-FLOW_NOT_FOUND
-STEP_NOT_FOUND
-DUPLICATE_FLOW_ID
-DUPLICATE_STEP_ID
-RESERVED_STEP_ID
-CONFIG_BINDING_FAILED
-INPUT_BINDING_FAILED
-CONDITION_EVALUATION_FAILED
-CONDITION_SYNTAX_ERROR
-NEXT_RESOLUTION_FAILED
-MESSAGE_VALIDATION_FAILED
-CONFIG_VALIDATION_FAILED
-WORKFLOW_CONFIG_VALIDATION_FAILED
-WORKFLOW_CONFIG_TYPE_MISMATCH
-TYPE_MISMATCH
-STEP_EXECUTION_FAILED
-STEP_TIMEOUT
-STEP_RETRY_EXHAUSTED
-FLOW_DEPTH_EXCEEDED
-UNSUPPORTED_CONFIG_PROVIDER
-UNSUPPORTED_BUILTIN_STEP
-CONTROL_STEP_TYPE_RESOLUTION_FAILED
-TRACE_SERIALIZATION_FAILED
-```
-
----
-
-## 20. ログ仕様
-
-### 20.1 基本方針
-
-ログはエンジンで独自実装しない。
-
-エンジンは `Microsoft.Extensions.Logging` の `ILogger` / `ILoggerFactory` を利用する。
-
-ログ出力先、フォーマット、永続化、転送は以下のようなlogger providerに委譲する。
-
-```text
-Serilog
-NLog
-log4net
-Console Logger
-Debug Logger
-OpenTelemetry
-Application Insights
-```
-
-### 20.2 StepContext.Logger
-
-ユーザーStepは `StepContext.Logger` を使ってログを出力する。
-
-```csharp
-context.Logger.LogInformation(
-    "Processing order. OrderId={OrderId}",
-    input.OrderId);
-```
-
-### 20.3 構造化ログ
-
-ログは文字列連結ではなく、構造化ログを前提とする。
-
-推奨:
-
-```csharp
-logger.LogInformation(
-    "Step started. WorkflowId={WorkflowId}, RunId={RunId}, FlowId={FlowId}, StepId={StepId}",
-    workflowId,
-    runId,
-    flowId,
-    stepId);
-```
-
-非推奨:
-
-```csharp
-logger.LogInformation($"Step started. WorkflowId={workflowId}");
-```
-
-### 20.4 ログのスコープ
-
-Workflow / Flow / Step の文脈は `BeginScope` で付与する。
-
-```csharp
-using var workflowScope = logger.BeginScope(new Dictionary<string, object?>
-{
-    ["WorkflowId"] = workflowId,
-    ["RunId"] = runId
-});
-
-using var flowScope = logger.BeginScope(new Dictionary<string, object?>
-{
-    ["FlowId"] = flowId
-});
-
-using var stepScope = logger.BeginScope(new Dictionary<string, object?>
-{
-    ["StepId"] = stepId,
-    ["StepClass"] = stepClassName,
-    ["Attempt"] = attempt
-});
-```
-
-### 20.5 エンジン標準ログイベント
-
-```csharp
-public static class WorkflowLogEvents
-{
-    public static readonly EventId WorkflowStarted = new(1000, nameof(WorkflowStarted));
-    public static readonly EventId WorkflowCompleted = new(1001, nameof(WorkflowCompleted));
-    public static readonly EventId WorkflowFailed = new(1002, nameof(WorkflowFailed));
-
-    public static readonly EventId FlowStarted = new(2000, nameof(FlowStarted));
-    public static readonly EventId FlowCompleted = new(2001, nameof(FlowCompleted));
-    public static readonly EventId FlowFailed = new(2002, nameof(FlowFailed));
-
-    public static readonly EventId StepStarted = new(3000, nameof(StepStarted));
-    public static readonly EventId StepCompleted = new(3001, nameof(StepCompleted));
-    public static readonly EventId StepFailed = new(3002, nameof(StepFailed));
-    public static readonly EventId StepRetrying = new(3003, nameof(StepRetrying));
-    public static readonly EventId StepTimedOut = new(3004, nameof(StepTimedOut));
-
-    public static readonly EventId MessageValidationFailed = new(4000, nameof(MessageValidationFailed));
-    public static readonly EventId ConfigValidationFailed = new(4001, nameof(ConfigValidationFailed));
-    public static readonly EventId TypeMismatch = new(4002, nameof(TypeMismatch));
-}
-```
-
-### 20.6 ログ設定
-
-エンジンは `ILoggerFactory` を外部から受け取る。
-
-```csharp
-public sealed class WorkflowEngineOptions
-{
-    public ILoggerFactory LoggerFactory { get; init; }
-        = NullLoggerFactory.Instance;
-}
-```
-
-エンジン本体はSerilog、NLog、log4netなどの具体実装に直接依存しない。
-
----
-
-## 21. 実行結果とトレース
-
-ログとExecutionTraceは分離する。
-
-| 要素 | 役割 |
-|---|---|
-| ログ | 実行中の観測、障害調査 |
-| ExecutionTrace | 実行結果として保存・表示可能な構造化履歴 |
-
-### 21.1 Trace 取得方針
-
-Input / Output / ConfigをTraceに保存するかどうかは明示的な方針で制御する。
-
-```yaml
-trace:
-  captureInputs: false
-  captureOutputs: true
-  captureConfigs: false
-  maxValueSizeBytes: 32768
-  redaction:
-    paths:
-      - $.password
-      - $.token
-      - $.smtpHost
-      - $.connectionString
-```
-
-推奨デフォルトは以下とする。
-
-```text
-captureInputs = false
-captureOutputs = false
-captureConfigs = false
-```
-
-理由は以下である。
-
-- 個人情報や秘密情報がTraceに残る可能性がある。
-- 巨大オブジェクトによりメモリを圧迫する可能性がある。
-- 循環参照によりシリアライズできない可能性がある。
-- 連続入出力、ファイルハンドル、外部リソース参照が混ざる可能性がある。
-
-### 21.2 WorkflowResult
+`WorkflowResult` は最低限以下を持つ。
 
 ```csharp
 public sealed class WorkflowResult
 {
-    public string WorkflowId { get; init; } = "";
-    public string RunId { get; init; } = "";
-    public WorkflowStatus Status { get; init; }
-    public FlowExecutionResult RootFlow { get; init; } = default!;
+    public string EntryName { get; init; } = "";
+    public bool Succeeded { get; init; }
+    public string? ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
+    public ExecutionTrace? Trace { get; init; }
 }
 ```
 
-### 21.3 FlowExecutionResult
+`EntryName` は実行された Entry の完全修飾名を記録する。名前空間なしの Entry では従来どおり短い名前と同じ値になる。名前空間付き Entry では `Deploy.Build` のような完全修飾名を記録する。
 
-```csharp
-public sealed class FlowExecutionResult
-{
-    public string FlowId { get; init; } = "";
-    public WorkflowStatus Status { get; init; }
-    public CapturedValue? Input { get; init; }
-    public CapturedValue? Output { get; init; }
-    public IReadOnlyList<ExecutionNode> Children { get; init; }
-        = Array.Empty<ExecutionNode>();
-}
+CLI 実行では、成功時は終了コード 0、失敗時は 0 以外を返す。
+
+非同期ワークフロー実行 API として `ExecuteWorkflowAsync` を追加する。
+
+非同期 Step を含むワークフローでは、各非同期 Step の完了を待ってから後続 Step へ進む。
+
+非同期 Step の完了後に `Produce`、`StoreAs`、`Discard` を実行する。
+
+retry が有効な場合、Step 本体の通常例外は `RetryOptions.MaxAttempts` まで再試行する。
+
+途中の試行が成功した場合、エンジンは成功した試行の戻り値だけに `Produce`、`StoreAs`、`Discard` を実行する。
+
+失敗した試行の `Produce`、`StoreAs`、`Discard` は実行しない。
+
+失敗した試行の戻り値由来の値は `StepInput` に残さない。
+
+全試行が失敗した場合、エンジンは `WorkflowResult.Succeeded = false` の失敗結果を返す。
+
+全試行失敗時の `ErrorCode` は `STEP_EXECUTION_FAILED` とする。
+
+全試行失敗時の `ErrorMessage` は、最後に観測した例外 message を基本とする。
+
+全試行失敗後、エンジンは後続 Step を開始しない。
+
+Step timeout または外部キャンセルが発生した場合、エンジンは `WorkflowResult.Succeeded = false` の失敗結果を返す。
+
+timeout の場合、`ErrorCode` は `STEP_TIMEOUT` とする。
+
+外部キャンセルの場合、`ErrorCode` は `STEP_CANCELED` とする。
+
+timeout または外部キャンセルで Step が失敗した場合、その Step の `Produce`、`StoreAs`、`Discard` は実行しない。
+
+timeout または外部キャンセルで失敗した Step の戻り値由来の値は `StepInput` に残さない。
+
+timeout または外部キャンセルを検出した後、エンジンは後続 Step を開始しない。
+
+timeout と外部キャンセルは retry 対象外とし、観測した時点で workflow を失敗終了する。
+
+trace 値の基礎単位は、Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値である。
+
+Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の値一覧は空である。
+
+値生成処理の失敗または重複登録失敗では当該 Step を失敗 trace とし、trace 値の一覧は空にする。
+
+複数の値生成処理の一部が成功していても、Step が値生成処理の失敗または重複登録失敗になった場合は、部分的に成功した値も失敗 trace へ保存しない。
+
+### 18.2 エラーコード
+
+代表的なエラーコードは以下とする。
+
+```text
+ENTRY_SCRIPT_NOT_FOUND
+ENTRY_STEP_NOT_FOUND
+DUPLICATE_STEP_NAME
+SCRIPT_COMPILE_FAILED
+SCRIPT_LOAD_FAILED
+SCRIPT_LOAD_CYCLE_DETECTED
+SCRIPT_REFERENCE_NOT_ALLOWED
+SCRIPT_NUGET_LOCK_MISSING
+SCRIPT_NUGET_LOCK_MISMATCH
+SCRIPT_NUGET_RESTORE_FAILED
+SCRIPT_API_IDENTITY_MISMATCH
+STEP_INPUT_NOT_FOUND
+STEP_INPUT_TYPE_MISMATCH
+CONFIG_NOT_FOUND
+CONFIG_LOAD_FAILED
+STEP_CANCELED
+STEP_EXECUTION_FAILED
+STEP_TIMEOUT
+TRACE_SERIALIZATION_FAILED
 ```
 
-### 21.4 ExecutionNode
+非同期 Step の例外は、同期 Step の例外と同じく `STEP_EXECUTION_FAILED` に変換する。
+
+timeout 用の `CancellationToken` によって Step 実行がキャンセルされた場合は `STEP_TIMEOUT` に変換する。
+
+`ExecuteWorkflowAsync` に渡された外部 `CancellationToken` によって Step 実行がキャンセルされた場合は `STEP_CANCELED` に変換する。
+
+timeout と外部キャンセルの両方が観測される場合は、外部キャンセルを優先して `STEP_CANCELED` とする。
+
+`STEP_CANCELED` は通常の Step 例外を表す `STEP_EXECUTION_FAILED` とは区別する。
+
+retry で全試行が失敗した場合も、retry 専用エラーコードは追加せず `STEP_EXECUTION_FAILED` を使う。
+
+`Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とし、既存の Step 失敗として扱う。
+
+NuGet ロックファイルが必要な workflow root に存在しない場合は `SCRIPT_NUGET_LOCK_MISSING` とする。
+
+ロックファイルと直接参照、またはロックファイルと解決済み依存関係が一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする。
+
+`Dotnet.Script.Core` による NuGet 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする。
+
+`#load "nuget: ..."` では、未許可 NuGet、浮動 version、`dotnet-script` 互換でない文法を `SCRIPT_REFERENCE_NOT_ALLOWED` とする。
+
+`devo6.nuget.lock.yaml` が欠落している場合は、復元を試みる前に `SCRIPT_NUGET_LOCK_MISSING` を返す。
+
+直接参照の不一致は復元前に `SCRIPT_NUGET_LOCK_MISMATCH` とし、復元失敗の `SCRIPT_NUGET_RESTORE_FAILED` より優先する。
+
+復元後の解決済み依存関係または `metadata` の不一致は `SCRIPT_NUGET_LOCK_MISMATCH` とする。
+
+trace 値を `System.Text.Json` で直列化できない場合でも、既定動作では workflow を失敗させない。
+
+`TRACE_SERIALIZATION_FAILED` は、trace 外部保存や厳格動作で workflow 失敗を選ぶ拡張用に残す。既定 workflow 失敗には使わない。
+
+### 18.3 ログ
+
+ログはエンジンで独自実装せず、`Microsoft.Extensions.Logging` を利用する。
+
+エンジンは `ILoggerFactory` を外部から受け取り、具体的な logger provider には直接依存しない。
+
+ユーザー Step は `StepContext.Logger` から記録出力を取得する。
+
+ログには、Entry 名、Step 名、実行状態、失敗時のエラーコードを含める。
+
+ログの `EntryName` は `WorkflowResult.EntryName` と同じ完全修飾名とする。
+
+ログの `StepName` は従来どおり、実行された Step 型名を基本とする。個々の Step 型名を名前空間付き Entry 名へ変換しない。
+
+ログ出力では文字列連結ではなく、構造化ログを使う。
+
+エンジンは Entry 名、Step 名、試行番号をログのスコープへ含める。
+
+ログのスコープの `Attempt` は実試行番号とする。
+
+retry が発生する場合、エンジンは試行ごとの Step 失敗、retry 予定、最終失敗を構造化ログとして記録する。
+
+retry 予定のログには、`EntryName`、`StepName`、`Attempt`、次の試行番号、`ErrorCode` を含める。
+
+最終失敗のログには、`EntryName`、`StepName`、`Attempt`、`ErrorCode`、最終試行であることを含める。
+
+timeout または外部キャンセルで終了した場合、対象 Step 名とエラーコードをログに含める。
+
+Serilog、NLog、OpenTelemetry などへの転送は、利用者が選択した logger provider に委譲する。
+
+### 18.4 トレース
+
+ログと `ExecutionTrace` は分離する。
+
+| 要素 | 役割 |
+| --- | --- |
+| ログ | 実行中の観測と障害調査 |
+| ExecutionTrace | 実行結果として保存できる構造化履歴 |
+
+`StepInput`、Config、Step 出力の値そのものは既定では保存しない。
+
+値を含む trace の基礎単位は「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
+
+既存の `Produce`、名前付き `Produce`、`StoreAs` は値を trace に保存しない。
+
+trace 値は、`TraceValueCapture.Serialized` または `TraceValueCapture.Redacted` を明示した値生成処理だけが生成する。
+
+`Discard` は trace 値を生成しない。
+
+同期 Step と非同期 Step が混在する場合も、trace は定義順の実行履歴として記録する。
+
+`ExecutionTraceStep` には試行番号を追加する。
+
+`ExecutionTraceStep.StepName` は従来どおり、実行された Step 型名を基本とする。Entry の名前空間化は `WorkflowResult.EntryName` とログスコープの `EntryName` で表す。
 
 ```csharp
-public abstract record ExecutionNode;
-
-public sealed record StepExecutionNode(
-    string StepId,
-    string StepType,
-    StepStatus Status,
-    CapturedValue? Input,
-    CapturedValue? Output,
+public sealed record ExecutionTraceStep(
+    string StepName,
+    ExecutionTraceStepStatus Status,
     TimeSpan Duration,
-    int AttemptCount,
     string? ErrorCode,
-    string? ErrorMessage
-) : ExecutionNode;
-
-public sealed record FlowExecutionNode(
-    FlowExecutionResult Flow
-) : ExecutionNode;
+    int Attempt);
 ```
 
-### 21.5 CapturedValue
+`Attempt` は 1 から始まる実試行番号とする。
+
+`ExecutionTraceStep` は `ProducedValues` を持つ。
 
 ```csharp
-public sealed class CapturedValue
-{
-    public string TypeName { get; init; } = "";
-    public object? Value { get; init; }
-    public string? Summary { get; init; }
-    public bool Truncated { get; init; }
-    public bool Redacted { get; init; }
-}
+public IReadOnlyList<ExecutionTraceValue> ProducedValues { get; init; }
 ```
 
-Traceに値を保存しない場合でも、`TypeName`、`Summary`、`Duration`、`Status`、`ErrorCode` は記録できる。
+`ProducedValues` は、その Step の成功した値生成処理が明示的に trace 保存した値の一覧である。
+
+`ExecutionTraceValue` は型名、任意の名前、source、保存状態、直列化文字列、直列化失敗理由を持つ。
+
+source は `Produce` または `StoreAs` とする。
+
+`TraceValueCapture.Serialized` の値は `System.Text.Json` で文字列へ直列化して保存する。
+
+`TraceValueCapture.Redacted` の値は型名、任意の名前、source、保存状態だけを残し、値本文を保存しない。
+
+直列化できない値は workflow を失敗させず、当該 trace 値を `NotSerializable` として値本文なしで残す。
+
+retry された Step は、同じ Step 名の trace 記録を試行ごとに追加する。
+
+途中で成功した場合、失敗試行の trace 記録を複数件追加し、最後に成功試行の trace 記録を 1 件追加する。
+
+全試行が失敗した場合、失敗試行の trace 記録を試行数分追加し、最後の記録の `ErrorCode` は `STEP_EXECUTION_FAILED` とする。
+
+非同期 Step で例外が発生した場合、非同期待機で観測した例外を `STEP_EXECUTION_FAILED` の失敗 trace に変換する。
+
+timeout が発生した場合、対象 Step の trace は `ExecutionTraceStepStatus.Failed` とし、`ErrorCode` は `STEP_TIMEOUT` とする。
+
+外部キャンセルで Step 実行が止まった場合、対象 Step の trace は `ExecutionTraceStepStatus.Failed` とし、`ErrorCode` は `STEP_CANCELED` とする。
+
+timeout または外部キャンセルの後に実行しなかった後続 Step は trace に追加しない。
+
+`TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加しない。
+
+Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の `ProducedValues` は空である。
+
+値生成処理の失敗または重複登録失敗では当該 Step を失敗 trace とし、`ProducedValues` は空にする。
+
+値生成処理が複数ある場合でも、失敗 trace には部分的に成功した値を保存しない。
 
 ---
 
-## 22. エンジン内部構成
-
-### 22.1 プロジェクト構成案
-
-```text
-src/
-├── Workflow.Abstractions/
-│   ├── WorkflowStep.cs
-│   ├── StepContext.cs
-│   ├── Unit.cs
-│   ├── IFlowInvoker.cs
-│   └── WorkflowStepException.cs
-│
-├── Workflow.Engine/
-│   ├── WorkflowEngine.cs
-│   ├── WorkflowLoader.cs
-│   ├── WorkflowSchemaValidator.cs
-│   ├── FlowRunner.cs
-│   ├── StepExecutor.cs
-│   ├── StepRegistry.cs
-│   ├── StepTypeResolver.cs
-│   ├── Scripting/
-│   │   ├── IScriptCompiler.cs
-│   │   ├── DotnetScriptCompiler.cs
-│   │   ├── ScriptCompileRequest.cs
-│   │   ├── CompiledScriptAssembly.cs
-│   │   ├── ScriptReferencePolicy.cs
-│   │   └── ScriptDirectiveScanner.cs
-│   ├── MessageValidator.cs
-│   ├── ConfigBinder.cs
-│   ├── WorkflowConfigBinder.cs
-│   ├── BindingExpressionEvaluator.cs
-│   ├── ConditionEvaluator.cs
-│   ├── TraceBuilder.cs
-│   └── Logging/
-│       └── WorkflowLogEvents.cs
-│
-├── Workflow.ControlSteps/
-│   ├── IfStep.cs
-│   ├── ForEachStep.cs
-│   └── TypeResolvers/
-│       ├── IfStepTypeResolver.cs
-│       └── ForEachStepTypeResolver.cs
-│
-├── Workflow.Cli/
-│   └── Program.cs
-│
-└── samples/
-    └── order-workflow/
-```
-
-### 22.2 StepProvider
-
-Step生成はProviderで抽象化する。
-
-```csharp
-public interface IStepProvider
-{
-    bool CanCreate(StepDefinition definition);
-
-    Task<ICompiledStep> CreateAsync(
-        StepDefinition definition,
-        StepCompileContext context);
-}
-```
-
-Provider例:
-
-| Provider | 説明 |
-|---|---|
-| `ScriptStepProvider` | `script + class` からStepを作る |
-| `BuiltInStepProvider` | `use` から登録済みStepを作る |
-| `FlowCallStepProvider` | `flow` からFlow呼び出しStepを作る |
-
-### 22.3 Stepインスタンス生成とDI
-
-初期実装では、Script Stepは実行ごとに新規インスタンスを生成する。
-
-Script Stepのコンストラクタは原則として公開された引数なしコンストラクタを要求する。
-
-DI利用は `StepContext.Services` 経由を基本とする。
-
-Built-in StepはDIコンテナから解決できる。
-
-Step実行ごとに `IServiceScope` を作成するかどうかは `WorkflowEngineOptions` で制御する。
-
-`IDisposable` または `IAsyncDisposable` を実装するStepインスタンスは、Step実行終了後に破棄する。
-
-```csharp
-public sealed class WorkflowEngineOptions
-{
-    public IServiceProvider Services { get; init; } = default!;
-    public bool CreateServiceScopePerStep { get; init; } = true;
-}
-```
-
-### 22.4 ScriptCompiler抽象
-
-csxコンパイルは `IScriptCompiler` で抽象化する。
-
-```csharp
-public interface IScriptCompiler
-{
-    Task<CompiledScriptAssembly> CompileAsync(
-        ScriptCompileRequest request,
-        CancellationToken cancellationToken);
-}
-
-public sealed class ScriptCompileRequest
-{
-    public string WorkflowRoot { get; init; } = "";
-    public string WorkflowYamlPath { get; init; } = "";
-    public IReadOnlyList<string> SharedScripts { get; init; }
-        = Array.Empty<string>();
-    public string StepScript { get; init; } = "";
-    public ScriptReferencePolicy ReferencePolicy { get; init; } = default!;
-    public bool PreferSharedAbstractionsAssembly { get; init; } = true;
-}
-
-public sealed class CompiledScriptAssembly
-{
-    public Assembly Assembly { get; init; } = default!;
-    public IReadOnlyList<ScriptDiagnostic> Diagnostics { get; init; }
-        = Array.Empty<ScriptDiagnostic>();
-    public IReadOnlyList<string> LoadedScripts { get; init; }
-        = Array.Empty<string>();
-    public IReadOnlyList<string> ResolvedReferences { get; init; }
-        = Array.Empty<string>();
-    public IReadOnlyList<ResolvedNuGetPackage> ResolvedPackages { get; init; }
-        = Array.Empty<ResolvedNuGetPackage>();
-}
-```
-
-初期実装では `DotnetScriptCompiler` を `IScriptCompiler` の標準実装とする。エンジンの型検証、Step探索、Config binding、検証、retry、timeout、ExecutionTraceは `IScriptCompiler` の外側で実行する。
-
----
-
-## 23. csxコンパイル仕様
-
-### 23.1 実装方針
-
-初期実装では、csxの依存解決、`#load`、`#r`、インラインNuGet参照、コンパイルキャッシュを簡略化するため、`Dotnet.Script.Core` を利用する。
-
-ただし、エンジンの公開仕様および内部実行モデルは `dotnet-script` 固有APIに直接依存しない。エンジン内部では `IScriptCompiler` を定義し、`DotnetScriptCompiler` はその一実装として扱う。
-
-通常実行経路では、`dotnet script` CLIをStep実行ごとに外部プロセス起動する方式を採用しない。理由は以下である。
-
-```text
-- Step classを型として取り出しにくい
-- WorkflowStep<TInput, TOutput> の型引数推論が困難になる
-- StepContext、ILogger、IFlowInvoker、CancellationTokenを自然に注入できない
-- 型付きInput / Config / Outputの受け渡しが複雑になる
-- retry、timeout、ExecutionTraceとの統合が粗くなる
-- プロセス起動コストがStepごとに発生する
-```
-
-`dotnet script` CLIは、開発者向けの単体検証補助やデバッグ補助として利用してよいが、エンジン本体のStep実行経路では利用しない。
-
-### 23.2 scriptOptions
-
-csx参照方針はYAMLの `scriptOptions` で指定できる。
-
-```yaml
-scriptOptions:
-  engine: dotnet-script-core
-  allowLoad: true
-  allowAssemblyReferences: true
-  allowNuGetReferences: true
-  load:
-    allowOutsideWorkflowRoot: false
-    allowNuGetScriptPackages: false
-  references:
-    allowedAssemblies:
-      - System.Text.Json
-    allowedPaths:
-      - lib/
-  nuget:
-    requireExactVersion: true
-    allowedPackages:
-      - id: CsvHelper
-        versions:
-          - 33.0.1
-    packageSources:
-      - https://api.nuget.org/v3/index.json
-    restoreLockedMode: false
-  cache:
-    enabled: true
-  assemblyLoadContext:
-    isolation: workflow
-    shareAbstractions: true
-```
-
-| 項目 | 説明 |
-|---|---|
-| `engine` | 初期実装では `dotnet-script-core` を標準値とする |
-| `allowLoad` | `#load` を許可するか |
-| `allowAssemblyReferences` | assembly参照の `#r` を許可するか |
-| `allowNuGetReferences` | `#r "nuget: ..."` を許可するか |
-| `load.allowOutsideWorkflowRoot` | `workflow-root` 外のcsx読み込みを許可するか。初期実装の推奨値は `false` |
-| `load.allowNuGetScriptPackages` | `#load "nuget: ..."` を許可するか。初期実装の推奨値は `false` |
-| `references.allowedAssemblies` | assembly名による `#r` の許可リスト |
-| `references.allowedPaths` | ファイルパスによる `#r` の許可ディレクトリ |
-| `nuget.requireExactVersion` | インラインNuGet参照に正確なバージョン指定を要求するか。推奨値は `true` |
-| `nuget.allowedPackages` | `#r "nuget: ..."` で参照可能なパッケージIDとバージョン |
-| `nuget.packageSources` | 復元に利用できるパッケージソース |
-| `nuget.restoreLockedMode` | ロックファイル前提の復元に限定するか |
-| `cache.enabled` | 依存キャッシュおよびコンパイルキャッシュを利用するか |
-| `assemblyLoadContext.isolation` | `workflow`、`cache`、`none` のいずれか |
-| `assemblyLoadContext.shareAbstractions` | `Workflow.Abstractions` をホスト側assemblyとして共有するか |
-
-`scriptOptions` 未指定時の推奨デフォルトは以下とする。
-
-```text
-engine = dotnet-script-core
-allowLoad = true
-allowAssemblyReferences = true
-allowNuGetReferences = false
-load.allowOutsideWorkflowRoot = false
-load.allowNuGetScriptPackages = false
-nuget.requireExactVersion = true
-cache.enabled = true
-assemblyLoadContext.isolation = workflow
-assemblyLoadContext.shareAbstractions = true
-```
-
-### 23.3 型定義csx
-
-`scripts` に指定されたcsxは、Message型、Config型、補助型を定義するために使用する。
-
-```yaml
-scripts:
-  - messages/order-messages.csx
-  - configs/mail-configs.csx
-```
-
-これらは直接の実行対象ではなく、Step csxのコンパイル時に読み込まれる共有csxとして扱う。
-
-`DotnetScriptCompiler` は、Stepごとに合成entry csxを内部生成して、`scripts` とStep csxを `#load` する。
-
-例:
-
-```csharp
-#load "messages/order-messages.csx"
-#load "configs/mail-configs.csx"
-#load "steps/validate-order.csx"
-```
-
-合成entry csxはエンジン内部の実装詳細であり、ユーザーは直接作成しない。
-
-### 23.4 Step csx
-
-Step csxは、`WorkflowStep<...>` を継承したStepクラスを含む。
-
-```yaml
-- id: validate-order
-  script: steps/validate-order.csx
-  class: ValidateOrderStep
-```
-
-Step csxには型定義、`using`、名前空間、補助メソッド、Stepクラスを記述できる。
-
-Step csxでは、コンパイル時またはロード時に副作用を起こすトップレベルステートメントを避ける。初期実装では、Step csxのトップレベルの実行可能ステートメントを検証時に警告またはエラーとして扱ってよい。
-
-推奨:
-
-```csharp
-#nullable enable
-#load "../shared/common.csx"
-#r "nuget: CsvHelper, 33.0.1"
-
-using Workflow.Abstractions;
-using Workflows.Messages;
-
-public sealed class ValidateOrderStep
-    : WorkflowStep<OrderCreated, ValidationResult>
-{
-    public override Task<ValidationResult> ExecuteAsync(
-        OrderCreated input,
-        StepContext context)
-    {
-        ...
-    }
-}
-```
-
-非推奨:
-
-```csharp
-Console.WriteLine("This statement may run during script evaluation.");
-File.Delete("some-file.txt");
-```
-
-### 23.5 `#load` 対応
-
-初期実装では、ローカルファイルの `#load` を対応する。
-
-```csharp
-#load "../shared/common.csx"
-#load "helpers/formatting.csx"
-```
-
-`#load` の解決規則は以下とする。
-
-| 項目 | 規則 |
-|---|---|
-| 相対パス基準 | `#load` を書いたcsxファイルのディレクトリ |
-| パス正規化 | `..`、シンボリックリンクを解決して正規パス化する |
-| root制限 | `load.allowOutsideWorkflowRoot: false` の場合、正規パスが `workflow-root` 配下でなければならない |
-| 循環読み込み | 検出して `SCRIPT_LOAD_CYCLE_DETECTED` とする |
-| 重複読み込み | 同一正規パスは1回だけ読み込む |
-| 変更検知 | キャッシュキーに読み込まれた全csxの内容ハッシュを含める |
-
-`#load "nuget: ..."` は `Dotnet.Script.Core` で扱えるが、初期実装の推奨デフォルトでは無効にする。有効化する場合は、`load.allowNuGetScriptPackages: true` とし、`nuget.allowedPackages` にパッケージIDとバージョンを明示する。
-
-### 23.6 `#r` assembly参照
-
-初期実装では、assembly名またはファイルパスによる `#r` を対応する。
-
-```csharp
-#r "System.Text.Json"
-#r "../lib/custom-helper.dll"
-```
-
-`#r` assembly参照の解決規則は以下とする。
-
-| 項目 | 規則 |
-|---|---|
-| assembly名参照 | `references.allowedAssemblies` に含まれる場合のみ許可する |
-| ファイルパス参照 | 正規パスが `references.allowedPaths` のいずれかの配下にある場合のみ許可する |
-| workflow-root外参照 | 明示許可がない限り禁止する |
-| `Workflow.Abstractions` | ホスト側の同一assemblyを共有する |
-| 不許可参照 | `SCRIPT_REFERENCE_NOT_ALLOWED` とする |
-
-`Workflow.Abstractions` は特別扱いする。Script側が別コピーの `Workflow.Abstractions.dll` を読み込むと、型名が同じでもCLR上は別型になり、`WorkflowStep<...>` 継承判定や `StepContext` 受け渡しが壊れるためである。
-
-### 23.7 `#r "nuget: ..."` 対応
-
-初期実装では、`scriptOptions.allowNuGetReferences: true` の場合に限り、インラインNuGet参照を対応する。
-
-```csharp
-#r "nuget: CsvHelper, 33.0.1"
-```
-
-NuGet参照の規則は以下とする。
-
-| 項目 | 規則 |
-|---|---|
-| パッケージID | `nuget.allowedPackages` に含まれる必要がある |
-| バージョン | `nuget.requireExactVersion: true` の場合、正確なバージョン指定を必須とする |
-| 浮動バージョン | 初期実装では禁止する |
-| プレリリース | `allowedPackages.versions` に明示された場合のみ許可する |
-| パッケージソース | `scriptOptions.nuget.packageSources` または `workflow-root/NuGet.Config` を使う |
-| ロックファイル | `restoreLockedMode: true` の場合、ロックファイルに存在しない復元を禁止する |
-| 復元キャッシュ | `Dotnet.Script.Core` の依存復元機構を利用してよい |
-
-`#r "nuget: ..."` は実装を大幅に簡略化できる一方で、未信頼コードの攻撃面を広げる。初期実装では信頼済みWorkflowのみを対象とし、パッケージID、バージョン、参照元を明示制御する。
-
-### 23.8 コンパイル順序
-
-`DotnetScriptCompiler` は以下の順でコンパイルする。
-
-```text
-1. workflow.yaml と scriptOptions を読み込む
-2. Workflow.Abstractions assemblyをホスト側共有assemblyとして登録する
-3. scripts に指定された共有csxを列挙する
-4. Step csxを列挙する
-5. `#load` / `#r` / `#r "nuget: ..."` directiveをscanする
-6. ScriptReferencePolicyに基づき参照可否を検証する
-7. Stepごとに合成entry csxを生成する
-8. Dotnet.Script.Coreで依存解決とコンパイルを行う
-9. コンパイル済みassemblyを制御されたAssemblyLoadContextに読み込む
-10. Step classを探索する
-11. WorkflowStep<...> 継承型から型引数を推論する
-12. YAML明示型がある場合は一致検証する
-```
-
-`Dotnet.Script.Core` の利用範囲は、依存解決、script 読み込み、NuGet 復元、Roslyn コンパイル、キャッシュ利用に限定する。Step実行、型検証、Config binding、検証、retry、timeout、ExecutionTraceはエンジン側で制御する。
-
-### 23.9 AssemblyLoadContext方針
-
-初期実装では、Workflow単位またはキャッシュ単位でAssemblyLoadContextを分離してよい。
-
-ただし、以下のassemblyはホスト側と共有する。
-
-```text
-Workflow.Abstractions
-Microsoft.Extensions.Logging.Abstractions
-System.ComponentModel.Annotations
-```
-
-`Workflow.Abstractions` がScript側で別assemblyとして解決された場合、検証時に失敗させる。
-
-エラーコード:
-
-```text
-SCRIPT_ABSTRACTIONS_IDENTITY_MISMATCH
-```
-
-`assemblyLoadContext.shareAbstractions: true` は初期実装で必須扱いとしてよい。
-
-### 23.10 コンパイルキャッシュ
-
-エンジンは `Dotnet.Script.Core` の依存キャッシュおよび実行キャッシュ / コンパイルキャッシュを利用してよい。
-
-エンジン独自のキャッシュキーは以下を含む。
-
-```text
-workflow.yaml path
-workflow.yaml content hash
-scriptOptions hash
-scripts file path + content hash
-step csx file path + content hash
-#load された全csx file path + content hash
-#r assembly参照一覧
-#r file path + content hash
-#r nuget package ID + version + source
-Workflow.Abstractions assembly identity
-engine version
-schemaVersion
-```
-
-ファイル更新、参照更新、パッケージのバージョン変更、`scriptOptions` 変更が検知された場合、該当キャッシュは無効化する。
-
-### 23.11 csx信頼境界
-
-初期実装では、csxは信頼済みWorkflowのみを実行対象とする。
-
-未信頼ユーザーがアップロードしたcsxを、このエンジンで直接実行してはならない。
-
-初期実装では以下を提供しない。
-
-- 完全サンドボックス
-- プロセス分離
-- OS権限制御
-- ネットワーク制限
-- ファイルI/O制限
-- NuGet利用制限の完全強制
-- 署名検証
-- シークレットアクセス制限
-
-csxは任意のC#コードであり、ファイルI/O、ネットワークアクセス、環境変数参照、プロセス起動、リフレクション、秘密情報アクセスを行える可能性がある。
-
-`Dotnet.Script.Core` により `#load` と `#r` の対応は簡略化されるが、セキュリティ境界は提供されない。エンジンはディレクティブ走査と許可一覧で参照方針を検証するが、未信頼コード実行を安全化するものではない。
-
-### 23.12 csx参照方針まとめ
-
-| 項目 | 初期実装方針 |
-|---|---|
-| `#load "relative.csx"` | 対応。workflow-root配下のみ許可 |
-| `#load "nuget: ..."` | デフォルト無効。明示許可時のみ対応 |
-| `#r "AssemblyName"` | 許可一覧に登録されたアセンブリのみ許可 |
-| `#r "path/to.dll"` | 許可一覧に登録されたパス配下のみ許可 |
-| `#r "nuget: Package, Version"` | 明示許可一覧、正確なバージョン指定、許可済み参照元の場合のみ対応 |
-| NuGet 復元 | `Dotnet.Script.Core` の仕組みを利用 |
-| workflow-root外ファイル参照 | 原則禁止 |
-| AssemblyLoadContext | Workflow単位またはキャッシュ単位で分離し、`Workflow.Abstractions` は共有 |
-| アンロード | 可能な範囲でAssemblyLoadContextのアンロードを行う |
-
----
-
-## 24. CLI仕様
-
-### 24.1 実行
-
-```bash
-workflow run workflow.yaml --input input.yaml
-workflow run workflow.yaml --input input.yaml --config run-config.yaml
-workflow run workflow.yaml --input input.yaml --config run-config.yaml --config-override targetDirectory=/tmp/job-001
-```
-
-### 24.2 検証
-
-```bash
-workflow validate workflow.yaml
-workflow validate workflow.yaml --config run-config.yaml
-```
-
-検証対象:
-
-- YAML構文
-- Workflow schema
-- Flow参照
-- Step参照
-- `end` 予約ID違反
-- 重複Flow ID
-- 重複Step ID
-- csxディレクティブ走査
-- `#load` 参照解決
-- `#r` assembly参照解決
-- `#r "nuget: ..."` 参照解決
-- csxコンパイル
-- Step クラス探索
-- 型整合性
-- Built-in Step型推論
-- Control Step参照先Flow整合性
-- Step Config結び付け可能性
-- Workflow Config結び付け可能性
-- Message検証可能性
-- Workflow Config検証可能性
-- retry / timeout形式
-- trace / 検証 / 制限設定形式
-- scriptOptions設定形式
-
-### 24.3 Flow一覧
-
-```bash
-workflow flows workflow.yaml
-```
-
-### 24.4 Step一覧
-
-```bash
-workflow steps workflow.yaml
-```
-
-### 24.5 型情報表示
-
-```bash
-workflow types workflow.yaml
-workflow types workflow.yaml --flow main
-```
-
-表示内容:
-
-- Flow Input / Output型
-- Step Input / Config / Output型
-- Built-in Step型推論結果
-- YAML明示型との一致結果
-
----
-
-## 25. 実装範囲
-
-### 25.1 最小実装範囲
-
-最小実装で対応する範囲は以下とする。
-
-- workflow.yaml読み込み
-- schemaVersion 1
-- Flow定義
-- 単一路線Flow実行
-- `next.to` 0または1件
-- `end` 仮想Step
-- Script Step
-- Flow Call Step
-- `Dotnet.Script.Core` を使ったcsxコンパイル
+## 19. 標準実装範囲
+
+### 19.1 標準範囲
+
+標準実装は以下を扱う。
+
+- `.csx` での名前付き `CompositeStep` 定義
+- 既定 Entry 名 `Main`
+- CLI の `run` と検証コマンド
+- 逐次実行
+- `IStep<TOut>.Execute(StepInput input)`
+- `IAsyncStep<TOut>.ExecuteAsync(StepInput input, CancellationToken cancellationToken)`
+- 非同期 Step 登録 API
+- 非同期ワークフロー実行 API
+- `StepInput` の型付き、名前付き取得
+- `StepContext` の共有値保持
+- Config ファイルパスと `--set` の `EngineArguments` 格納
 - ローカルファイル `#load`
-- 許可一覧に登録されたassembly / ファイルパス `#r`
-- 許可一覧に登録された `#r "nuget: Package, Version"`
-- Message型csx定義
-- Config型csx定義
-- `WorkflowStep<TInput, TOutput>`
-- `WorkflowStep<TInput, TConfig, TOutput>`
-- YAML config
-- Workflow Config
-- YAML既定値 + 実行時Workflow Config merge
-- Step input binding
-- Step Config binding
-- Message検証
-- Config検証
-- Workflow Config検証
-- 型整合性チェック
-- timeout
+- 明示許可された `#r`
+- 明示許可された NuGet 参照
+- `Dotnet.Script.Core` によるロードとコンパイル
 - `Microsoft.Extensions.Logging` 統合
-- CLI `validate` コマンド
-- CLI run
-- scriptOptions検証
+- `WorkflowResult` と基本エラーコード
+- `WorkflowExecutionOptions.StepTimeout` による Step 単位の timeout
+- `WorkflowExecutionOptions.Retry` による全 Step 一律の retry
+- `ExecuteWorkflowAsync` の外部 `CancellationToken` と timeout 用の `CancellationToken` の合成
+- timeout と外部キャンセルの失敗結果化
+- retry 試行ごとのログと trace
+- 標準 Config 読み込み
+- CLI override による標準 Config 上書き
+- Step 内 `Config` 型
+- CompositeStep 境界 Config 型を宣言する `WithConfig<TConfig>()`
+- Step 登録単位の `WithConfig<TConfig>(string sectionPath)` による Step Config 型と境界 Config プロパティ path メタ情報
+- 単一 `--config` YAML ファイル全体の境界 Config 型への読み込み
+- CLI `run` の境界 Config 型変換、CLI override 適用、Config 検証
+- CLI `run` の `--set` プロパティ path override と Config 検証前適用
+- 対象 Step 実行直前の `StepContext.Set<TStep.Config>()` 登録
+- Step 登録単位 Config がない場合の `WithConfig<TConfig>()` による Entry 全体 Config 互換 API
+- `engine validate` での Config path 存在確認
+- 値を含む `ExecutionTrace`
+- `TraceValueCapture.Serialized` と `TraceValueCapture.Redacted`
+- NuGet ロックファイルによる直接参照と解決済み依存関係の再現性検証
+- `#load "nuget: PackageId, Version"` による NuGet script パッケージ読み込み
+- Entry の短い名前、名前空間名、完全修飾名
+- `--entry Deploy.Build` のような完全修飾 Entry 指定
 
-### 25.2 次フェーズ範囲
+### 19.2 標準契約外の未実装・未採用範囲
 
-次フェーズで対応する範囲は以下とする。
+以下は実装済みではない、または意図的に採用していない契約である。
 
-- Built-in IfStep
-- Built-in ForEachStepの逐次実行
-- YAML / Message / Workflow Config merge
-- retry
-- ExecutionTrace
-- trace 秘匿化
-- `#load "nuget: ..."` スクリプトパッケージ対応
-- NuGet ロックファイル / ロック済み復元強制
-- CLI `flows` コマンド
-- CLI `steps` コマンド
-- CLI `types` コマンド
-
-### 25.3 将来拡張
-
-以下は将来拡張とする。
-
-- 並列ForEach
-- ParallelStep
-- TryCatchStep
-- SwitchStep
-- WhileStep
-- DAG実行
-- 複数next
-- エッジ条件
-- fan-out / 合流
-- 分散実行
-- 永続化されたWorkflow再開
-- 外部キュー連携
-- Web UI
-- スケジューラ
-- message型の自動生成
-- 高度なサンドボックス
-- 署名検証
-- 無制限の NuGet パッケージ復元
-
----
-
-## 26. 使用ライブラリ候補
-
-| 用途 | 候補 |
-|---|---|
-| YAML読み込み | `YamlDotNet` |
-| csxコンパイル | `Dotnet.Script.Core`（標準実装） / `Microsoft.CodeAnalysis.CSharp.Scripting` / Roslyn（代替実装） |
-| csx依存解決 / NuGet 復元 | `Dotnet.Script.DependencyModel` / `Dotnet.Script.DependencyModel.NuGet` |
-| ログ抽象化 | `Microsoft.Extensions.Logging` |
-| ログ実装 | Serilog / NLog / log4net / OpenTelemetry |
-| DI | `Microsoft.Extensions.DependencyInjection` |
-| 設定 | `Microsoft.Extensions.Options` |
-| Validation | `System.ComponentModel.DataAnnotations` |
-| Nullable メタデータ | `System.Reflection.NullabilityInfoContext` |
-| Trace シリアライズ | `System.Text.Json` |
+- 独立した Flow 概念
+- YAML ワークフロー定義
+- Step 専用 Config 引数
+- Step 間の自動依存解決
+- 並列実行
+- 分岐実行
+- 統合実行
+- 未信頼 `.csx` の安全な実行
+- 複数 Config ファイル統合
+- 標準 Config 読み込みによる永続的な名前付き Config 取得
+- Config 型自動推論
+- Step 型への Config 自動注入
+- `--set` による配列全体またはリスト全体の置換
+- `--set` による配列またはリストの自動拡張
+- `engine validate` での Config 型変換、override 型検証、Config 値検証
+- CLI の timeout オプション
+- CLI の retry オプション
+- Config による retry 指定
+- Step 別 retry 方針
+- retry 待機時間制御
+- retry の例外型による絞り込み
+- 実行中 Step の強制停止
+- workflow 全体 timeout
+- timeout またはキャンセル専用の trace 状態
 
 ---
 
-## 27. サンプル全体
+## 20. 明確に禁止すること
 
-### 27.1 workflow.yaml
-
-```yaml
-id: order-workflow
-schemaVersion: 1
-version: 1.0.0
-
-scripts:
-  - messages/order-messages.csx
-
-scriptOptions:
-  engine: dotnet-script-core
-  allowLoad: true
-  allowAssemblyReferences: true
-  allowNuGetReferences: true
-  load:
-    allowOutsideWorkflowRoot: false
-  references:
-    allowedAssemblies:
-      - System.Text.Json
-    allowedPaths:
-      - lib/
-  nuget:
-    requireExactVersion: true
-    allowedPackages:
-      - id: CsvHelper
-        versions:
-          - 33.0.1
-    packageSources:
-      - https://api.nuget.org/v3/index.json
-
-entryFlow: main
-
-config:
-  type: Workflows.Messages.FileWorkflowConfig
-  value:
-    targetDirectory: ./input
-    outputDirectory: ./output
-    temporaryDirectory: ./tmp
-  runtime:
-    merge: deep
-    precedence: runtime
-    nullOverride: false
-
-validation:
-  strictUnknownProperties: true
-  validateStepInputs: true
-  validateStepConfigs: true
-  validateStepOutputs: true
-  validateFlowInputs: true
-  validateFlowOutputs: true
-  nullableReferenceTypes: true
-
-trace:
-  captureInputs: false
-  captureOutputs: false
-  captureConfigs: false
-  maxValueSizeBytes: 32768
-  redaction:
-    paths:
-      - $.password
-      - $.token
-      - $.connectionString
-
-limits:
-  maxFlowDepth: 32
-
-flows:
-  - id: main
-    input: Workflows.Messages.OrderCreated
-    output: Workflows.Messages.OrderProcessResult
-    start: validate-order
-
-    steps:
-      - id: validate-order
-        script: steps/validate-order.csx
-        class: ValidateOrderStep
-        next:
-          to: branch
-
-      - id: branch
-        use: Workflow.Control.IfStep
-        config:
-          provider: yaml
-          value:
-            condition: current.IsValid == true
-            then: accepted-flow
-            else: rejected-flow
-        next:
-          to: end
-
-  - id: accepted-flow
-    input: Workflows.Messages.ValidationResult
-    output: Workflows.Messages.OrderProcessResult
-    start: accepted
-
-    steps:
-      - id: accepted
-        script: steps/accepted.csx
-        class: AcceptedStep
-        next:
-          to: end
-
-  - id: rejected-flow
-    input: Workflows.Messages.ValidationResult
-    output: Workflows.Messages.OrderProcessResult
-    start: rejected
-
-    steps:
-      - id: rejected
-        script: steps/rejected.csx
-        class: RejectedStep
-        next:
-          to: end
-```
-
-### 27.2 `messages/order-messages.csx`
-
-```csharp
-#nullable enable
-
-using System.ComponentModel.DataAnnotations;
-
-namespace Workflows.Messages;
-
-public sealed record FileWorkflowConfig(
-    [Required]
-    string TargetDirectory,
-
-    [Required]
-    string OutputDirectory,
-
-    string? TemporaryDirectory
-);
-
-public sealed record OrderItem(
-    [Required]
-    string ItemId,
-
-    [Range(1, int.MaxValue)]
-    int Quantity
-);
-
-public sealed record OrderCreated(
-    [Required]
-    string OrderId,
-
-    [Required]
-    string CustomerId,
-
-    [MinLength(1)]
-    IReadOnlyList<OrderItem> Items,
-
-    [Range(0.01, double.MaxValue)]
-    decimal Amount
-);
-
-public sealed record ValidationResult(
-    bool IsValid,
-    string? Reason
-);
-
-public sealed record OrderProcessResult(
-    bool Success,
-    string Message
-);
-```
-
-### 27.3 `steps/validate-order.csx`
-
-```csharp
-#nullable enable
-
-#load "../shared/common.csx"
-#r "nuget: CsvHelper, 33.0.1"
-
-using Workflow.Abstractions;
-using Workflows.Messages;
-
-public sealed class ValidateOrderStep
-    : WorkflowStep<OrderCreated, ValidationResult>
-{
-    public override Task<ValidationResult> ExecuteAsync(
-        OrderCreated input,
-        StepContext context)
-    {
-        context.Logger.LogInformation(
-            "Validating order. OrderId={OrderId}",
-            input.OrderId);
-
-        if (input.Amount <= 0)
-        {
-            return Task.FromResult(
-                new ValidationResult(false, "Amount must be greater than zero."));
-        }
-
-        if (input.Items.Count == 0)
-        {
-            return Task.FromResult(
-                new ValidationResult(false, "Order must have at least one item."));
-        }
-
-        return Task.FromResult(
-            new ValidationResult(true, null));
-    }
-}
-```
-
-### 27.4 `steps/accepted.csx`
-
-```csharp
-#nullable enable
-
-using Workflow.Abstractions;
-using Workflows.Messages;
-
-public sealed class AcceptedStep
-    : WorkflowStep<ValidationResult, OrderProcessResult>
-{
-    public override Task<OrderProcessResult> ExecuteAsync(
-        ValidationResult input,
-        StepContext context)
-    {
-        return Task.FromResult(
-            new OrderProcessResult(true, "Order accepted."));
-    }
-}
-```
-
-### 27.5 `steps/rejected.csx`
-
-```csharp
-#nullable enable
-
-using Workflow.Abstractions;
-using Workflows.Messages;
-
-public sealed class RejectedStep
-    : WorkflowStep<ValidationResult, OrderProcessResult>
-{
-    public override Task<OrderProcessResult> ExecuteAsync(
-        ValidationResult input,
-        StepContext context)
-    {
-        return Task.FromResult(
-            new OrderProcessResult(false, input.Reason ?? "Order rejected."));
-    }
-}
-```
-
----
-
-## 28. 最終方針
-
-本エンジンの仕様は以下に集約される。
+本設計では以下を禁止する。
 
 ```text
-Workflow:
-  複数Flowを持つ実行定義
-  Workflow ConfigをRun単位の不変snapshotとして持つ
-
-Flow:
-  型付きのStep集合
-  Input型とOutput型を持つ
-  Stepから呼び出し可能
-  初期実装では単一路線実行
-
-Step:
-  すべての処理単位
-  通常処理も制御処理も同じ扱い
-  C#ジェネリックでInput / Config / Output型を明示
-
-Message:
-  csxでrecord/classとして定義
-  検証はエンジン側で実行
-
-Config:
-  csxで型定義
-  Workflow ConfigとStep Configを区別
-  Workflow ConfigはYAML既定値、実行時Config、Overrideから供給
-  Step ConfigはYAML、Message、Workflow Config、またはmergeから供給
-  検証はエンジン側で実行
-
-Binding:
-  flowInput / previousOutput / current / workflowConfig / variables を明確に区別
-  曖昧な input 識別子は使用しない
-
-Control Step:
-  YAML予約構文ではなく通常Stepとして提供
-  IfStepやForEachStepは型推論Descriptorを持つ
-
-Scripting:
-  Dotnet.Script.CoreをIScriptCompilerの標準実装として利用
-  #load / #r / #r nuget はscriptOptionsとallowlistで制御
-  dotnet script CLIの外部プロセス起動は通常実行経路では使わない
-
-Log:
-  Microsoft.Extensions.Loggingを利用
-  出力先・永続化・転送はlogger providerに委譲
-
-Trace:
-  ログとは別の構造化実行履歴
-  Input / Output / Configの保存はpolicyで明示制御
-
-Security:
-  初期実装では信頼済みWorkflowのみを実行対象とする
-  csxの完全サンドボックスは提供しない
-  Dotnet.Script.Coreは依存解決とコンパイルを簡略化するが、セキュリティ境界ではない
+・Flow という独立概念を作ること
+・Flow(...) という専用記法を作ること
+・Step に Config 専用引数を追加すること
+・Step に StepContext 専用引数を追加すること
+・Step 間の入出力を自動推論すること
+・上流出力を自動的に下流入力へ変換すること
+・Config を Step 専用引数または Step 型プロパティへ自動注入すること
+・並列実行すること
+・分岐、統合を逐次実行モデルに含めること
 ```
+
+---
+
+## 21. 補足設計詳細
+
+以下は実装済みの標準契約を補足する詳細である。
+
+### 21.1 非同期 API
+
+非同期 API は以下を採用する。
+
+- `IAsyncStep<TOut>` を追加する
+- 既存 `IStep<TOut>` は維持する
+- `IStep<TOut>` を `Task<TOut>` 系へ統一しない
+- `IStep<Task<T>>` は通常の同期 Step の戻り値型として扱う
+- 非同期 Step は `RunAsync<TStep, TOut>()` などの明示 API で登録する
+- 非同期ワークフロー実行 API として `ExecuteWorkflowAsync` を追加する
+- 非同期 Step の `ExecuteAsync` には `CancellationToken` を渡す
+
+timeout と外部キャンセルは以下を採用する。
+
+- `WorkflowExecutionOptions` に `TimeSpan? StepTimeout` を追加する
+- `StepTimeout` の既定値は `null` とし、timeout を設定しない
+- `ExecuteWorkflowAsync` の外部 `CancellationToken` と timeout 用の `CancellationToken` を Step 実行ごとに合成する
+- 非同期 Step には合成した `CancellationToken` を渡す
+- timeout は `STEP_TIMEOUT` の失敗結果に変換する
+- 外部キャンセルは `STEP_CANCELED` の失敗結果に変換し、timeout と区別する
+- timeout または外部キャンセル時は対象 Step を失敗 trace とし、エラーコードを記録する
+- timeout または外部キャンセル時は対象 Step の `Produce` と後続 Step を実行しない
+- 同期 Step 実行中は強制中断しない
+- 同期 Step 完了後にキャンセルが要求済みであれば、後続 Step を開始しない
+
+timeout と外部キャンセルの標準契約には以下を含めない。
+
+- CLI の timeout オプション
+- 実行中 Step の強制停止
+- workflow 全体 timeout
+- timeout またはキャンセル専用の trace 状態
+
+retry は以下を採用する。
+
+- `WorkflowExecutionOptions` に `RetryOptions? Retry` を追加する
+- `RetryOptions` に `int MaxAttempts` を追加する
+- `Retry = null` または `MaxAttempts <= 1` は retry なしとする
+- `MaxAttempts` は初回を含む最大試行回数とする
+- retry は全 Step 一律の指定に限定する
+- retry 対象は Step 本体の通常例外だけとする
+- timeout と外部キャンセルは retry 対象外とする
+- timeout と外部キャンセルの両方が観測される場合は外部キャンセルを優先する
+- `Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とする
+- 成功した最後の試行だけ `Produce`、`StoreAs`、`Discard` を実行する
+- 全試行失敗時は `STEP_EXECUTION_FAILED` の失敗結果にする
+- `ExecutionTraceStep` に `Attempt` を追加する
+- ログのスコープの `Attempt` は実試行番号にする
+- retry 予定と最終失敗を構造化ログで記録する
+
+retry の標準契約には以下を含めない。
+
+- CLI の retry オプション
+- Config による retry 指定
+- Step 別 retry 方針
+- retry 待機時間制御
+- retry の例外型による絞り込み
+
+### 21.2 Config 読み込み責務
+
+標準 Config 読み込みはエンジン実行前処理として提供する。
+
+Entry 側は `WithConfig<TBoundaryConfig>()` で CompositeStep 境界 Config 型を宣言し、Step 登録単位の `WithConfig<TConfig>(string sectionPath)` で Step Config 型と境界 Config 型上のプロパティ path を明示する。
+
+CLI `run` は `.csx` ロード後、Entry の境界 Config 型、Step Config メタ情報、`--config` の path を使って YAML 全体を境界 Config 型へ変換する。
+
+宣言された境界 Config と Step Config はすべて最初の Step 実行前に読み込み、型変換、override 適用、`DataAnnotations` と `IValidatableObject` による検証まで完了する。
+
+対象 Step の実行直前に、境界 Config 型上の `sectionPath` プロパティ値を `StepContext.Set<TConfig>(config)` で登録する。同じ Config 型を別プロパティ path で複数回使う場合、後続 Step の Config が同じ型の値を上書きしうる。
+
+Step 登録単位 Config があるのに境界 Config 型宣言がない場合は `CONFIG_LOAD_FAILED` とする。
+
+Step 登録単位 Config がない場合、既存の `WithConfig<TConfig>()` は Entry 全体 Config 互換 API として残す。
+
+`--set` は `EngineArguments.Settings` に保持し、標準 Config へも適用する。
+
+複数 Config ファイルの統合、標準 Config 読み込みによる永続的な名前付き Config 取得、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は標準 Config 契約には含めない。
+
+### 21.3 CLI override の仕様
+
+`--set` は CompositeStep 境界 Config 型に対するプロパティ path override として扱う。
+
+適用順は以下とする。
+
+1. `--config` の YAML 全体を境界 Config 型へ変換する
+2. `--set` を境界 Config 型のプロパティ path override として適用する
+3. `DataAnnotations` と `IValidatableObject` を検証する
+4. 対象 Step の実行直前に、宣言済み `sectionPath` のプロパティ値を `StepContext` に登録する
+
+プロパティ path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は、境界 Config 型の `Convert.ToUpper` に対する override として扱う。対象 Step 実行直前には、`Convert` プロパティ値を `StepContext.Set<ConvertStep.Config>()` に登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
+
+同一 Entry 内の宣言済みプロパティ path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済みプロパティ path に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
+
+プロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名の照合は実行環境の言語設定に依存しない `StringComparison.Ordinal` 相当の完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
+
+入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
+
+配列またはリストは、`Items[0].Name=value` のような既存要素への添字 override だけを扱う。自動拡張、配列全体またはリスト全体の置換は標準 Config override には含めない。
+
+型変換は override 対象プロパティの型に対して行う。標準契約では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。
+
+同一 key の複数 override は後勝ちとする。
+
+無効書式、存在しないプロパティ、型変換失敗、配列またはリストの添字不正は `CONFIG_LOAD_FAILED` とする。ただし、CLI 解析層で `--set` の値がない、`key=value` になっていない、または key が空の場合は CLI 解析エラーとして終了コード 2 で失敗する。
+
+`engine validate` は Config path の存在確認までを維持し、override の型検証は `engine run` で行う。
+
+複数 Config ファイル指定時の統合規則は標準 Config 契約には含めない。
+
+Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を Entry 全体 Config 型へのプロパティ path override として扱う。
+
+### 21.4 Produce 後の値の寿命
+
+`StepInput` に追加された値は、同一 `CompositeStep` 実行中の後続すべての Step へ保持する。
+
+`Produce` と `StoreAs` は、Step 成功後に値を `StepInput` へ追記する。
+
+登録前の上流 Step 以前からは、その値を読めない。
+
+`Discard` は現在 Step の戻り値登録を抑止するだけで、既存値を削除しない。
+
+同じ型キー、または同じ型と名前のキーを再登録しようとした場合は実行時エラーとする。暗黙上書きは行わない。
+
+型キーと名前付きキーは、同じ CLR 型でも別キーとして扱う。
+
+長寿命で上書き可能な共有値は `StepContext` に置く。Step 間で明示的に受け渡す値は `StepInput` に置く。
+
+### 21.5 トレース値の保存
+
+`ExecutionTrace` に `StepInput`、Config、Step 出力全体の値は既定では保存しない。
+
+既定では値そのものを保存せず、Step 名、状態、所要時間、エラーコードを優先する。
+
+`ExecutionTrace` の trace 値の基礎単位は「Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値」とする。
+
+失敗した試行、timeout、外部キャンセルにより `Produce` または `StoreAs` の値登録処理が実行されなかった値は、登録済み値として扱わない。
+
+既存の `Produce`、名前付き `Produce`、`StoreAs` は値を trace に保存しない。値を保存する場合は値生成処理ごとに `TraceValueCapture.Serialized` または `TraceValueCapture.Redacted` を明示する。
+
+`Discard` は新しい値を `StepInput` に登録しないため、trace 値も生成しない。
+
+trace 値は `ExecutionTraceStep.ProducedValues` に入る `ExecutionTraceValue` の一覧として表す。
+
+`ExecutionTraceValue` は次を持つ。
+
+- 型名
+- 任意の名前
+- source
+- 保存状態
+- 直列化文字列
+- 直列化失敗理由
+
+source は `Produce` または `StoreAs` とする。
+
+`TraceValueCapture.Serialized` は、値本文を `System.Text.Json` で文字列へ直列化して保存する。
+
+`TraceValueCapture.Redacted` は、型名、任意の名前、source、保存状態だけを保存し、直列化文字列は保存しない。
+
+直列化できない値は workflow を失敗させず、当該 trace 値を `NotSerializable` として値本文なしで残す。
+
+Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の値一覧は空である。
+
+値生成処理の失敗または重複登録失敗では当該 Step を失敗 trace とし、値一覧は空にする。部分的に成功した値も失敗 trace へ保存しない。
+
+秘匿値の自動検出、属性による秘匿、プロパティ単位秘匿、trace 永続化形式、CLI 出力形式、大きさ上限、厳格失敗動作は標準 trace 契約には含めない。
+
+`TRACE_SERIALIZATION_FAILED` は trace 外部保存や厳格動作用として残し、既定 workflow 失敗には使わない。
+
+### 21.6 csx 依存の再現性
+
+NuGet 参照の再現性は、利用者向けの `devo6.nuget.lock.yaml` で扱う。
+
+`#r "nuget: package, version"` は NuGet ロックファイルの直接参照として扱う。
+
+`#load "nuget: ..."` は NuGet script パッケージ読み込みとして扱う。
+
+NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
+
+エンジン側は利用者向けの `devo6.nuget.lock.yaml` と、許可済み直接参照、解決済み依存関係、`targetFramework`、実行時識別子、パッケージ参照元、`Dotnet.Script.Core` version の比較を担当する。
+
+`dotnet-script` 互換の `#load "nuget: PackageId, Version"` を採用し、パッケージ内 path をディレクティブに追加する独自仕様は採用しない。
+
+`#load "nuget: ..."` から得た直接参照も、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
+
+NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解析、実行時 assembly 解決、最終コンパイル用の NuGet script source 解決機構は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
+
+通常の検査では固定データを返す依存関係 provider を使い、外部 NuGet source への通信を必須にしない。
+
+必要に応じてローカルの NuGet 参照元を使う追加検証を用意するが、通常の `dotnet test` の前提にはしない。
+
+### 21.7 Step 名の名前空間化
+
+Entry として公開される `CompositeStep` は短い名前と任意の名前空間名を持つ。
+
+採用する API は `CompositeStep.Define("Build", namespaceName: "Deploy")` とする。`CompositeStep.Define("Build")` は従来互換の名前空間なし Entry とする。
+
+名前空間付き Entry の完全修飾名は `Deploy.Build` とする。名前空間なし Entry の完全修飾名は短い名前と同じ `Build` とする。
+
+CLI は既存の `--entry` オプションを維持し、`--entry Deploy.Build` で名前空間付き Entry を指定する。新しいオプションは追加しない。
+
+ローダーは script 変数名だけで Entry を解決しない。ロード済み `.csx` と `#load` 先にある `CompositeStep` の `Name`、`NamespaceName`、`QualifiedName` を読み取り、公開名として解決する。
+
+短い `--entry Build` は、名前空間なしの `Build` を優先する。名前空間なしの `Build` がなければ、短い名前が `Build` である Entry が 1 件だけの場合に互換解決する。複数候補がある場合は `ENTRY_STEP_NOT_FOUND` で失敗し、完全修飾名指定を求める。
+
+重複検証は完全修飾名単位とする。`Deploy.Build` と `Test.Build` は共存でき、`Deploy.Build` 同士は `DUPLICATE_STEP_NAME` で失敗する。
+
+`WorkflowResult.EntryName`、CLI 成功出力、ログスコープの `EntryName` は完全修飾名を記録する。`ExecutionTraceStep.StepName` とログスコープの `StepName` は従来どおり Step 型名を基本とする。
+
+`WithConfig<TConfig>()`、`WithConfig<TConfig>(string sectionPath)`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()` 後も、短い名前、名前空間名、完全修飾名は維持する。
+
+追加または変更する API、ヘルパー、テストメソッドの関数名は英語にする。XMLコメントは日本語とし、パブリック以外の関数、コンストラクタ、プロパティ、レコードのプロパティ、入れ子型もコメント対象とする。
+
+少なくとも以下を検査する。
+
+- `CompositeStep.Define("Build", namespaceName: "Deploy")` が短い名前、名前空間名、完全修飾名 `Deploy.Build` を持つ
+- `CompositeStep.Define("Build")` が完全修飾名 `Build` を持ち、既存互換を維持する
+- `CsxEntryLoader.Execute(scriptPath, "Deploy.Build")` が名前空間付き Entry を実行し、`WorkflowResult.EntryName == "Deploy.Build"` になる
+- `CsxEntryLoader.Validate(scriptPath, "Deploy.Build")` が名前空間付き Entry を成功検証する
+- `Deploy.Build` と `Test.Build` が同じ読み込み単位に共存できる
+- `Deploy.Build` が 2 つある場合は `DUPLICATE_STEP_NAME` になる
+- 名前空間なしの `Build` と `Deploy.Build` が共存でき、短い `--entry Build` は名前空間なしの `Build` に解決する
+- 名前空間なしの `Build` がなく、短い名前 `Build` が 1 件だけなら短い `--entry Build` で互換解決できる
+- 名前空間なしの `Build` がなく、`Deploy.Build` と `Test.Build` がある状態で短い `--entry Build` を指定すると `ENTRY_STEP_NOT_FOUND` になる
+- CLI の `run` と `validate` が `--entry Deploy.Build` を透過し、成功時に `Succeeded: Deploy.Build` を出す
+- `#load` 先で定義された `Deploy.Build` を `--entry Deploy.Build` で解決できる
+- `WithConfig<TConfig>()`、`WithConfig<TConfig>(string sectionPath)`、`Run<TStep, TStepOut>()`、`RunAsync<TStep, TStepOut>()` 後も名前空間メタ情報が維持される
+
+---
+
+## 22. 最終整理
+
+本設計の中核は以下である。
+
+```text
+Step が唯一の実行単位。
+Flow は独立概念ではなく CompositeStep として扱う。
+Step は StepInput のみを受け取る。
+StepInput は可変長の型付き・名前付き入力集合である。
+StepContext は StepInput に自動で含まれる。
+Config は StepContext に置く。
+上流 Step の結果を下流に渡す場合は Produce で明示する。
+Entry の公開名は CompositeStep の完全修飾名として扱う。
+エンジンは Step 間の接続を自動推論しない。
+```
+
+この設計により、以下を両立する。
+
+- Step の疎結合
+- Config と実行時データの統一的な扱い
+- 上流出力の一部だけを下流へ渡す明示性
+- Flow/Step 概念の一本化
+- `.csx` での実用的な書き心地
+- `Dotnet.Script.Core` による NuGet / 外部 `.csx` 解決
