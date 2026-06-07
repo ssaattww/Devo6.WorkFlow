@@ -1,0 +1,28 @@
+name: PR xUnit Tests
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore Devo6.WorkFlow.sln
+
+      - name: Test
+        run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal
