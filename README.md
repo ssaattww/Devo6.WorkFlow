@@ -4,6 +4,57 @@
 
 Step は `IStep<TOut>` または `IAsyncStep<TOut>` を実装します。Step 間の値は `Produce` や `StoreAs` で明示的に渡し、Step は必要な値を `StepInput` から取得します。Config は Step 専用引数ではなく、対象 Step の実行直前に `StepContext` へ登録されます。
 
+## 必要な環境
+
+別の端末に導入して使う場合は、.NET 8 以降の開発環境を入れてください。`dotnet tool install`、`dotnet tool update`、手元のパッケージ作成、`.csx` の実行検証に `dotnet` CLI が必要です。開発環境には通常の実行に必要な実行環境も含まれます。
+
+ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることと、`devo6.nuget.lock.yaml` がワークフロー root にあることも必要です。
+
+## ツールとして使う
+
+リポジトリからパッケージを作る場合は、次のように作成します。
+
+```bash
+dotnet pack src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj -c Release -o ./artifacts/packages
+```
+
+別の端末へパッケージを配置した後、配置先ディレクトリをパッケージ参照元として指定します。
+
+```bash
+dotnet tool install --global Devo6.WorkFlow.Cli --add-source ./artifacts/packages
+```
+
+導入後は `engine` コマンドを使います。
+
+```bash
+engine run main.csx --config appsettings.yaml
+engine validate main.csx --config appsettings.yaml
+```
+
+更新する場合は同じパッケージ参照元を指定します。
+
+```bash
+dotnet tool update --global Devo6.WorkFlow.Cli --add-source ./artifacts/packages
+```
+
+NuGet の公開先へ登録済みの安定版を導入する場合は、パッケージ参照元の指定は不要です。
+
+```bash
+dotnet tool install --global Devo6.WorkFlow.Cli
+```
+
+公開前版を導入する場合は、公開前版を含めて検索します。
+
+```bash
+dotnet tool install --global Devo6.WorkFlow.Cli --prerelease
+```
+
+## NuGet 自動公開
+
+`.github/workflows/publish-nuget.yml` は、公開版の登録、`master` への反映、手動実行で NuGet の公開先へ CLI ツールを公開します。公開前に `dotnet test`、`dotnet pack`、一時配置先への `dotnet tool install`、`engine` 起動確認を行います。
+
+公開にはリポジトリの自動実行で使う秘密情報 `NUGET_API_KEY` が必要です。値には NuGet の公開先で作成した API キーを設定してください。
+
 ## 最小例
 
 `main.csx`:

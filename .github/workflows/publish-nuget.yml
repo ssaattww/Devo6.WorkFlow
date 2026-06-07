@@ -1,0 +1,142 @@
+name: Publish NuGet Package
+
+on:
+  release:
+    types:
+      - published
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: "Package version override"
+        required: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Resolve package project
+        id: project
+        shell: bash
+        run: |
+          project="src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"
+
+          if [[ ! -f "$project" ]]; then
+            echo "Publish project not found: $project"
+            exit 1
+          fi
+
+          echo "path=$project" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          project="${{ steps.project.outputs.path }}"
+          manual_version="${{ inputs.package_version || '' }}"
+          event_name="${{ github.event_name }}"
+          ref_name="${{ github.ref_name }}"
+          release_tag="${{ github.event.release.tag_name }}"
+          release_is_prerelease="${{ github.event.release.prerelease }}"
+
+          read_project_version() {
+            local value
+            value=$(grep -oPm1 '(?<=<VersionPrefix>)[^<]+' "$project" || true)
+            if [[ -z "$value" ]]; then
+              value=$(grep -oPm1 '(?<=<Version>)[^<]+' "$project" || true)
+            fi
+            if [[ -z "$value" ]]; then
+              value="0.1.0"
+            fi
+            echo "${value%%-*}"
+          }
+
+          if [[ -n "$manual_version" ]]; then
+            package_version="$manual_version"
+          elif [[ "$event_name" == "release" ]]; then
+            base_version="${release_tag#v}"
+            if [[ "$release_is_prerelease" == "true" ]]; then
+              if [[ "$base_version" == *-* ]]; then
+                package_version="$base_version"
+              else
+                package_version="${base_version}-pre"
+              fi
+            else
+              if [[ "$base_version" == *-* ]]; then
+                echo "Release is not pre-release, but tag contains pre-release suffix: $release_tag"
+                exit 1
+              fi
+              package_version="$base_version"
+            fi
+          elif [[ "$event_name" == "push" && "$ref_name" == "master" ]]; then
+            version_prefix=$(read_project_version)
+            package_version="${version_prefix}-ci.${GITHUB_RUN_NUMBER}"
+          else
+            version_prefix=$(read_project_version)
+            package_version="${version_prefix}-ci.${GITHUB_RUN_NUMBER}"
+          fi
+
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Invalid package version: $package_version"
+            exit 1
+          fi
+
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore Devo6.WorkFlow.sln
+
+      - name: Test
+        run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore
+
+      - name: Pack CLI tool
+        run: |
+          dotnet pack "${{ steps.project.outputs.path }}" \
+            --configuration Release \
+            --no-build \
+            --output ./artifacts \
+            -p:ContinuousIntegrationBuild=true \
+            -p:PackageVersion=${{ steps.version.outputs.package_version }}
+
+      - name: Verify tool install
+        shell: bash
+        run: |
+          toolpath=$(mktemp -d)
+          dotnet tool install \
+            --tool-path "$toolpath" \
+            Devo6.WorkFlow.Cli \
+            --add-source ./artifacts \
+            --version "${{ steps.version.outputs.package_version }}"
+          "$toolpath/engine"
+          rm -rf "$toolpath"
+
+      - name: Validate NuGet API key
+        if: ${{ env.NUGET_API_KEY == '' }}
+        run: |
+          echo "NUGET_API_KEY secret is not set."
+          exit 1
+
+      - name: Publish to NuGet.org
+        if: ${{ env.NUGET_API_KEY != '' }}
+        run: |
+          dotnet nuget push "./artifacts/*.nupkg" \
+            --api-key "${{ env.NUGET_API_KEY }}" \
+            --source "https://api.nuget.org/v3/index.json" \
+            --skip-duplicate
