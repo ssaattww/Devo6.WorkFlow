@@ -402,10 +402,10 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// 許可外 NuGet 参照が dependency graph 解決より前に拒否されることを確認します。
+    /// 明示制限された NuGet 参照が dependency graph 解決より前に拒否されることを確認します。
     /// </summary>
-    [Fact(DisplayName = "Execute does not resolve dependencies when NuGet reference is not allowed")]
-    public void ExecuteDoesNotResolveDependenciesWhenNuGetReferenceIsNotAllowed()
+    [Fact(DisplayName = "Execute does not resolve dependencies when NuGet reference is restricted")]
+    public void ExecuteDoesNotResolveDependenciesWhenNuGetReferenceIsRestricted()
     {
         string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
         WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
@@ -413,6 +413,7 @@ public sealed class NuGetLockContractTests
         var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
         {
             WorkflowRoot = Path.GetDirectoryName(scriptPath),
+            AllowedNuGetReferences = [new CsxNuGetReference("Other.Package", "1.0.0")],
             NuGetDependencyGraphProvider = provider,
         });
 
@@ -501,10 +502,10 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// provider が返した script 内の許可外 nested NuGet script load が provider 後に拒否されることを確認します。
+    /// provider が返した script 内の明示制限外 nested NuGet script load が provider 後に拒否されることを確認します。
     /// </summary>
-    [Fact(DisplayName = "Validate rejects unallowed nested NuGet script load after provider")]
-    public void ValidateRejectsUnallowedNestedNuGetScriptLoadAfterProvider()
+    [Fact(DisplayName = "Validate rejects restricted nested NuGet script load after provider")]
+    public void ValidateRejectsRestrictedNestedNuGetScriptLoadAfterProvider()
     {
         string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "NestedLoadedStep"));
         WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
@@ -516,7 +517,10 @@ public sealed class NuGetLockContractTests
                 [CreateResolvedScript("CsvHelper", "33.0.1", "contentFiles/csx/net8.0/csvhelper.csx", "#load \"nuget: Other.Package, 1.0.0\"")],
                 ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
         };
-        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+        CsxEntryLoader loader = CreateLoader(
+            scriptPath,
+            provider,
+            [new CsxNuGetReference("CsvHelper", "33.0.1")]);
 
         WorkflowValidationResult result = loader.Validate(scriptPath);
 
@@ -660,10 +664,10 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// 許可外 NuGet script load が lock file 検査と provider 解決より前に拒否されることを確認します。
+    /// 明示制限外 NuGet script load が lock file 検査と provider 解決より前に拒否されることを確認します。
     /// </summary>
-    [Fact(DisplayName = "Execute rejects unallowed NuGet script load before lock and provider")]
-    public void ExecuteRejectsUnallowedNuGetScriptLoadBeforeLockAndProvider()
+    [Fact(DisplayName = "Execute rejects restricted NuGet script load before lock and provider")]
+    public void ExecuteRejectsRestrictedNuGetScriptLoadBeforeLockAndProvider()
     {
         string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
         WriteDefaultLockFile(scriptPath, directVersion: "33.0.1", resolvedVersion: "8.0.0");
@@ -671,6 +675,7 @@ public sealed class NuGetLockContractTests
         var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
         {
             WorkflowRoot = Path.GetDirectoryName(scriptPath),
+            AllowedNuGetReferences = [new CsxNuGetReference("Other.Package", "1.0.0")],
             NuGetDependencyGraphProvider = provider,
         });
 
@@ -833,7 +838,7 @@ public sealed class NuGetLockContractTests
         return new CsxEntryLoader(new CsxEntryLoaderOptions
         {
             WorkflowRoot = Path.GetDirectoryName(scriptPath),
-            AllowedNuGetReferences = allowedNuGetReferences ?? [new CsxNuGetReference("CsvHelper", "33.0.1")],
+            AllowedNuGetReferences = allowedNuGetReferences ?? [],
             RequireNuGetLock = requireNuGetLock,
             NuGetDependencyGraphProvider = provider,
         });

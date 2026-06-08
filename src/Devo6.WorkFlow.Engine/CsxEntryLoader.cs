@@ -366,7 +366,7 @@ public sealed class CsxEntryLoader
     }
 
     /// <summary>
-    /// NuGet directive が固定 version かつ許可済みであることを確認します。
+    /// NuGet directive が固定 version で、明示制限がある場合はその範囲内であることを確認します。
     /// </summary>
     /// <param name="referenceValue">NuGet directive に書かれた参照値。</param>
     /// <returns>検査済みの NuGet 直接参照。</returns>
@@ -382,11 +382,10 @@ public sealed class CsxEntryLoader
                 $"NuGet reference version is not allowed: {referenceValue}");
         }
 
-        bool allowed = loaderOptions.AllowedNuGetReferences.Any(
-            reference => string.Equals(reference.PackageId, parts[0], StringComparison.OrdinalIgnoreCase)
-                && string.Equals(reference.Version, parts[1], StringComparison.OrdinalIgnoreCase));
-
-        if (!allowed)
+        if (loaderOptions.AllowedNuGetReferences.Count > 0
+            && !loaderOptions.AllowedNuGetReferences.Any(
+                reference => string.Equals(reference.PackageId, parts[0], StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(reference.Version, parts[1], StringComparison.OrdinalIgnoreCase)))
         {
             throw new CsxReferenceValidationException(
                 WorkflowErrorCodes.ScriptReferenceNotAllowed,
@@ -1908,7 +1907,7 @@ public sealed class CsxEntryLoader
 }
 
 /// <summary>
-/// trusted .csx entry loading に使う workflow root、参照許可一覧、NuGet lock 設定を表します。
+/// trusted .csx entry loading に使う workflow root、参照制限一覧、NuGet lock 設定を表します。
 /// </summary>
 public sealed class CsxEntryLoaderOptions
 {
@@ -1928,7 +1927,7 @@ public sealed class CsxEntryLoaderOptions
     public IReadOnlyList<string> AllowedReferenceDirectories { get; init; } = [];
 
     /// <summary>
-    /// #r nuget directive で許可する固定 NuGet package id と version の組を取得します。
+    /// #r nuget directive を制限する固定 NuGet package id と version の組を取得します。空の場合は固定 version の NuGet 参照を制限しません。
     /// </summary>
     public IReadOnlyList<CsxNuGetReference> AllowedNuGetReferences { get; init; } = [];
 

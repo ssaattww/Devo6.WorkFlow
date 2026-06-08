@@ -288,7 +288,7 @@ public static class Program
     /// <param name="EntryName">明示指定された entry Step 名。</param>
     /// <param name="ConfigPath">指定された config file path。</param>
     /// <param name="Settings">--set option で指定された override 設定。</param>
-    /// <param name="AllowedNuGetReferences">--allow-nuget option で指定された NuGet 許可参照。</param>
+    /// <param name="AllowedNuGetReferences">--allow-nuget option で指定された NuGet 参照制限。一覧が空の場合は制限しません。</param>
     /// <param name="RequireNuGetLock">--locked option で指定された NuGet lock file 必須設定。</param>
     private sealed record CliCommand(
         string Name,

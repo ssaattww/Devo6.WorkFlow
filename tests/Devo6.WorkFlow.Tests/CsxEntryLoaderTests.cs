@@ -780,17 +780,21 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
-    /// 許可一覧にない NuGet 参照が package restore へ進まず SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
+    /// 明示制限した NuGet 参照が package restore へ進まず SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
     /// </summary>
-    [Fact(DisplayName = "許可一覧にない NuGet 参照は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
-    public void 許可一覧にないNuGet参照はScriptReferenceNotAllowedになる()
+    [Fact(DisplayName = "明示制限外 NuGet 参照は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
+    public void 明示制限外NuGet参照はScriptReferenceNotAllowedになる()
     {
         string scriptPath = CreateScript(
             """
             #r "nuget: CsvHelper, 33.0.1"
             """);
+        var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            AllowedNuGetReferences = [new CsxNuGetReference("Other.Package", "1.0.0")],
+        });
 
-        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);
+        WorkflowResult result = loader.Execute(scriptPath);
 
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.ScriptReferenceNotAllowed, result.ErrorCode);
