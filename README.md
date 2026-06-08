@@ -281,4 +281,8 @@ NuGet script パッケージは `dotnet-script` 互換の形式で読み込め�
 - CLI の retry オプション
 - Config による retry 指定
 
+## ライセンス
+
+このリポジトリは [MIT](LICENSE) ライセンスで公開します。
+
 詳細な設計とエラー規則は `doc/workflow_engine_spec.md` を参照してください。

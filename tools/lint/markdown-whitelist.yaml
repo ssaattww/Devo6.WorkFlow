@@ -51,6 +51,10 @@ entries:
     description: csx の依存解決とコンパイルに使う部品名。
   - term: NuGet
     description: .NET のパッケージ管理に関する名称。
+  - term: MIT
+    description: このリポジトリに適用するライセンス名。
+  - term: ライセンス
+    description: 利用と再配布の許諾条件を示す語。
   - term: .NET
     description: C# 実行基盤の名称。
   - term: retry
