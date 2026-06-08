@@ -1,2 +1,3 @@
-Convert:
-  Prefix: "converted: "
+Pipeline:
+  Report:
+    Heading: "Composite sample report"

@@ -1,1 +1,11 @@
-hello from multi folder composite
+---
+title: Composite sample
+category: guide
+tags:
+  - workflow
+  - nuget
+  - yaml
+---
+  hello   from multi folder composite
+this sample keeps yaml metadata separate.
+nested steps build a report.

@@ -66,28 +66,35 @@ dotnet add package Devo6.WorkFlow.Engine
 
 ## 複数フォルダの例
 
-`samples/multi-folder-composite/main.csx` は、参照用 NuGet パッケージを `#r "nuget: Devo6.WorkFlow.Engine, 0.1.0"` で参照し、別フォルダにある読み込み、変換、保存の Step を `#load` します。外側 `CompositeStep` の Step から内側 `CompositeStep` を実行します。
+`samples/multi-folder-composite/main.csx` は、参照用 NuGet パッケージを `#r "nuget: Devo6.WorkFlow.Engine, 0.1.0"`、YAML 解析器を `#r "nuget: YamlDotNet, 16.3.0"` で参照し、別フォルダにある Step を `#load` します。内側 `CompositeStep` は YAML 前付け付き文書を読み込み、付加情報と本文の分離、本文整形、統計作成、保存内容作成を担当します。外側 `CompositeStep` は内側の結果を受け取り、保存 Step を呼びます。
 
 ```text
 samples/multi-folder-composite/
   main.csx
   appsettings.yaml
+  input/source.txt
   shared/contracts.csx
   steps/load/appsettings.yaml
   steps/load/load-text-step.csx
-  steps/convert/appsettings.yaml
-  steps/convert/convert-text-step.csx
+  steps/parse/appsettings.yaml
+  steps/parse/parse-document-step.csx
+  steps/normalize/appsettings.yaml
+  steps/normalize/normalize-text-step.csx
+  steps/analyze/appsettings.yaml
+  steps/analyze/analyze-text-step.csx
+  steps/report/appsettings.yaml
+  steps/report/build-report-step.csx
   steps/save/appsettings.yaml
   steps/save/save-text-step.csx
 ```
 
 ```bash
-engine run samples/multi-folder-composite/main.csx --config appsettings.yaml --allow-nuget Devo6.WorkFlow.Engine,0.1.0
+engine run samples/multi-folder-composite/main.csx --config appsettings.yaml --allow-nuget Devo6.WorkFlow.Engine,0.1.0 --allow-nuget YamlDotNet,16.3.0
 ```
 
-この例では、外側 `CompositeStep` が Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。`steps/load/appsettings.yaml`、`steps/convert/appsettings.yaml`、`steps/save/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Convert.Prefix` だけを部分上書きします。
+この例では、外側 `CompositeStep` が `Pipeline.*` と `Save` の境界 Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。各 `steps/*/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Pipeline.Report.Heading` だけを部分上書きします。CLI からは `--set Pipeline.Normalize.Uppercase=false` や `--set Pipeline.Report.Heading=...` のように上書きできます。
 
-NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 を取得できる環境で、実行側が同じ参照を `--allow-nuget` で許可します。`NuGet.config` がある場合は通常の NuGet 設定として使われます。再現性を固定したい場合だけ `devo6.nuget.lock.yaml` を置き、`--locked` を指定します。
+NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 と `YamlDotNet` 16.3.0 を取得できる環境で、実行側が同じ参照を `--allow-nuget` で許可します。`NuGet.config` がある場合は通常の NuGet 設定として使われます。このサンプルは通常利用を示すためロックファイルを置きません。再現性を固定したい場合だけ `devo6.nuget.lock.yaml` を置き、`--locked` を指定します。
 
 ## 最小例
 

@@ -29,6 +29,6 @@ public sealed class LoadTextStep : IStep<LoadTextResult>
         string entryDirectory = Path.GetDirectoryName(arguments.EntryPath)!;
         string inputPath = Path.Combine(entryDirectory, config.Path);
 
-        return new LoadTextResult(File.ReadAllText(inputPath).Trim());
+        return new LoadTextResult(File.ReadAllText(inputPath));
     }
 }

@@ -767,6 +767,18 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 
 `.csx` の実行、NuGet 解決、外部 `.csx` 解決には `Dotnet.Script.Core` を利用する。
 
+### 9.3 複数フォルダの利用者向け例
+
+`samples/multi-folder-composite/` は、内側と外側の `CompositeStep` の責務を分けた例とする。
+
+内側 `TextPipeline` は `LoadTextStep`、`ParseDocumentStep`、`NormalizeTextStep`、`AnalyzeTextStep`、`BuildReportStep` を順に実行し、YAML 前付け付き文書から出力文字列を作る。
+
+外側 `Main` は `TextPipeline` の結果を `SaveTextStep` へ渡し、保存先の扱いを内側処理から分離する。
+
+Entry `main.csx` は参照用パッケージを `#r "nuget: Devo6.WorkFlow.Engine, 0.1.0"` で参照し、YAML 前付け解析用に `#r "nuget: YamlDotNet, 16.3.0"` も入口だけで参照する。Step ファイル側には NuGet 参照を書かない。
+
+root `appsettings.yaml` は `Pipeline.Report.Heading` のような部分上書きだけを持ち、Step ごとの既定値は各 `steps/*/appsettings.yaml` に置く。通常利用ではロックファイルを置かず、実行側が `--allow-nuget Devo6.WorkFlow.Engine,0.1.0 --allow-nuget YamlDotNet,16.3.0` で参照を許可する。
+
 ---
 
 ## 10. Dotnet.Script.Core 利用

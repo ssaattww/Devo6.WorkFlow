@@ -20,6 +20,16 @@ public sealed class SampleWorkflowTests
     private const string SampleNuGetPackageVersion = "0.1.0";
 
     /// <summary>
+    /// サンプルが参照する第三者 NuGet package id を表します。
+    /// </summary>
+    private const string SampleYamlNuGetPackageId = "YamlDotNet";
+
+    /// <summary>
+    /// サンプルが参照する第三者 NuGet package version を表します。
+    /// </summary>
+    private const string SampleYamlNuGetPackageVersion = "16.3.0";
+
+    /// <summary>
     /// サンプル lock file の target framework を表します。
     /// </summary>
     private const string SampleTargetFramework = "net8.0";
@@ -68,7 +78,18 @@ public sealed class SampleWorkflowTests
         Assert.True(
             result.Succeeded,
             $"エラーコード: {result.ErrorCode}{Environment.NewLine}エラー: {result.ErrorMessage}");
-        Assert.Equal("converted: HELLO FROM MULTI FOLDER COMPOSITE", File.ReadAllText(outputPath));
+        string report = File.ReadAllText(outputPath);
+        Assert.Contains("# Composite sample report", report);
+        Assert.Contains("Title: Composite sample", report);
+        Assert.Contains("Category: guide", report);
+        Assert.Contains("Tags: workflow, nuget, yaml", report);
+        Assert.Contains("Line count: 3", report);
+        Assert.Contains("Word count: 16", report);
+        Assert.Contains("Character count: 104", report);
+        Assert.Contains("Tag count: 3", report);
+        Assert.Contains("HELLO FROM MULTI FOLDER COMPOSITE", report);
+        Assert.Contains("THIS SAMPLE KEEPS YAML METADATA SEPARATE.", report);
+        Assert.Contains("NESTED STEPS BUILD A REPORT.", report);
     }
 
     /// <summary>
@@ -92,14 +113,18 @@ public sealed class SampleWorkflowTests
                 ConfigPath = configPath,
                 Settings = new Dictionary<string, string>
                 {
-                    ["Convert.ToUpper"] = "false",
+                    ["Pipeline.Normalize.Uppercase"] = "false",
+                    ["Pipeline.Report.Heading"] = "Override report",
                 },
             }));
 
         Assert.True(
             result.Succeeded,
             $"エラーコード: {result.ErrorCode}{Environment.NewLine}エラー: {result.ErrorMessage}");
-        Assert.Equal("converted: hello from multi folder composite", File.ReadAllText(outputPath));
+        string report = File.ReadAllText(outputPath);
+        Assert.Contains("# Override report", report);
+        Assert.Contains("hello from multi folder composite", report);
+        Assert.DoesNotContain("HELLO FROM MULTI FOLDER COMPOSITE", report);
     }
 
     /// <summary>
@@ -111,9 +136,11 @@ public sealed class SampleWorkflowTests
         string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
         string rootConfigPath = Path.Combine(sampleDirectory, "appsettings.yaml");
 
-        Assert.False(YamlPathExists(rootConfigPath, "Load"));
-        Assert.Equal("converted: ", ReadYamlScalar(rootConfigPath, "Convert", "Prefix"));
+        Assert.False(YamlPathExists(rootConfigPath, "Pipeline", "Load"));
+        Assert.False(YamlPathExists(rootConfigPath, "Pipeline", "Parse"));
+        Assert.False(YamlPathExists(rootConfigPath, "Pipeline", "Analyze"));
         Assert.False(YamlPathExists(rootConfigPath, "Save"));
+        Assert.Equal("Composite sample report", ReadYamlScalar(rootConfigPath, "Pipeline", "Report", "Heading"));
     }
 
     /// <summary>
@@ -128,6 +155,7 @@ public sealed class SampleWorkflowTests
         string entrySource = File.ReadAllText(entryPath);
 
         Assert.Contains($"#r \"nuget: {SampleNuGetPackageId}, {SampleNuGetPackageVersion}\"", entrySource);
+        Assert.Contains($"#r \"nuget: {SampleYamlNuGetPackageId}, {SampleYamlNuGetPackageVersion}\"", entrySource);
         foreach (string scriptPath in Directory.EnumerateFiles(sampleDirectory, "*.csx", SearchOption.AllDirectories)
             .Where(path => !string.Equals(Path.GetFullPath(path), Path.GetFullPath(entryPath), StringComparison.Ordinal)))
         {
@@ -138,20 +166,29 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
-    /// 複数フォルダのサンプルが外側 Step から内側 CompositeStep を実行する構成であることを検査します。
+    /// 複数フォルダのサンプルが内側と外側で責務を分けた CompositeStep 構成であることを検査します。
     /// </summary>
-    [Fact(DisplayName = "複数フォルダのサンプルは内側 CompositeStep を外側 Step から実行する")]
+    [Fact(DisplayName = "複数フォルダのサンプルは内側と外側で責務を分ける")]
     public void MultiFolderCompositeSampleUsesNestedCompositeStep()
     {
         string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
         string entryPath = Path.Combine(sampleDirectory, "main.csx");
         string source = File.ReadAllText(entryPath);
 
-        Assert.Contains("public sealed class RunTextPipelineStep : IStep<Unit>", source);
+        Assert.Contains("public sealed class RunTextPipelineStep : IStep<ReportTextResult>", source);
         Assert.Contains("CompositeStep.Define(\"TextPipeline\")", source);
-        Assert.Contains(".Run<RunTextPipelineStep, Unit>()", source);
-        Assert.Contains(".WithConfig<LoadTextStep.Config>(\"Load\")", source);
-        Assert.Contains(".WithConfig<ConvertTextStep.Config>(\"Convert\")", source);
+        Assert.Contains(".Run<LoadTextStep, LoadTextResult>()", source);
+        Assert.Contains(".Run<ParseDocumentStep, ParsedDocument>()", source);
+        Assert.Contains(".Run<NormalizeTextStep, NormalizedDocument>()", source);
+        Assert.Contains(".Run<AnalyzeTextStep, AnalyzedDocument>()", source);
+        Assert.Contains(".Run<BuildReportStep, ReportTextResult>()", source);
+        Assert.Contains(".Run<RunTextPipelineStep, ReportTextResult>()", source);
+        Assert.Contains(".Run<SaveTextStep, Unit>()", source);
+        Assert.Contains(".WithConfig<LoadTextStep.Config>(\"Pipeline.Load\"", source);
+        Assert.Contains(".WithConfig<ParseDocumentStep.Config>(\"Pipeline.Parse\"", source);
+        Assert.Contains(".WithConfig<NormalizeTextStep.Config>(\"Pipeline.Normalize\"", source);
+        Assert.Contains(".WithConfig<AnalyzeTextStep.Config>(\"Pipeline.Analyze\"", source);
+        Assert.Contains(".WithConfig<BuildReportStep.Config>(\"Pipeline.Report\"", source);
         Assert.Contains(".WithConfig<SaveTextStep.Config>(\"Save\")", source);
     }
 
@@ -184,7 +221,11 @@ public sealed class SampleWorkflowTests
     {
         return new CsxEntryLoader(new CsxEntryLoaderOptions
         {
-            AllowedNuGetReferences = [new CsxNuGetReference(SampleNuGetPackageId, SampleNuGetPackageVersion)],
+            AllowedNuGetReferences =
+            [
+                new CsxNuGetReference(SampleNuGetPackageId, SampleNuGetPackageVersion),
+                new CsxNuGetReference(SampleYamlNuGetPackageId, SampleYamlNuGetPackageVersion),
+            ],
             NuGetDependencyGraphProvider = new FixedNuGetDependencyGraphProvider(CreateSampleNuGetGraph()),
         });
     }
@@ -201,6 +242,7 @@ public sealed class SampleWorkflowTests
             [
                 typeof(CompositeStep).Assembly.Location,
                 typeof(IStep<>).Assembly.Location,
+                typeof(YamlStream).Assembly.Location,
             ],
             resolutionMetadata: CreateSampleNuGetResolutionMetadata());
     }
@@ -243,7 +285,7 @@ public sealed class SampleWorkflowTests
             new("System.Reflection.Metadata", "9.0.0", isDirect: false),
             new("System.Security.Cryptography.Pkcs", "6.0.4", isDirect: false),
             new("System.Security.Cryptography.ProtectedData", "4.4.0", isDirect: false),
-            new("YamlDotNet", "16.3.0", isDirect: false),
+            new(SampleYamlNuGetPackageId, SampleYamlNuGetPackageVersion, isDirect: true),
         ];
     }
 
