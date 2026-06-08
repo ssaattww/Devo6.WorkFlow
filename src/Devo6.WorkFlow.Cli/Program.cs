@@ -15,10 +15,21 @@ public static class Program
     /// <returns>成功時は 0。command、validation、または workflow 失敗時は 0 以外。</returns>
     public static int Main(string[] args)
     {
+        return Run(args);
+    }
+
+    /// <summary>
+    /// command-line interface を実行して process exit code を返します。
+    /// </summary>
+    /// <param name="args">command-line 引数。</param>
+    /// <param name="nuGetDependencyGraphProvider">NuGet 依存 graph provider。null の場合は既定 provider を使います。</param>
+    /// <returns>成功時は 0。command、validation、または workflow 失敗時は 0 以外。</returns>
+    internal static int Run(string[] args, ICsxNuGetDependencyGraphProvider? nuGetDependencyGraphProvider = null)
+    {
         if (args.Length == 0)
         {
             Console.WriteLine("Devo6.WorkFlow CLI");
-            Console.WriteLine("Usage: engine run|validate <entry.csx> [--entry Name] [--config path] [--set key=value]");
+            Console.WriteLine("Usage: engine run|validate <entry.csx> [--entry Name] [--config path] [--set key=value] [--allow-nuget PackageId,Version] [--locked]");
 
             return 0;
         }
@@ -32,7 +43,12 @@ public static class Program
 
         string entryPath = Path.GetFullPath(command.EntryPath);
         string configPath = ResolveConfigPath(entryPath, command.ConfigPath);
-        var loader = new CsxEntryLoader();
+        var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            AllowedNuGetReferences = command.AllowedNuGetReferences,
+            RequireNuGetLock = command.RequireNuGetLock,
+            NuGetDependencyGraphProvider = nuGetDependencyGraphProvider,
+        });
 
         if (command.Name == "validate")
         {
@@ -100,7 +116,7 @@ public static class Program
     /// <returns>parse に成功した場合は true。</returns>
     private static bool TryParse(string[] args, out CliCommand command, out string errorMessage)
     {
-        command = new CliCommand("", "", null, "", new Dictionary<string, string>());
+        command = new CliCommand("", "", null, "", new Dictionary<string, string>(), [], false);
         errorMessage = "";
 
         if (args.Length < 2)
@@ -122,6 +138,8 @@ public static class Program
         string? entryName = null;
         string configPath = "";
         var settings = new Dictionary<string, string>(StringComparer.Ordinal);
+        var allowedNuGetReferences = new List<CsxNuGetReference>();
+        bool requireNuGetLock = false;
 
         for (int i = 2; i < args.Length; i++)
         {
@@ -159,13 +177,60 @@ public static class Program
 
                     settings[setting[..separatorIndex]] = setting[(separatorIndex + 1)..];
                     break;
+                case "--allow-nuget":
+                    if (!TryReadValue(args, ref i, out string nuGetReference))
+                    {
+                        errorMessage = "--allow-nuget requires a PackageId,Version value.";
+                        return false;
+                    }
+
+                    if (!TryParseNuGetReference(nuGetReference, out CsxNuGetReference parsedReference))
+                    {
+                        errorMessage = "--allow-nuget requires a PackageId,Version value.";
+                        return false;
+                    }
+
+                    allowedNuGetReferences.Add(parsedReference);
+                    break;
+                case "--locked":
+                    requireNuGetLock = true;
+                    break;
                 default:
                     errorMessage = $"Unknown option: {args[i]}";
                     return false;
             }
         }
 
-        command = new CliCommand(commandName, entryPath, entryName, configPath, settings);
+        command = new CliCommand(commandName, entryPath, entryName, configPath, settings, allowedNuGetReferences, requireNuGetLock);
+
+        return true;
+    }
+
+    /// <summary>
+    /// CLI の NuGet 許可参照指定を固定 package id と version に変換します。
+    /// </summary>
+    /// <param name="value">`PackageId,Version` 形式の指定値。</param>
+    /// <param name="reference">変換した NuGet 参照。</param>
+    /// <returns>変換できた場合は true。</returns>
+    private static bool TryParseNuGetReference(string value, out CsxNuGetReference reference)
+    {
+        reference = new CsxNuGetReference();
+        string[] parts = value.Split(',', StringSplitOptions.None);
+
+        if (parts.Length != 2)
+        {
+            return false;
+        }
+
+        string packageId = parts[0].Trim();
+        string version = parts[1].Trim();
+
+        if (string.IsNullOrWhiteSpace(packageId) || string.IsNullOrWhiteSpace(version))
+        {
+            return false;
+        }
+
+        reference = new CsxNuGetReference(packageId, version);
 
         return true;
     }
@@ -223,10 +288,14 @@ public static class Program
     /// <param name="EntryName">明示指定された entry Step 名。</param>
     /// <param name="ConfigPath">指定された config file path。</param>
     /// <param name="Settings">--set option で指定された override 設定。</param>
+    /// <param name="AllowedNuGetReferences">--allow-nuget option で指定された NuGet 許可参照。</param>
+    /// <param name="RequireNuGetLock">--locked option で指定された NuGet lock file 必須設定。</param>
     private sealed record CliCommand(
         string Name,
         string EntryPath,
         string? EntryName,
         string ConfigPath,
-        IReadOnlyDictionary<string, string> Settings);
+        IReadOnlyDictionary<string, string> Settings,
+        IReadOnlyList<CsxNuGetReference> AllowedNuGetReferences,
+        bool RequireNuGetLock);
 }

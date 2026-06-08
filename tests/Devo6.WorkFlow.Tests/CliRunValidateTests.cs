@@ -1,4 +1,6 @@
 using Devo6.WorkFlow.Abstractions;
+using Devo6.WorkFlow.Cli;
+using Devo6.WorkFlow.Engine;
 using System.Diagnostics;
 
 namespace Devo6.WorkFlow.Tests;
@@ -416,6 +418,87 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
+    /// CLI run が --allow-nuget の固定参照を loader options に渡すことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine run は --allow-nuget の固定参照を許可する")]
+    public void EngineRunAllowNuGetReferenceFromOption()
+    {
+        string scriptPath = CreateNuGetScript();
+        var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
+
+        int exitCode = Program.Run(
+            ["run", scriptPath, "--allow-nuget", " Devo6.WorkFlow.Engine, 0.1.0 "],
+            provider);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// CLI validate が --allow-nuget の固定参照を loader options に渡すことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine validate は --allow-nuget の固定参照を許可する")]
+    public void EngineValidateAllowNuGetReferenceFromOption()
+    {
+        string scriptPath = CreateNuGetScript();
+        var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
+
+        int exitCode = Program.Run(
+            ["validate", scriptPath, "--allow-nuget", "Devo6.WorkFlow.Engine,0.1.0"],
+            provider);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// CLI run の --locked が NuGet lock file 欠落を実行前失敗にすることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine run --locked は NuGet lock file 欠落を失敗にする")]
+    public void EngineRunLockedRequiresNuGetLockFile()
+    {
+        string scriptPath = CreateNuGetScript();
+        var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
+
+        int exitCode = Program.Run(
+            ["run", scriptPath, "--allow-nuget", "Devo6.WorkFlow.Engine,0.1.0", "--locked"],
+            provider);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(0, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// CLI validate の --locked が NuGet lock file 欠落を検証失敗にすることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine validate --locked は NuGet lock file 欠落を失敗にする")]
+    public void EngineValidateLockedRequiresNuGetLockFile()
+    {
+        string scriptPath = CreateNuGetScript();
+        var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
+
+        int exitCode = Program.Run(
+            ["validate", scriptPath, "--allow-nuget", "Devo6.WorkFlow.Engine,0.1.0", "--locked"],
+            provider);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(0, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// CLI が不正な --allow-nuget 値を command error として返すことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "不正な --allow-nuget 値は exit code 2 になる")]
+    public void InvalidAllowNuGetSyntaxFailsWithCommandErrorExitCode2()
+    {
+        string scriptPath = CreateNuGetScript();
+
+        int exitCode = Program.Run(["validate", scriptPath, "--allow-nuget", "Devo6.WorkFlow.Engine"]);
+
+        Assert.Equal(2, exitCode);
+    }
+
+    /// <summary>
     /// run と validate の失敗が 0 以外の exit code を返すことを検査します。
     /// </summary>
     [Fact(DisplayName = "validate と run の失敗時は exit code が 0 以外になる")]
@@ -496,6 +579,208 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
+    /// NuGet 参照を含む一時 workflow script を作成します。
+    /// </summary>
+    /// <returns>作成した script path。</returns>
+    private static string CreateNuGetScript()
+    {
+        return CreateScript(
+            """
+            #r "nuget: Devo6.WorkFlow.Engine, 0.1.0"
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+    }
+
+    /// <summary>
+    /// NuGet 参照用の標準 lock file fixture を作成します。
+    /// </summary>
+    /// <param name="scriptPath">entry script path。</param>
+    private static void WriteNuGetLockFile(string scriptPath)
+    {
+        string lockPath = Path.Combine(Path.GetDirectoryName(scriptPath)!, "devo6.nuget.lock.yaml");
+        File.WriteAllText(
+            lockPath,
+            """
+            version: 1
+            entry: main.csx
+            targetFramework: net8.0
+            runtimeIdentifier: ubuntu.24.04-x64
+            packageSources:
+              - https://api.nuget.org/v3/index.json
+            dotnetScriptCoreVersion: 2.0.1
+            directReferences:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+            resolvedDependencies:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+              - packageId: Dotnet.Script.Core
+                version: 2.0.1
+                direct: false
+              - packageId: Dotnet.Script.DependencyModel
+                version: 2.0.1
+                direct: false
+              - packageId: Dotnet.Script.DependencyModel.NuGet
+                version: 2.0.1
+                direct: false
+              - packageId: Gapotchenko.FX
+                version: 2024.2.5
+                direct: false
+              - packageId: Gapotchenko.FX.Reflection.Loader
+                version: 2024.2.5
+                direct: false
+              - packageId: Microsoft.CodeAnalysis.Common
+                version: 5.0.0-2.final
+                direct: false
+              - packageId: Microsoft.CodeAnalysis.CSharp
+                version: 5.0.0-2.final
+                direct: false
+              - packageId: Microsoft.CodeAnalysis.CSharp.Scripting
+                version: 5.0.0-2.final
+                direct: false
+              - packageId: Microsoft.CodeAnalysis.Scripting.Common
+                version: 5.0.0-2.final
+                direct: false
+              - packageId: Microsoft.DotNet.PlatformAbstractions
+                version: 3.1.6
+                direct: false
+              - packageId: Microsoft.Extensions.DependencyInjection.Abstractions
+                version: 8.0.0
+                direct: false
+              - packageId: Microsoft.Extensions.Logging.Abstractions
+                version: 8.0.0
+                direct: false
+              - packageId: Microsoft.NETCore.App
+                version: 8.0.27
+                direct: false
+              - packageId: Newtonsoft.Json
+                version: 13.0.3
+                direct: false
+              - packageId: NuGet.Common
+                version: 6.14.3
+                direct: false
+              - packageId: NuGet.Configuration
+                version: 6.14.3
+                direct: false
+              - packageId: NuGet.DependencyResolver.Core
+                version: 6.14.3
+                direct: false
+              - packageId: NuGet.Frameworks
+                version: 6.14.3
+                direct: false
+              - packageId: NuGet.LibraryModel
+                version: 6.14.3
+                direct: false
+              - packageId: NuGet.Packaging
+                version: 6.14.3
+                direct: false
+              - packageId: NuGet.ProjectModel
+                version: 6.14.3
+                direct: false
+              - packageId: NuGet.Protocol
+                version: 6.14.3
+                direct: false
+              - packageId: NuGet.Versioning
+                version: 6.14.3
+                direct: false
+              - packageId: ReadLine
+                version: 2.0.1
+                direct: false
+              - packageId: System.Collections.Immutable
+                version: 9.0.0
+                direct: false
+              - packageId: System.Formats.Asn1
+                version: 6.0.0
+                direct: false
+              - packageId: System.Reflection.Metadata
+                version: 9.0.0
+                direct: false
+              - packageId: System.Security.Cryptography.Pkcs
+                version: 6.0.4
+                direct: false
+              - packageId: System.Security.Cryptography.ProtectedData
+                version: 4.4.0
+                direct: false
+              - packageId: YamlDotNet
+                version: 16.3.0
+                direct: false
+            """);
+    }
+
+    /// <summary>
+    /// 検査用 workflow package の固定 NuGet graph を作成します。
+    /// </summary>
+    /// <returns>固定 NuGet graph。</returns>
+    private static CsxNuGetDependencyGraph CreateWorkflowPackageGraph()
+    {
+        return new CsxNuGetDependencyGraph(
+            CreateWorkflowPackageDependencies(),
+            referencePaths:
+            [
+                typeof(CompositeStep).Assembly.Location,
+                typeof(IStep<>).Assembly.Location,
+            ],
+            resolutionMetadata: new CsxNuGetResolutionMetadata(
+                "net8.0",
+                "ubuntu.24.04-x64",
+                ["https://api.nuget.org/v3/index.json"],
+                "2.0.1"));
+    }
+
+    /// <summary>
+    /// 検査用 workflow package の固定 NuGet 依存関係を作成します。
+    /// </summary>
+    /// <returns>固定 NuGet 依存関係。</returns>
+    private static CsxResolvedNuGetDependency[] CreateWorkflowPackageDependencies()
+    {
+        return
+        [
+            new("Devo6.WorkFlow.Engine", "0.1.0", isDirect: true),
+            new("Dotnet.Script.Core", "2.0.1", isDirect: false),
+            new("Dotnet.Script.DependencyModel", "2.0.1", isDirect: false),
+            new("Dotnet.Script.DependencyModel.NuGet", "2.0.1", isDirect: false),
+            new("Gapotchenko.FX", "2024.2.5", isDirect: false),
+            new("Gapotchenko.FX.Reflection.Loader", "2024.2.5", isDirect: false),
+            new("Microsoft.CodeAnalysis.Common", "5.0.0-2.final", isDirect: false),
+            new("Microsoft.CodeAnalysis.CSharp", "5.0.0-2.final", isDirect: false),
+            new("Microsoft.CodeAnalysis.CSharp.Scripting", "5.0.0-2.final", isDirect: false),
+            new("Microsoft.CodeAnalysis.Scripting.Common", "5.0.0-2.final", isDirect: false),
+            new("Microsoft.DotNet.PlatformAbstractions", "3.1.6", isDirect: false),
+            new("Microsoft.Extensions.DependencyInjection.Abstractions", "8.0.0", isDirect: false),
+            new("Microsoft.Extensions.Logging.Abstractions", "8.0.0", isDirect: false),
+            new("Microsoft.NETCore.App", "8.0.27", isDirect: false),
+            new("Newtonsoft.Json", "13.0.3", isDirect: false),
+            new("NuGet.Common", "6.14.3", isDirect: false),
+            new("NuGet.Configuration", "6.14.3", isDirect: false),
+            new("NuGet.DependencyResolver.Core", "6.14.3", isDirect: false),
+            new("NuGet.Frameworks", "6.14.3", isDirect: false),
+            new("NuGet.LibraryModel", "6.14.3", isDirect: false),
+            new("NuGet.Packaging", "6.14.3", isDirect: false),
+            new("NuGet.ProjectModel", "6.14.3", isDirect: false),
+            new("NuGet.Protocol", "6.14.3", isDirect: false),
+            new("NuGet.Versioning", "6.14.3", isDirect: false),
+            new("ReadLine", "2.0.1", isDirect: false),
+            new("System.Collections.Immutable", "9.0.0", isDirect: false),
+            new("System.Formats.Asn1", "6.0.0", isDirect: false),
+            new("System.Reflection.Metadata", "9.0.0", isDirect: false),
+            new("System.Security.Cryptography.Pkcs", "6.0.4", isDirect: false),
+            new("System.Security.Cryptography.ProtectedData", "4.4.0", isDirect: false),
+            new("YamlDotNet", "16.3.0", isDirect: false),
+        ];
+    }
+
+    /// <summary>
     /// repository root path を探索します。
     /// </summary>
     /// <returns>検出した repository root path。</returns>
@@ -523,6 +808,33 @@ public sealed class CliRunValidateTests
     /// <param name="StandardOutput">CLI process の標準出力。</param>
     /// <param name="StandardError">CLI process の標準エラー。</param>
     private sealed record CliResult(int ExitCode, string StandardOutput, string StandardError);
+
+    /// <summary>
+    /// 外部通信を使わずに固定 NuGet graph を返す provider です。
+    /// </summary>
+    /// <param name="graph">返却する固定 NuGet graph。</param>
+    private sealed class FakeNuGetDependencyGraphProvider(CsxNuGetDependencyGraph graph) : ICsxNuGetDependencyGraphProvider
+    {
+        /// <summary>
+        /// Resolve が呼び出された回数を取得します。
+        /// </summary>
+        public int ResolveCallCount { get; private set; }
+
+        /// <summary>
+        /// 固定 NuGet graph を返します。
+        /// </summary>
+        /// <param name="directReferences">script から読んだ直接 NuGet 参照。</param>
+        /// <param name="request">dependency graph 解決 request。</param>
+        /// <returns>固定 NuGet graph。</returns>
+        public CsxNuGetDependencyGraph Resolve(
+            IReadOnlyList<CsxNuGetReference> directReferences,
+            CsxNuGetDependencyGraphRequest request)
+        {
+            ResolveCallCount++;
+
+            return graph;
+        }
+    }
 }
 
 /// <summary>

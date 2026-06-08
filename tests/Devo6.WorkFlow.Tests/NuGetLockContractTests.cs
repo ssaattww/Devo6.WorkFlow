@@ -34,14 +34,54 @@ public sealed class NuGetLockContractTests
     private static readonly string[] DefaultPackageSources = ["https://api.nuget.org/v3/index.json", "https://example.invalid/nuget/v3/index.json"];
 
     /// <summary>
-    /// NuGet 参照がある実行で lock file が無い場合に専用 error code で失敗することを確認します。
+    /// NuGet 参照がある実行で lock file が無い場合に通常の NuGet 解決へ進むことを確認します。
     /// </summary>
-    [Fact(DisplayName = "Execute returns lock missing when NuGet reference has no lock file")]
-    public void ExecuteReturnsLockMissingWhenNuGetReferenceHasNoLockFile()
+    [Fact(DisplayName = "Execute succeeds when NuGet reference has no lock file by default")]
+    public void ExecuteSucceedsWhenNuGetReferenceHasNoLockFileByDefault()
+    {
+        string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Main", result.EntryName);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// NuGet 参照がある validation で lock file が無い場合に通常の NuGet 解決へ進むことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate succeeds when NuGet reference has no lock file by default")]
+    public void ValidateSucceedsWhenNuGetReferenceHasNoLockFileByDefault()
+    {
+        string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Empty(result.Errors);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// 厳格指定された実行で NuGet 参照があるのに lock file が無い場合に専用 error code で失敗することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute returns lock missing when NuGet lock is required")]
+    public void ExecuteReturnsLockMissingWhenNuGetLockIsRequired()
     {
         string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
         var provider = new FakeNuGetDependencyGraphProvider();
-        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider, requireNuGetLock: true);
 
         WorkflowResult result = loader.Execute(scriptPath);
 
@@ -51,14 +91,14 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// NuGet 参照がある validation で lock file が無い場合に専用 error code で失敗することを確認します。
+    /// 厳格指定された validation で NuGet 参照があるのに lock file が無い場合に専用 error code で失敗することを確認します。
     /// </summary>
-    [Fact(DisplayName = "Validate returns lock missing when NuGet reference has no lock file")]
-    public void ValidateReturnsLockMissingWhenNuGetReferenceHasNoLockFile()
+    [Fact(DisplayName = "Validate returns lock missing when NuGet lock is required")]
+    public void ValidateReturnsLockMissingWhenNuGetLockIsRequired()
     {
         string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
         var provider = new FakeNuGetDependencyGraphProvider();
-        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider, requireNuGetLock: true);
 
         WorkflowValidationResult result = loader.Validate(scriptPath);
 
@@ -131,6 +171,31 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
+    /// package source 検証が未指定の場合に lock file の packageSources が無くても成功することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate succeeds when package sources are missing and verification is unspecified")]
+    public void ValidateSucceedsWhenPackageSourcesAreMissingAndVerificationIsUnspecified()
+    {
+        string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
+        WriteDefaultLockFile(
+            scriptPath,
+            directVersion: "33.0.1",
+            resolvedVersion: "8.0.0",
+            includePackageSources: false);
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Empty(result.Errors);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
     /// target framework が lock file と異なる場合に不一致で失敗することを確認します。
     /// </summary>
     [Fact(DisplayName = "Execute returns lock mismatch when target framework differs")]
@@ -194,17 +259,18 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// package source の順序だけが違う場合は lock file と一致することを確認します。
+    /// package source 検証が有効な場合に順序だけが違う source は lock file と一致することを確認します。
     /// </summary>
-    [Fact(DisplayName = "Execute treats package source order as lock equivalent")]
-    public void ExecuteTreatsPackageSourceOrderAsLockEquivalent()
+    [Fact(DisplayName = "Execute treats package source order as lock equivalent when verification is enabled")]
+    public void ExecuteTreatsPackageSourceOrderAsLockEquivalentWhenVerificationIsEnabled()
     {
         string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
         WriteDefaultLockFile(
             scriptPath,
             directVersion: "33.0.1",
             resolvedVersion: "8.0.0",
-            packageSources: DefaultPackageSources.Reverse().ToArray());
+            packageSources: DefaultPackageSources.Reverse().ToArray(),
+            verifyPackageSources: true);
         var provider = new FakeNuGetDependencyGraphProvider
         {
             Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
@@ -218,17 +284,43 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// package source の値が異なる場合に不一致で失敗することを確認します。
+    /// package source 検証が無効な場合に source の値が異なっても成功することを確認します。
     /// </summary>
-    [Fact(DisplayName = "Execute returns lock mismatch when package source value differs")]
-    public void ExecuteReturnsLockMismatchWhenPackageSourceValueDiffers()
+    [Fact(DisplayName = "Execute succeeds when package source value differs and verification is disabled")]
+    public void ExecuteSucceedsWhenPackageSourceValueDiffersAndVerificationIsDisabled()
     {
         string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
         WriteDefaultLockFile(
             scriptPath,
             directVersion: "33.0.1",
             resolvedVersion: "8.0.0",
-            packageSources: ["https://api.nuget.org/v3/index.json", "https://different.example.invalid/v3/index.json"]);
+            packageSources: ["https://api.nuget.org/v3/index.json", "https://different.example.invalid/v3/index.json"],
+            verifyPackageSources: false);
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// package source 検証が有効な場合に source の値が異なると不一致で失敗することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute returns lock mismatch when package source value differs and verification is enabled")]
+    public void ExecuteReturnsLockMismatchWhenPackageSourceValueDiffersAndVerificationIsEnabled()
+    {
+        string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
+        WriteDefaultLockFile(
+            scriptPath,
+            directVersion: "33.0.1",
+            resolvedVersion: "8.0.0",
+            packageSources: ["https://api.nuget.org/v3/index.json", "https://different.example.invalid/v3/index.json"],
+            verifyPackageSources: true);
         var provider = new FakeNuGetDependencyGraphProvider
         {
             Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
@@ -240,6 +332,33 @@ public sealed class NuGetLockContractTests
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMismatch, result.ErrorCode);
         Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// package source 検証が有効な場合に packageSources が無いと metadata 不足で失敗することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate returns lock mismatch before restore when package source verification lacks package sources")]
+    public void ValidateReturnsLockMismatchBeforeRestoreWhenPackageSourceVerificationLacksPackageSources()
+    {
+        string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
+        WriteDefaultLockFile(
+            scriptPath,
+            directVersion: "33.0.1",
+            resolvedVersion: "8.0.0",
+            includePackageSources: false,
+            verifyPackageSources: true);
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMismatch, error.Code);
+        Assert.Equal(0, provider.ResolveCallCount);
     }
 
     /// <summary>
@@ -582,14 +701,14 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// NuGet script load で lock file が無い場合に provider 解決前の専用 error code で失敗することを確認します。
+    /// 厳格指定された NuGet script load で lock file が無い場合に provider 解決前の専用 error code で失敗することを確認します。
     /// </summary>
-    [Fact(DisplayName = "Execute returns lock missing for NuGet script load before provider")]
-    public void ExecuteReturnsLockMissingForNuGetScriptLoadBeforeProvider()
+    [Fact(DisplayName = "Execute returns lock missing for NuGet script load when lock is required")]
+    public void ExecuteReturnsLockMissingForNuGetScriptLoadWhenLockIsRequired()
     {
         string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
         var provider = new FakeNuGetDependencyGraphProvider();
-        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider, requireNuGetLock: true);
 
         WorkflowResult result = loader.Execute(scriptPath);
 
@@ -708,12 +827,14 @@ public sealed class NuGetLockContractTests
     private static CsxEntryLoader CreateLoader(
         string scriptPath,
         FakeNuGetDependencyGraphProvider provider,
-        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null)
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null,
+        bool requireNuGetLock = false)
     {
         return new CsxEntryLoader(new CsxEntryLoaderOptions
         {
             WorkflowRoot = Path.GetDirectoryName(scriptPath),
             AllowedNuGetReferences = allowedNuGetReferences ?? [new CsxNuGetReference("CsvHelper", "33.0.1")],
+            RequireNuGetLock = requireNuGetLock,
             NuGetDependencyGraphProvider = provider,
         });
     }
@@ -824,7 +945,9 @@ public sealed class NuGetLockContractTests
         string targetFramework = DefaultTargetFramework,
         string runtimeIdentifier = DefaultRuntimeIdentifier,
         string dotnetScriptCoreVersion = DefaultDotnetScriptCoreVersion,
-        IReadOnlyList<string>? packageSources = null)
+        IReadOnlyList<string>? packageSources = null,
+        bool includePackageSources = true,
+        bool? verifyPackageSources = null)
     {
         WriteNuGetLockFile(
             scriptPath,
@@ -833,7 +956,9 @@ public sealed class NuGetLockContractTests
             targetFramework,
             runtimeIdentifier,
             dotnetScriptCoreVersion,
-            packageSources);
+            packageSources,
+            includePackageSources,
+            verifyPackageSources);
     }
 
     /// <summary>
@@ -846,11 +971,18 @@ public sealed class NuGetLockContractTests
         string targetFramework = DefaultTargetFramework,
         string runtimeIdentifier = DefaultRuntimeIdentifier,
         string dotnetScriptCoreVersion = DefaultDotnetScriptCoreVersion,
-        IReadOnlyList<string>? packageSources = null)
+        IReadOnlyList<string>? packageSources = null,
+        bool includePackageSources = true,
+        bool? verifyPackageSources = null)
     {
         string directory = Path.GetDirectoryName(scriptPath)!;
         string lockPath = Path.Combine(directory, DefaultNuGetLockFileName);
-        string packageSourceYaml = ToPackageSourceYaml(packageSources ?? DefaultPackageSources);
+        string packageSourceVerificationYaml = verifyPackageSources.HasValue
+            ? $"{Environment.NewLine}verifyPackageSources: {verifyPackageSources.Value.ToString().ToLowerInvariant()}"
+            : "";
+        string packageSourceYaml = includePackageSources
+            ? $"{Environment.NewLine}packageSources:{Environment.NewLine}{ToPackageSourceYaml(packageSources ?? DefaultPackageSources)}"
+            : "";
         string directReferenceYaml = ToDirectReferenceYaml(directReferences);
         string resolvedDependencyYaml = ToResolvedDependencyYaml(resolvedDependencies);
         File.WriteAllText(
@@ -860,8 +992,7 @@ public sealed class NuGetLockContractTests
             entry: main.csx
             targetFramework: {{targetFramework}}
             runtimeIdentifier: {{runtimeIdentifier}}
-            packageSources:
-            {{packageSourceYaml}}
+            {{packageSourceVerificationYaml}}{{packageSourceYaml}}
             dotnetScriptCoreVersion: {{dotnetScriptCoreVersion}}
             directReferences:
             {{directReferenceYaml}}

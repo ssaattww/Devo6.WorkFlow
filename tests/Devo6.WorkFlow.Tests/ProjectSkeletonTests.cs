@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Xml.Linq;
 
 namespace Devo6.WorkFlow.Tests;
@@ -82,9 +83,7 @@ public sealed class ProjectSkeletonTests
     [Fact(DisplayName = "CLI プロジェクトはツール用パッケージとして設定されている")]
     public void CliProjectIsConfiguredAsDotnetToolPackage()
     {
-        XDocument project = XDocument.Load(Path.Combine(
-            RepositoryRoot,
-            "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"));
+        XDocument project = LoadCliProject();
 
         Assert.Equal("Exe", GetProjectProperty(project, "OutputType"));
         Assert.Equal("true", GetProjectProperty(project, "IsPackable"));
@@ -92,6 +91,97 @@ public sealed class ProjectSkeletonTests
         Assert.Equal("engine", GetProjectProperty(project, "ToolCommandName"));
         Assert.Equal("Devo6.WorkFlow.Cli", GetProjectProperty(project, "PackageId"));
         Assert.Equal("README.md", GetProjectProperty(project, "PackageReadmeFile"));
+        AssertPackageRepositoryMetadata(project);
+    }
+
+    /// <summary>
+    /// Engine プロジェクトが参照用パッケージとして作成できる設定を持つことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "Engine project は参照用パッケージとして設定されている")]
+    public void EngineProjectIsConfiguredAsReferencePackage()
+    {
+        XDocument project = LoadEngineProject();
+        XElement abstractionsReference = GetProjectReference(project, @"..\Devo6.WorkFlow.Abstractions\Devo6.WorkFlow.Abstractions.csproj");
+
+        Assert.Equal("true", GetProjectProperty(project, "IsPackable"));
+        Assert.Equal("Devo6.WorkFlow.Engine", GetProjectProperty(project, "PackageId"));
+        Assert.Equal("README.md", GetProjectProperty(project, "PackageReadmeFile"));
+        AssertPackageRepositoryMetadata(project);
+        Assert.Equal("all", abstractionsReference.Attribute("PrivateAssets")?.Value);
+    }
+
+    /// <summary>
+    /// README に検査状況と NuGet パッケージの badge があることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "README は検査状況と NuGet パッケージの badge を表示する")]
+    public void ReadmeDisplaysStatusAndNuGetBadges()
+    {
+        string readme = File.ReadAllText(Path.Combine(RepositoryRoot, "README.md"));
+
+        Assert.Contains("actions/workflows/pr-xunit-tests.yml/badge.svg", readme);
+        Assert.Contains("actions/workflows/publish-nuget.yml/badge.svg", readme);
+        Assert.Contains("img.shields.io/nuget/v/Devo6.WorkFlow.Cli", readme);
+        Assert.Contains("img.shields.io/nuget/dt/Devo6.WorkFlow.Cli", readme);
+        Assert.Contains("img.shields.io/nuget/v/Devo6.WorkFlow.Engine", readme);
+        Assert.Contains("img.shields.io/nuget/dt/Devo6.WorkFlow.Engine", readme);
+    }
+
+    /// <summary>
+    /// Engine パッケージに Engine と Abstractions の DLL が含まれることを検査します。
+    /// </summary>
+    /// <returns>非同期検査を表す task。</returns>
+    [Fact(DisplayName = "Engine package は Engine と Abstractions の DLL を含む")]
+    public async Task EnginePackageIncludesEngineAndAbstractionsAssemblies()
+    {
+        string packagePath = await PackEnginePackage();
+
+        try
+        {
+            using ZipArchive archive = ZipFile.OpenRead(packagePath);
+
+            Assert.Contains(archive.Entries, entry => entry.FullName == "lib/net8.0/Devo6.WorkFlow.Engine.dll");
+            Assert.Contains(archive.Entries, entry => entry.FullName == "lib/net8.0/Devo6.WorkFlow.Abstractions.dll");
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(packagePath)!, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Engine パッケージが Abstractions を別 NuGet 依存として公開しないことを検査します。
+    /// </summary>
+    /// <returns>非同期検査を表す task。</returns>
+    [Fact(DisplayName = "Engine package は Abstractions を NuGet 依存にしない")]
+    public async Task EnginePackageDoesNotDeclareAbstractionsDependency()
+    {
+        string packagePath = await PackEnginePackage();
+
+        try
+        {
+            using ZipArchive archive = ZipFile.OpenRead(packagePath);
+            ZipArchiveEntry nuspecEntry = archive.Entries.Single(entry => entry.FullName.EndsWith(".nuspec", StringComparison.Ordinal));
+            await using Stream nuspecStream = nuspecEntry.Open();
+            XDocument nuspec = await XDocument.LoadAsync(nuspecStream, LoadOptions.None, CancellationToken.None);
+
+            XNamespace ns = nuspec.Root?.Name.Namespace ?? XNamespace.None;
+            IEnumerable<string> dependencyIds = nuspec
+                .Descendants(ns + "dependency")
+                .Select(element => element.Attribute("id")?.Value)
+                .Where(id => id is not null)
+                .Cast<string>();
+
+            Assert.DoesNotContain("Devo6.WorkFlow.Abstractions", dependencyIds);
+            Assert.Equal("https://github.com/ssaattww/Devo6.WorkFlow", nuspec.Root?
+                .Element(ns + "metadata")?
+                .Element(ns + "repository")?
+                .Attribute("url")?
+                .Value);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(packagePath)!, recursive: true);
+        }
     }
 
     /// <summary>
@@ -116,6 +206,28 @@ public sealed class ProjectSkeletonTests
     }
 
     /// <summary>
+    /// Engine プロジェクトファイルを読み込みます。
+    /// </summary>
+    /// <returns>読み込み済みプロジェクトファイル。</returns>
+    private static XDocument LoadEngineProject()
+    {
+        return XDocument.Load(Path.Combine(
+            RepositoryRoot,
+            "src/Devo6.WorkFlow.Engine/Devo6.WorkFlow.Engine.csproj"));
+    }
+
+    /// <summary>
+    /// CLI プロジェクトファイルを読み込みます。
+    /// </summary>
+    /// <returns>読み込み済みプロジェクトファイル。</returns>
+    private static XDocument LoadCliProject()
+    {
+        return XDocument.Load(Path.Combine(
+            RepositoryRoot,
+            "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"));
+    }
+
+    /// <summary>
     /// プロジェクトファイルから指定した MSBuild プロパティの値を取得します。
     /// </summary>
     /// <param name="project">読み込み済みプロジェクトファイル。</param>
@@ -127,5 +239,67 @@ public sealed class ProjectSkeletonTests
             .Descendants(propertyName)
             .Select(element => element.Value)
             .Single();
+    }
+
+    /// <summary>
+    /// パッケージのリポジトリ metadata が設定されていることを検査します。
+    /// </summary>
+    /// <param name="project">読み込み済みプロジェクトファイル。</param>
+    private static void AssertPackageRepositoryMetadata(XDocument project)
+    {
+        Assert.Equal("https://github.com/ssaattww/Devo6.WorkFlow", GetProjectProperty(project, "PackageProjectUrl"));
+        Assert.Equal("https://github.com/ssaattww/Devo6.WorkFlow", GetProjectProperty(project, "RepositoryUrl"));
+        Assert.Equal("git", GetProjectProperty(project, "RepositoryType"));
+        Assert.Equal("MIT", GetProjectProperty(project, "PackageLicenseExpression"));
+    }
+
+    /// <summary>
+    /// 指定したプロジェクト参照を取得します。
+    /// </summary>
+    /// <param name="project">読み込み済みプロジェクトファイル。</param>
+    /// <param name="include">取得する参照パス。</param>
+    /// <returns>指定したプロジェクト参照。</returns>
+    private static XElement GetProjectReference(XDocument project, string include)
+    {
+        return project
+            .Descendants("ProjectReference")
+            .Single(element => element.Attribute("Include")?.Value == include);
+    }
+
+    /// <summary>
+    /// Engine プロジェクトを一時ディレクトリへパッケージ作成します。
+    /// </summary>
+    /// <returns>作成されたパッケージパス。</returns>
+    private static async Task<string> PackEnginePackage()
+    {
+        string outputDirectory = Path.Combine(Path.GetTempPath(), $"devo6-workflow-engine-pack-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+
+        using Process process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            ArgumentList =
+            {
+                "pack",
+                Path.Combine(RepositoryRoot, "src/Devo6.WorkFlow.Engine/Devo6.WorkFlow.Engine.csproj"),
+                "--configuration",
+                "Release",
+                "--output",
+                outputDirectory,
+                "-p:PackageVersion=0.0.0-test"
+            },
+            RedirectStandardError = true,
+            RedirectStandardOutput = true
+        }) ?? throw new InvalidOperationException("Engine package の作成に失敗しました。");
+
+        string standardOutput = await process.StandardOutput.ReadToEndAsync();
+        string standardError = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        Assert.True(
+            process.ExitCode == 0,
+            $"終了コード: {process.ExitCode}{Environment.NewLine}標準出力: {standardOutput}{Environment.NewLine}標準エラー: {standardError}");
+
+        return Directory.GetFiles(outputDirectory, "Devo6.WorkFlow.Engine.*.nupkg").Single();
     }
 }

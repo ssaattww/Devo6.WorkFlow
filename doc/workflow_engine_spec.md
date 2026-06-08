@@ -767,6 +767,18 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 
 `.csx` の実行、NuGet 解決、外部 `.csx` 解決には `Dotnet.Script.Core` を利用する。
 
+### 9.3 複数フォルダの利用者向け例
+
+`samples/multi-folder-composite/` は、内側と外側の `CompositeStep` の責務を分けた例とする。
+
+内側 `TextPipeline` は `LoadTextStep`、`ParseDocumentStep`、`NormalizeTextStep`、`AnalyzeTextStep`、`BuildReportStep` を順に実行し、YAML 前付け付き文書から出力文字列を作る。
+
+外側 `Main` は `TextPipeline` の結果を `SaveTextStep` へ渡し、保存先の扱いを内側処理から分離する。
+
+Entry `main.csx` は参照用パッケージを `#r "nuget: Devo6.WorkFlow.Engine, 0.1.0"` で参照し、YAML 前付け解析用に `#r "nuget: YamlDotNet, 16.3.0"` も入口だけで参照する。Step ファイル側には NuGet 参照を書かない。
+
+root `appsettings.yaml` は `Pipeline.Report.Heading` のような部分上書きだけを持ち、Step ごとの既定値は各 `steps/*/appsettings.yaml` に置く。通常利用ではロックファイルを置かず、実行側が `--allow-nuget Devo6.WorkFlow.Engine,0.1.0 --allow-nuget YamlDotNet,16.3.0` で参照を許可する。
+
 ---
 
 ## 10. Dotnet.Script.Core 利用
@@ -840,7 +852,7 @@ public enum FailurePolicy
 - Step 実行時例外
 - `.csx` のロード失敗
 - NuGet 解決失敗
-- NuGet ロックファイルの欠落
+- 明示的な厳格指定時の NuGet ロックファイル欠落
 - NuGet ロックファイルと参照または解決済み依存関係の不一致
 - `#load` 解決失敗
 
@@ -1475,21 +1487,21 @@ NuGet script 読み込みの重複は、同一パッケージ ID、解決済み 
 | ファイル参照 | 許可一覧に登録されたディレクトリ配下のみ許可 |
 | NuGet 参照 | 許可一覧に登録されたパッケージ ID とバージョンのみ許可 |
 | 浮動バージョン | 禁止 |
-| パッケージ参照元 | 既定の参照元または明示許可された参照元のみ許可 |
+| パッケージ参照元 | 通常の NuGet 設定に従う。`verifyPackageSources: true` の場合だけロックファイルと照合 |
 
 NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` の仕組みを利用する。
 
 エンジン側では `dotnet restore` の起動、一時 `.csproj` の生成、`project.assets.json` の解析、実行時 assembly 解決を再実装しない。
 
-NuGet ロックファイルは `#r "nuget: package, version"` と `#load "nuget: package, version"` の再現性を対象とする。
+NuGet ロックファイルは任意であり、存在する場合に `#r "nuget: package, version"` と `#load "nuget: package, version"` の再現性を対象とする。
 
 `#load "nuget: package, version"` も NuGet 直接参照として扱い、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
 
-`directReferences` はディレクティブ種別を区別しないパッケージ ID、version、参照元の正規化集合とし、`#r` と `#load` の両方から得た直接 NuGet パッケージ参照を含める。
+`directReferences` はディレクティブ種別を区別しないパッケージ ID と version の正規化集合とし、`#r` と `#load` の両方から得た直接 NuGet パッケージ参照を含める。
 
 `#load "nuget: ..."` はパッケージ内 script を実行可能 source として取り込むが、新しい許可一覧を増やさず、NuGet `#r` と同じ許可済みパッケージ ID と version の規則を適用する。
 
-ロックファイルは Entry `.csx` の workflow root に置く YAML とし、ファイル名は `devo6.nuget.lock.yaml` とする。
+ロックファイルを使う場合は Entry `.csx` の workflow root に置く YAML とし、ファイル名は `devo6.nuget.lock.yaml` とする。
 
 ロックファイルには以下を記録する。
 
@@ -1497,21 +1509,33 @@ NuGet ロックファイルは `#r "nuget: package, version"` と `#load "nuget:
 - 解決済み依存関係 (`resolvedDependencies`)
 - 対象 (`targetFramework`)
 - 実行時識別子 (`runtimeIdentifier`)
-- パッケージ参照元 (`packageSources`)
+- 参照元照合の有無 (`verifyPackageSources`)
+- 必要な場合だけパッケージ参照元 (`packageSources`)
 - `Dotnet.Script.Core` version
+
+`verifyPackageSources` の既定値は `false` とする。未指定または `false` の場合、NuGet 復元は NuGet.Config など通常の NuGet 参照元を使い、ロック検証では `packageSources` の必須チェックと一致チェックを行わない。
+
+`verifyPackageSources: true` の場合だけ `packageSources` を必須の再現性情報とし、実際の NuGet 参照元一覧と順序を無視して一致することを検証する。
+
+`devo6.nuget.lock.yaml` が無い場合の既定動作は、通常の NuGet 設定へ委ねて依存関係を解決し、ロック比較を行わない。`NuGet.config` がある場合は、`dotnet-script` や NuGet と同じ通常の NuGet 設定として参照元に反映される。
+
+明示的な厳格指定では `devo6.nuget.lock.yaml` の存在を必須とし、NuGet 直接参照があるのにロックファイルが無い場合は `SCRIPT_NUGET_LOCK_MISSING` とする。CLI では `run` と `validate` の `--locked` がこの指定に対応する。
 
 絶対実行時 assembly path は実行環境に依存するため、ロックファイルには記録しない。
 
 ロック検証の順序は以下とする。
 
 1. 許可外 NuGet 参照、浮動バージョン、`dotnet-script` 互換でない NuGet `#load` 文法を `SCRIPT_REFERENCE_NOT_ALLOWED` として拒否する
-2. NuGet 直接参照がある場合、復元前に `devo6.nuget.lock.yaml` の欠落を `SCRIPT_NUGET_LOCK_MISSING` として拒否する
-3. 直接参照のパッケージ ID と version がロックファイルと一致しない場合、復元前に `SCRIPT_NUGET_LOCK_MISMATCH` として拒否する
-4. `Dotnet.Script.Core` による依存関係解決を行う
-5. 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする
-6. 解決済み依存関係または `metadata` がロックファイルと一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする
+2. 明示的な厳格指定があり、NuGet 直接参照があるのに `devo6.nuget.lock.yaml` が無い場合は、復元前に `SCRIPT_NUGET_LOCK_MISSING` として拒否する
+3. ロックファイルが無い場合、`Dotnet.Script.Core` による依存関係解決を行い、ロック比較を行わない
+4. ロックファイルがある場合、直接参照のパッケージ ID と version がロックファイルと一致しないときは、復元前に `SCRIPT_NUGET_LOCK_MISMATCH` として拒否する
+5. ロックファイルに `targetFramework`、`runtimeIdentifier`、`Dotnet.Script.Core` version が無い場合、または `verifyPackageSources: true` で `packageSources` が無い場合は、復元前に `SCRIPT_NUGET_LOCK_MISMATCH` として拒否する
+6. `Dotnet.Script.Core` による依存関係解決を行う
+7. 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする
+8. ロックファイルがある場合、解決済み依存関係、または `targetFramework`、`runtimeIdentifier`、`Dotnet.Script.Core` version がロックファイルと一致しないときは `SCRIPT_NUGET_LOCK_MISMATCH` とする
+9. `verifyPackageSources: true` の場合だけ、実際の参照元一覧との不一致を `SCRIPT_NUGET_LOCK_MISMATCH` とする
 
-リポジトリ側はロックファイルの読み書き、欠落、不一致、許可済み直接参照の完全一致、解決済み依存関係の比較だけを薄く持つ。
+リポジトリ側はロックファイルの読み書き、明示的な厳格指定での欠落、不一致、許可済み直接参照の完全一致、解決済み依存関係の比較だけを薄く持つ。
 
 通常の `dotnet test` が外部通信に依存しないよう、依存関係 provider は注入できる設計にする。
 
@@ -1599,7 +1623,7 @@ engine validate main.csx --config appsettings.yaml
 - `#load` の循環
 - `#r` の許可判定
 - NuGet 参照の許可判定
-- NuGet ロックファイルの欠落
+- 明示的な厳格指定時の NuGet ロックファイル欠落
 - NuGet ロックファイルと直接参照の不一致
 - NuGet ロックファイルと解決済み依存関係の不一致
 - `.csx` のコンパイル
@@ -1791,7 +1815,7 @@ retry で全試行が失敗した場合も、retry 専用エラーコードは�
 
 `Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とし、既存の Step 失敗として扱う。
 
-NuGet ロックファイルが必要な workflow root に存在しない場合は `SCRIPT_NUGET_LOCK_MISSING` とする。
+明示的な厳格指定で NuGet ロックファイルが必要な workflow root に存在しない場合は `SCRIPT_NUGET_LOCK_MISSING` とする。
 
 ロックファイルと直接参照、またはロックファイルと解決済み依存関係が一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする。
 
@@ -1799,7 +1823,9 @@ NuGet ロックファイルが必要な workflow root に存在しない場合�
 
 `#load "nuget: ..."` では、未許可 NuGet、浮動 version、`dotnet-script` 互換でない文法を `SCRIPT_REFERENCE_NOT_ALLOWED` とする。
 
-`devo6.nuget.lock.yaml` が欠落している場合は、復元を試みる前に `SCRIPT_NUGET_LOCK_MISSING` を返す。
+`devo6.nuget.lock.yaml` が欠落している場合でも、既定では復元に進み、通常の NuGet 設定へ委ねる。
+
+明示的な厳格指定で `devo6.nuget.lock.yaml` が欠落している場合だけ、復元を試みる前に `SCRIPT_NUGET_LOCK_MISSING` を返す。
 
 直接参照の不一致は復元前に `SCRIPT_NUGET_LOCK_MISMATCH` とし、復元失敗の `SCRIPT_NUGET_RESTORE_FAILED` より優先する。
 
@@ -2192,7 +2218,7 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 
 ### 21.6 csx 依存の再現性
 
-NuGet 参照の再現性は、利用者向けの `devo6.nuget.lock.yaml` で扱う。
+NuGet 参照の再現性は、利用者が必要に応じて置く `devo6.nuget.lock.yaml` で扱う。
 
 `#r "nuget: package, version"` は NuGet ロックファイルの直接参照として扱う。
 
@@ -2200,7 +2226,7 @@ NuGet 参照の再現性は、利用者向けの `devo6.nuget.lock.yaml` で扱�
 
 NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
 
-エンジン側は利用者向けの `devo6.nuget.lock.yaml` と、許可済み直接参照、解決済み依存関係、`targetFramework`、実行時識別子、パッケージ参照元、`Dotnet.Script.Core` version の比較を担当する。
+エンジン側は `devo6.nuget.lock.yaml` がある場合だけ、許可済み直接参照、解決済み依存関係、`targetFramework`、実行時識別子、`Dotnet.Script.Core` version の比較を担当する。パッケージ参照元は `verifyPackageSources: true` の場合だけ比較する。
 
 `dotnet-script` 互換の `#load "nuget: PackageId, Version"` を採用し、パッケージ内 path をディレクティブに追加する独自仕様は採用しない。
 

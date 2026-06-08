@@ -33,24 +33,31 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Resolve package project
-        id: project
+      - name: Resolve package projects
+        id: projects
         shell: bash
         run: |
-          project="src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"
+          cli_project="src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"
+          engine_project="src/Devo6.WorkFlow.Engine/Devo6.WorkFlow.Engine.csproj"
 
-          if [[ ! -f "$project" ]]; then
-            echo "Publish project not found: $project"
+          if [[ ! -f "$cli_project" ]]; then
+            echo "CLI publish project not found: $cli_project"
             exit 1
           fi
 
-          echo "path=$project" >> "$GITHUB_OUTPUT"
+          if [[ ! -f "$engine_project" ]]; then
+            echo "Engine publish project not found: $engine_project"
+            exit 1
+          fi
+
+          echo "cli_path=$cli_project" >> "$GITHUB_OUTPUT"
+          echo "engine_path=$engine_project" >> "$GITHUB_OUTPUT"
 
       - name: Resolve package version
         id: version
         shell: bash
         run: |
-          project="${{ steps.project.outputs.path }}"
+          project="${{ steps.projects.outputs.cli_path }}"
           manual_version="${{ inputs.package_version || '' }}"
           event_name="${{ github.event_name }}"
           ref_name="${{ github.ref_name }}"
@@ -109,7 +116,16 @@ jobs:
 
       - name: Pack CLI tool
         run: |
-          dotnet pack "${{ steps.project.outputs.path }}" \
+          dotnet pack "${{ steps.projects.outputs.cli_path }}" \
+            --configuration Release \
+            --no-build \
+            --output ./artifacts \
+            -p:ContinuousIntegrationBuild=true \
+            -p:PackageVersion=${{ steps.version.outputs.package_version }}
+
+      - name: Pack reference package
+        run: |
+          dotnet pack "${{ steps.projects.outputs.engine_path }}" \
             --configuration Release \
             --no-build \
             --output ./artifacts \
@@ -127,6 +143,31 @@ jobs:
             --version "${{ steps.version.outputs.package_version }}"
           "$toolpath/engine"
           rm -rf "$toolpath"
+
+      - name: Verify reference package install
+        shell: bash
+        run: |
+          projectpath=$(mktemp -d)
+          dotnet new classlib --framework net8.0 --output "$projectpath"
+          dotnet add "$projectpath" package Devo6.WorkFlow.Engine \
+            --source ./artifacts \
+            --version "${{ steps.version.outputs.package_version }}"
+          cat > "$projectpath/Class1.cs" <<'CS'
+          using System;
+          using Devo6.WorkFlow.Abstractions;
+          using Devo6.WorkFlow.Engine;
+
+          namespace PackageInstallCheck;
+
+          public sealed class Class1
+          {
+              public Type EngineType { get; } = typeof(CompositeStep);
+
+              public Type AbstractionsType { get; } = typeof(IStep<>);
+          }
+          CS
+          dotnet build "$projectpath" --configuration Release
+          rm -rf "$projectpath"
 
       - name: Validate NuGet API key
         if: ${{ env.NUGET_API_KEY == '' }}

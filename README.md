@@ -1,5 +1,18 @@
 # `Devo6.WorkFlow`
 
+[![検査](https://github.com/ssaattww/Devo6.WorkFlow/actions/workflows/pr-xunit-tests.yml/badge.svg)](https://github.com/ssaattww/Devo6.WorkFlow/actions/workflows/pr-xunit-tests.yml)
+[![公開](https://github.com/ssaattww/Devo6.WorkFlow/actions/workflows/publish-nuget.yml/badge.svg)](https://github.com/ssaattww/Devo6.WorkFlow/actions/workflows/publish-nuget.yml)
+
+**CLI ツール用パッケージ**
+[![NuGet 版](https://img.shields.io/nuget/v/Devo6.WorkFlow.Cli)](https://www.nuget.org/packages/Devo6.WorkFlow.Cli/)
+[![NuGet 導入数](https://img.shields.io/nuget/dt/Devo6.WorkFlow.Cli)](https://www.nuget.org/packages/Devo6.WorkFlow.Cli/)
+
+**参照用パッケージ**
+[![NuGet 版](https://img.shields.io/nuget/v/Devo6.WorkFlow.Engine)](https://www.nuget.org/packages/Devo6.WorkFlow.Engine/)
+[![NuGet 導入数](https://img.shields.io/nuget/dt/Devo6.WorkFlow.Engine)](https://www.nuget.org/packages/Devo6.WorkFlow.Engine/)
+
+---
+
 `Devo6.WorkFlow` は、C# script だけでワークフローを定義して実行するエンジンです。利用者は `.csx` に Step 型、入出力型、Config 型、実行入口の `CompositeStep` を書きます。YAML は実行時 Config の入力であり、ワークフロー定義には使いません。
 
 Step は `IStep<TOut>` または `IAsyncStep<TOut>` を実装します。Step 間の値は `Produce` や `StoreAs` で明示的に渡し、Step は必要な値を `StepInput` から取得します。Config は Step 専用引数ではなく、対象 Step の実行直前に `StepContext` へ登録されます。
@@ -8,17 +21,18 @@ Step は `IStep<TOut>` または `IAsyncStep<TOut>` を実装します。Step �
 
 別の端末に導入して使う場合は、.NET 8 以降の開発環境を入れてください。`dotnet tool install`、`dotnet tool update`、手元のパッケージ作成、`.csx` の実行検証に `dotnet` CLI が必要です。開発環境には通常の実行に必要な実行環境も含まれます。
 
-ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることと、`devo6.nuget.lock.yaml` がワークフロー root にあることも必要です。
+ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることが必要です。`NuGet.config` がある場合は、通常の NuGet 設定として参照元に使われます。
 
-## ツールとして使う
+## 導入
 
-リポジトリからパッケージを作る場合は、次のように作成します。
+リポジトリからパッケージを作る場合は、CLI ツールと参照用パッケージをそれぞれ作成します。
 
 ```bash
 dotnet pack src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj -c Release -o ./artifacts/packages
+dotnet pack src/Devo6.WorkFlow.Engine/Devo6.WorkFlow.Engine.csproj -c Release -o ./artifacts/packages
 ```
 
-別の端末へパッケージを配置した後、配置先ディレクトリをパッケージ参照元として指定します。
+CLI ツールを別の端末で使う場合は、配置先ディレクトリをパッケージ参照元として指定します。
 
 ```bash
 dotnet tool install --global Devo6.WorkFlow.Cli --add-source ./artifacts/packages
@@ -37,34 +51,50 @@ engine validate main.csx --config appsettings.yaml
 dotnet tool update --global Devo6.WorkFlow.Cli --add-source ./artifacts/packages
 ```
 
+公開 API を利用するプロジェクトでは、参照用パッケージを追加します。このパッケージには Engine と `Abstractions` が含まれます。
+
+```bash
+dotnet add package Devo6.WorkFlow.Engine --source ./artifacts/packages
+```
+
 NuGet の公開先へ登録済みの安定版を導入する場合は、パッケージ参照元の指定は不要です。
 
 ```bash
 dotnet tool install --global Devo6.WorkFlow.Cli
+dotnet add package Devo6.WorkFlow.Engine
 ```
 
 ## 複数フォルダの例
 
-`samples/multi-folder-composite/main.csx` は、別フォルダにある読み込み、変換、保存の Step を `#load` し、外側 `CompositeStep` の Step から内側 `CompositeStep` を実行します。
+`samples/multi-folder-composite/main.csx` は、参照用 NuGet パッケージを `#r "nuget: Devo6.WorkFlow.Engine, 0.1.0"`、YAML 解析器を `#r "nuget: YamlDotNet, 16.3.0"` で参照し、別フォルダにある Step を `#load` します。内側 `CompositeStep` は YAML 前付け付き文書を読み込み、付加情報と本文の分離、本文整形、統計作成、保存内容作成を担当します。外側 `CompositeStep` は内側の結果を受け取り、保存 Step を呼びます。
 
 ```text
 samples/multi-folder-composite/
   main.csx
   appsettings.yaml
+  input/source.txt
   shared/contracts.csx
   steps/load/appsettings.yaml
   steps/load/load-text-step.csx
-  steps/convert/appsettings.yaml
-  steps/convert/convert-text-step.csx
+  steps/parse/appsettings.yaml
+  steps/parse/parse-document-step.csx
+  steps/normalize/appsettings.yaml
+  steps/normalize/normalize-text-step.csx
+  steps/analyze/appsettings.yaml
+  steps/analyze/analyze-text-step.csx
+  steps/report/appsettings.yaml
+  steps/report/build-report-step.csx
   steps/save/appsettings.yaml
   steps/save/save-text-step.csx
 ```
 
 ```bash
-engine run samples/multi-folder-composite/main.csx --config appsettings.yaml
+engine run samples/multi-folder-composite/main.csx --config appsettings.yaml --allow-nuget Devo6.WorkFlow.Engine,0.1.0 --allow-nuget YamlDotNet,16.3.0
 ```
 
-この例では、外側 `CompositeStep` が Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。`steps/load/appsettings.yaml`、`steps/convert/appsettings.yaml`、`steps/save/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Convert.Prefix` だけを部分上書きします。
+この例では、外側 `CompositeStep` が `Pipeline.*` と `Save` の境界 Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。各 `steps/*/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Pipeline.Report.Heading` だけを部分上書きします。CLI からは `--set Pipeline.Normalize.Uppercase=false` や `--set Pipeline.Report.Heading=...` のように上書きできます。
+
+NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 と `YamlDotNet` 16.3.0 を取得できる環境で、実行側が同じ参照を `--allow-nuget` で許可します。`NuGet.config` がある場合は通常の NuGet 設定として使われます。このサンプルは通常利用を示すためロックファイルを置きません。再現性を固定したい場合だけ `devo6.nuget.lock.yaml` を置き、`--locked` を指定します。
 
 ## 最小例
 
@@ -235,7 +265,7 @@ NuGet script パッケージは `dotnet-script` 互換の形式で読み込め�
 #load "nuget: Simple.Targets.Csx, 6.0.0"
 ```
 
-`#r "nuget: ..."` と `#load "nuget: ..."` は `devo6.nuget.lock.yaml` の対象です。ロックファイルはワークフロー root に置き、直接参照、解決済み依存関係、`targetFramework`、実行時識別子、パッケージ参照元などを記録します。ロックファイルの欠落や不一致は検証または実行前に失敗します。
+`#r "nuget: ..."` と `#load "nuget: ..."` は、`devo6.nuget.lock.yaml` がある場合だけロック検証の対象です。ロックファイルはワークフロー root に置き、直接参照、解決済み依存関係、`targetFramework`、実行時識別子、`Dotnet.Script.Core` version を記録します。既定では `NuGet.config` など通常の NuGet 設定で依存関係を解決し、ロックファイルが無い場合はロック比較を行いません。`--locked` を指定した場合だけロックファイル欠落を失敗にします。`verifyPackageSources: true` を指定した場合だけ `packageSources` と実際の参照元一覧を順序非依存で照合します。ロックファイルがある場合の不一致は検証または実行前に失敗します。
 
 ## 現行契約外
 
