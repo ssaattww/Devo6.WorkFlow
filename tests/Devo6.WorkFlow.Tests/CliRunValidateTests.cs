@@ -452,6 +452,36 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
+    /// CLI run が --allow-nuget なしで固定 NuGet 参照を通常解決へ渡すことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine run は --allow-nuget なしで NuGet 参照を許可する")]
+    public void EngineRunAcceptsNuGetReferenceWithoutAllowNuGetOption()
+    {
+        string scriptPath = CreateNuGetScript();
+        var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
+
+        int exitCode = Program.Run(["run", scriptPath], provider);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// CLI validate が --allow-nuget なしで固定 NuGet 参照を通常解決へ渡すことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine validate は --allow-nuget なしで NuGet 参照を許可する")]
+    public void EngineValidateAcceptsNuGetReferenceWithoutAllowNuGetOption()
+    {
+        string scriptPath = CreateNuGetScript();
+        var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
+
+        int exitCode = Program.Run(["validate", scriptPath], provider);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
     /// CLI run の --locked が NuGet lock file 欠落を実行前失敗にすることを検査します。
     /// </summary>
     [Fact(DisplayName = "engine run --locked は NuGet lock file 欠落を失敗にする")]
@@ -461,7 +491,7 @@ public sealed class CliRunValidateTests
         var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
 
         int exitCode = Program.Run(
-            ["run", scriptPath, "--allow-nuget", "Devo6.WorkFlow.Engine,0.1.0", "--locked"],
+            ["run", scriptPath, "--locked"],
             provider);
 
         Assert.Equal(1, exitCode);
@@ -478,7 +508,7 @@ public sealed class CliRunValidateTests
         var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
 
         int exitCode = Program.Run(
-            ["validate", scriptPath, "--allow-nuget", "Devo6.WorkFlow.Engine,0.1.0", "--locked"],
+            ["validate", scriptPath, "--locked"],
             provider);
 
         Assert.Equal(1, exitCode);

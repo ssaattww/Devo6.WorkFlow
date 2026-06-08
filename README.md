@@ -89,12 +89,12 @@ samples/multi-folder-composite/
 ```
 
 ```bash
-engine run samples/multi-folder-composite/main.csx --config appsettings.yaml --allow-nuget Devo6.WorkFlow.Engine,0.1.0 --allow-nuget YamlDotNet,16.3.0
+engine run samples/multi-folder-composite/main.csx --config appsettings.yaml
 ```
 
 この例では、外側 `CompositeStep` が `Pipeline.*` と `Save` の境界 Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。各 `steps/*/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Pipeline.Report.Heading` だけを部分上書きします。CLI からは `--set Pipeline.Normalize.Uppercase=false` や `--set Pipeline.Report.Heading=...` のように上書きできます。
 
-NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 と `YamlDotNet` 16.3.0 を取得できる環境で、実行側が同じ参照を `--allow-nuget` で許可します。`NuGet.config` がある場合は通常の NuGet 設定として使われます。このサンプルは通常利用を示すためロックファイルを置きません。再現性を固定したい場合だけ `devo6.nuget.lock.yaml` を置き、`--locked` を指定します。
+NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 と `YamlDotNet` 16.3.0 を取得できる環境であれば、そのまま通常の NuGet 設定で解決します。`NuGet.config` がある場合は通常の NuGet 設定として使われます。必要に応じて `--allow-nuget PackageId,Version` を指定すると、その一覧に含まれない NuGet 直接参照を拒否できます。このサンプルは通常利用を示すためロックファイルを置きません。再現性を固定したい場合だけ `devo6.nuget.lock.yaml` を置き、`--locked` を指定します。
 
 ## 最小例
 
@@ -251,7 +251,7 @@ var DeployBuild = CompositeStep.Define("Build", namespaceName: "Deploy")
 
 ローカル `#load` の相対パスは、`#load` を書いた `.csx` のディレクトリ基準です。読み込みはワークフロー root 配下に制限され、循環読み込みは検証エラーです。
 
-`#r` は明示許可された参照だけを使えます。
+assembly 名参照とファイル参照は明示許可された参照だけを使えます。NuGet 参照は固定 version を指定して通常の NuGet 設定で解決します。
 
 ```csharp
 #r "System.Text.Json"

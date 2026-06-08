@@ -274,14 +274,18 @@ public sealed class CsxEntryValidationTests
     }
 
     /// <summary>
-    /// 許可されていない NuGet 参照が validation error として返り SCRIPT_REFERENCE_NOT_ALLOWED になることを検査します。
+    /// 明示制限された NuGet 参照が validation error として返り SCRIPT_REFERENCE_NOT_ALLOWED になることを検査します。
     /// </summary>
-    [Fact(DisplayName = "許可外 NuGet は validation error として返る")]
-    public void 許可外NuGetはValidationErrorとして返る()
+    [Fact(DisplayName = "明示制限外 NuGet は validation error として返る")]
+    public void 明示制限外NuGetはValidationErrorとして返る()
     {
         string scriptPath = CreateScript("#r \"nuget: CsvHelper, 33.0.1\"");
+        var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            AllowedNuGetReferences = [new CsxNuGetReference("Other.Package", "1.0.0")],
+        });
 
-        WorkflowValidationResult result = new CsxEntryLoader().Validate(scriptPath);
+        WorkflowValidationResult result = loader.Validate(scriptPath);
 
         ValidationError error = Assert.Single(result.Errors);
         Assert.False(result.Succeeded);
