@@ -127,6 +127,19 @@ public sealed class ProjectSkeletonTests
     }
 
     /// <summary>
+    /// publish workflow の参照用パッケージ作成が参照プロジェクトの再ビルドを起動しないことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "publish workflow は参照用 package 作成で project reference build を無効化する")]
+    public void PublishWorkflowDisablesProjectReferenceBuildForReferencePackage()
+    {
+        string workflow = File.ReadAllText(Path.Combine(RepositoryRoot, ".github/workflows/publish-nuget.yml"));
+        string referencePackageStep = GetWorkflowStep(workflow, "Pack reference package");
+
+        Assert.Contains("--no-build", referencePackageStep);
+        Assert.Contains("-p:BuildProjectReferences=false", referencePackageStep);
+    }
+
+    /// <summary>
     /// Engine パッケージに Engine と Abstractions の DLL が含まれることを検査します。
     /// </summary>
     /// <returns>非同期検査を表す task。</returns>
@@ -264,6 +277,23 @@ public sealed class ProjectSkeletonTests
         return project
             .Descendants("ProjectReference")
             .Single(element => element.Attribute("Include")?.Value == include);
+    }
+
+    /// <summary>
+    /// workflow 定義から指定した step の本文を取得します。
+    /// </summary>
+    /// <param name="workflow">workflow 定義文字列。</param>
+    /// <param name="stepName">取得する step 名。</param>
+    /// <returns>指定 step の本文。</returns>
+    private static string GetWorkflowStep(string workflow, string stepName)
+    {
+        string marker = $"- name: {stepName}";
+        int start = workflow.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"workflow step が見つかりません: {stepName}");
+
+        int next = workflow.IndexOf("\n      - name:", start + marker.Length, StringComparison.Ordinal);
+
+        return next >= 0 ? workflow[start..next] : workflow[start..];
     }
 
     /// <summary>
