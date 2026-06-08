@@ -117,7 +117,7 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
-    /// 複数フォルダのサンプルが参照用 NuGet package を入口だけで参照することを検査します。
+    /// 複数フォルダのサンプルが参照用 NuGet package を入口だけで参照し、通常利用では lock file を同梱しないことを検査します。
     /// </summary>
     [Fact(DisplayName = "複数フォルダのサンプルは参照用 NuGet package を入口だけで参照する")]
     public void MultiFolderCompositeSampleUsesNuGetReferencePackage()
@@ -134,13 +134,7 @@ public sealed class SampleWorkflowTests
             Assert.DoesNotContain("#r \"nuget:", File.ReadAllText(scriptPath));
         }
 
-        string lockSource = File.ReadAllText(lockPath);
-        Assert.Contains($"packageId: {SampleNuGetPackageId}", lockSource);
-        Assert.Contains($"version: {SampleNuGetPackageVersion}", lockSource);
-        Assert.Contains("verifyPackageSources: false", lockSource);
-        Assert.DoesNotContain("packageSources:", lockSource);
-        Assert.Contains("directReferences:", lockSource);
-        Assert.Contains("resolvedDependencies:", lockSource);
+        Assert.False(File.Exists(lockPath));
     }
 
     /// <summary>

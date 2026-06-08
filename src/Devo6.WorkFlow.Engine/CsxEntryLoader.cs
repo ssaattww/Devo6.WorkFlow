@@ -429,6 +429,17 @@ public sealed class CsxEntryLoader
         string lockPath = ResolveNuGetLockPath(context.WorkflowRoot);
         if (!File.Exists(lockPath))
         {
+            if (!loaderOptions.RequireNuGetLock)
+            {
+                CsxNuGetDependencyGraph unlockedGraph = ResolveNuGetDependencyGraph(entryPath, sourceCode, context, lockPath);
+                IReadOnlyList<CsxNuGetReference> unlockedDirectReferences = CollectValidatedNuGetScriptDirectReferences(
+                    unlockedGraph,
+                    context.NuGetReferences,
+                    context.NuGetScriptLoadReferences);
+
+                return MarkDirectResolvedDependencies(unlockedGraph, unlockedDirectReferences);
+            }
+
             throw new CsxReferenceValidationException(
                 WorkflowErrorCodes.ScriptNugetLockMissing,
                 $"NuGet lock file was not found: {lockPath}");
@@ -446,10 +457,38 @@ public sealed class CsxEntryLoader
 
         EnsureLockMetadataIsComplete(lockFile);
 
-        CsxNuGetDependencyGraph graph;
+        CsxNuGetDependencyGraph graph = ResolveNuGetDependencyGraph(entryPath, sourceCode, context, lockPath);
+
+        IReadOnlyList<CsxNuGetReference> directReferences = CollectValidatedNuGetScriptDirectReferences(
+            graph,
+            context.NuGetReferences,
+            context.NuGetScriptLoadReferences);
+        EnsureDirectReferencesMatch(directReferences, lockFile.DirectReferences);
+        graph = MarkDirectResolvedDependencies(graph, directReferences);
+
+        EnsureResolutionMetadataMatches(graph.ResolutionMetadata, lockFile);
+        EnsureResolvedDependenciesMatch(graph.Dependencies, lockFile.ResolvedDependencies);
+
+        return graph;
+    }
+
+    /// <summary>
+    /// NuGet dependency graph provider で NuGet 依存関係を解決します。
+    /// </summary>
+    /// <param name="entryPath">entry script の full path。</param>
+    /// <param name="sourceCode">NuGet directive を含む source code。</param>
+    /// <param name="context">読み込み中の文脈。</param>
+    /// <param name="lockPath">NuGet lock file の path。未作成の場合も request の文脈として渡します。</param>
+    /// <returns>解決済み NuGet dependency graph。</returns>
+    private CsxNuGetDependencyGraph ResolveNuGetDependencyGraph(
+        string entryPath,
+        string sourceCode,
+        CsxLoadContext context,
+        string lockPath)
+    {
         try
         {
-            graph = (loaderOptions.NuGetDependencyGraphProvider ?? DefaultNuGetDependencyGraphProvider).Resolve(
+            return (loaderOptions.NuGetDependencyGraphProvider ?? DefaultNuGetDependencyGraphProvider).Resolve(
                 context.NuGetReferences,
                 new CsxNuGetDependencyGraphRequest(entryPath, context.WorkflowRoot, lockPath, sourceCode));
         }
@@ -463,18 +502,6 @@ public sealed class CsxEntryLoader
                 WorkflowErrorCodes.ScriptNugetRestoreFailed,
                 $"NuGet dependencies could not be restored: {exception.Message}");
         }
-
-        IReadOnlyList<CsxNuGetReference> directReferences = CollectValidatedNuGetScriptDirectReferences(
-            graph,
-            context.NuGetReferences,
-            context.NuGetScriptLoadReferences);
-        EnsureDirectReferencesMatch(directReferences, lockFile.DirectReferences);
-        graph = MarkDirectResolvedDependencies(graph, directReferences);
-
-        EnsureResolutionMetadataMatches(graph.ResolutionMetadata, lockFile);
-        EnsureResolvedDependenciesMatch(graph.Dependencies, lockFile.ResolvedDependencies);
-
-        return graph;
     }
 
     /// <summary>
@@ -1909,6 +1936,11 @@ public sealed class CsxEntryLoaderOptions
     /// NuGet lock file の path を取得または設定します。null の場合は workflow root の既定 file を使います。
     /// </summary>
     public string? NuGetLockFilePath { get; init; }
+
+    /// <summary>
+    /// NuGet 参照がある場合に NuGet lock file の存在を必須にするかどうかを取得します。
+    /// </summary>
+    public bool RequireNuGetLock { get; init; }
 
     /// <summary>
     /// NuGet dependency graph を解決する provider を取得または設定します。null の場合は Dotnet.Script の既定 provider を使います。

@@ -29,7 +29,7 @@ public static class Program
         if (args.Length == 0)
         {
             Console.WriteLine("Devo6.WorkFlow CLI");
-            Console.WriteLine("Usage: engine run|validate <entry.csx> [--entry Name] [--config path] [--set key=value] [--allow-nuget PackageId,Version]");
+            Console.WriteLine("Usage: engine run|validate <entry.csx> [--entry Name] [--config path] [--set key=value] [--allow-nuget PackageId,Version] [--locked]");
 
             return 0;
         }
@@ -46,6 +46,7 @@ public static class Program
         var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
         {
             AllowedNuGetReferences = command.AllowedNuGetReferences,
+            RequireNuGetLock = command.RequireNuGetLock,
             NuGetDependencyGraphProvider = nuGetDependencyGraphProvider,
         });
 
@@ -115,7 +116,7 @@ public static class Program
     /// <returns>parse に成功した場合は true。</returns>
     private static bool TryParse(string[] args, out CliCommand command, out string errorMessage)
     {
-        command = new CliCommand("", "", null, "", new Dictionary<string, string>(), []);
+        command = new CliCommand("", "", null, "", new Dictionary<string, string>(), [], false);
         errorMessage = "";
 
         if (args.Length < 2)
@@ -138,6 +139,7 @@ public static class Program
         string configPath = "";
         var settings = new Dictionary<string, string>(StringComparer.Ordinal);
         var allowedNuGetReferences = new List<CsxNuGetReference>();
+        bool requireNuGetLock = false;
 
         for (int i = 2; i < args.Length; i++)
         {
@@ -190,13 +192,16 @@ public static class Program
 
                     allowedNuGetReferences.Add(parsedReference);
                     break;
+                case "--locked":
+                    requireNuGetLock = true;
+                    break;
                 default:
                     errorMessage = $"Unknown option: {args[i]}";
                     return false;
             }
         }
 
-        command = new CliCommand(commandName, entryPath, entryName, configPath, settings, allowedNuGetReferences);
+        command = new CliCommand(commandName, entryPath, entryName, configPath, settings, allowedNuGetReferences, requireNuGetLock);
 
         return true;
     }
@@ -284,11 +289,13 @@ public static class Program
     /// <param name="ConfigPath">指定された config file path。</param>
     /// <param name="Settings">--set option で指定された override 設定。</param>
     /// <param name="AllowedNuGetReferences">--allow-nuget option で指定された NuGet 許可参照。</param>
+    /// <param name="RequireNuGetLock">--locked option で指定された NuGet lock file 必須設定。</param>
     private sealed record CliCommand(
         string Name,
         string EntryPath,
         string? EntryName,
         string ConfigPath,
         IReadOnlyDictionary<string, string> Settings,
-        IReadOnlyList<CsxNuGetReference> AllowedNuGetReferences);
+        IReadOnlyList<CsxNuGetReference> AllowedNuGetReferences,
+        bool RequireNuGetLock);
 }

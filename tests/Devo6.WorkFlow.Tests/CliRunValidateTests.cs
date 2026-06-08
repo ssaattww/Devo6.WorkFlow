@@ -424,7 +424,6 @@ public sealed class CliRunValidateTests
     public void EngineRunAllowNuGetReferenceFromOption()
     {
         string scriptPath = CreateNuGetScript();
-        WriteNuGetLockFile(scriptPath);
         var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
 
         int exitCode = Program.Run(
@@ -442,7 +441,6 @@ public sealed class CliRunValidateTests
     public void EngineValidateAllowNuGetReferenceFromOption()
     {
         string scriptPath = CreateNuGetScript();
-        WriteNuGetLockFile(scriptPath);
         var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
 
         int exitCode = Program.Run(
@@ -451,6 +449,40 @@ public sealed class CliRunValidateTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// CLI run の --locked が NuGet lock file 欠落を実行前失敗にすることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine run --locked は NuGet lock file 欠落を失敗にする")]
+    public void EngineRunLockedRequiresNuGetLockFile()
+    {
+        string scriptPath = CreateNuGetScript();
+        var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
+
+        int exitCode = Program.Run(
+            ["run", scriptPath, "--allow-nuget", "Devo6.WorkFlow.Engine,0.1.0", "--locked"],
+            provider);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(0, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// CLI validate の --locked が NuGet lock file 欠落を検証失敗にすることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine validate --locked は NuGet lock file 欠落を失敗にする")]
+    public void EngineValidateLockedRequiresNuGetLockFile()
+    {
+        string scriptPath = CreateNuGetScript();
+        var provider = new FakeNuGetDependencyGraphProvider(CreateWorkflowPackageGraph());
+
+        int exitCode = Program.Run(
+            ["validate", scriptPath, "--allow-nuget", "Devo6.WorkFlow.Engine,0.1.0", "--locked"],
+            provider);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(0, provider.ResolveCallCount);
     }
 
     /// <summary>

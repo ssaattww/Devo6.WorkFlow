@@ -21,7 +21,7 @@ Step は `IStep<TOut>` または `IAsyncStep<TOut>` を実装します。Step �
 
 別の端末に導入して使う場合は、.NET 8 以降の開発環境を入れてください。`dotnet tool install`、`dotnet tool update`、手元のパッケージ作成、`.csx` の実行検証に `dotnet` CLI が必要です。開発環境には通常の実行に必要な実行環境も含まれます。
 
-ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることと、`devo6.nuget.lock.yaml` がワークフロー root にあることも必要です。
+ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることが必要です。`NuGet.config` がある場合は、通常の NuGet 設定として参照元に使われます。
 
 ## 導入
 
@@ -72,7 +72,6 @@ dotnet add package Devo6.WorkFlow.Engine
 samples/multi-folder-composite/
   main.csx
   appsettings.yaml
-  devo6.nuget.lock.yaml
   shared/contracts.csx
   steps/load/appsettings.yaml
   steps/load/load-text-step.csx
@@ -88,7 +87,7 @@ engine run samples/multi-folder-composite/main.csx --config appsettings.yaml --a
 
 この例では、外側 `CompositeStep` が Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。`steps/load/appsettings.yaml`、`steps/convert/appsettings.yaml`、`steps/save/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Convert.Prefix` だけを部分上書きします。
 
-NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 を取得できる環境で、実行側が同じ参照を `--allow-nuget` で許可し、`devo6.nuget.lock.yaml` と照合します。
+NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 を取得できる環境で、実行側が同じ参照を `--allow-nuget` で許可します。`NuGet.config` がある場合は通常の NuGet 設定として使われます。再現性を固定したい場合だけ `devo6.nuget.lock.yaml` を置き、`--locked` を指定します。
 
 ## 最小例
 
@@ -259,7 +258,7 @@ NuGet script パッケージは `dotnet-script` 互換の形式で読み込め�
 #load "nuget: Simple.Targets.Csx, 6.0.0"
 ```
 
-`#r "nuget: ..."` と `#load "nuget: ..."` は `devo6.nuget.lock.yaml` の対象です。ロックファイルはワークフロー root に置き、直接参照、解決済み依存関係、`targetFramework`、実行時識別子、`Dotnet.Script.Core` version を記録します。既定では NuGet.Config など通常の NuGet 参照元を使い、`verifyPackageSources: true` を指定した場合だけ `packageSources` と実際の参照元一覧を順序非依存で照合します。ロックファイルの欠落や不一致は検証または実行前に失敗します。
+`#r "nuget: ..."` と `#load "nuget: ..."` は、`devo6.nuget.lock.yaml` がある場合だけロック検証の対象です。ロックファイルはワークフロー root に置き、直接参照、解決済み依存関係、`targetFramework`、実行時識別子、`Dotnet.Script.Core` version を記録します。既定では `NuGet.config` など通常の NuGet 設定で依存関係を解決し、ロックファイルが無い場合はロック比較を行いません。`--locked` を指定した場合だけロックファイル欠落を失敗にします。`verifyPackageSources: true` を指定した場合だけ `packageSources` と実際の参照元一覧を順序非依存で照合します。ロックファイルがある場合の不一致は検証または実行前に失敗します。
 
 ## 現行契約外
 

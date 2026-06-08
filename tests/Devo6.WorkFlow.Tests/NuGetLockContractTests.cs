@@ -34,14 +34,54 @@ public sealed class NuGetLockContractTests
     private static readonly string[] DefaultPackageSources = ["https://api.nuget.org/v3/index.json", "https://example.invalid/nuget/v3/index.json"];
 
     /// <summary>
-    /// NuGet 参照がある実行で lock file が無い場合に専用 error code で失敗することを確認します。
+    /// NuGet 参照がある実行で lock file が無い場合に通常の NuGet 解決へ進むことを確認します。
     /// </summary>
-    [Fact(DisplayName = "Execute returns lock missing when NuGet reference has no lock file")]
-    public void ExecuteReturnsLockMissingWhenNuGetReferenceHasNoLockFile()
+    [Fact(DisplayName = "Execute succeeds when NuGet reference has no lock file by default")]
+    public void ExecuteSucceedsWhenNuGetReferenceHasNoLockFileByDefault()
+    {
+        string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowResult result = loader.Execute(scriptPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("Main", result.EntryName);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// NuGet 参照がある validation で lock file が無い場合に通常の NuGet 解決へ進むことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate succeeds when NuGet reference has no lock file by default")]
+    public void ValidateSucceedsWhenNuGetReferenceHasNoLockFileByDefault()
+    {
+        string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
+        var provider = new FakeNuGetDependencyGraphProvider
+        {
+            Graph = CreateGraph("CsvHelper", "33.0.1", ("Microsoft.Bcl.AsyncInterfaces", "8.0.0")),
+        };
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Empty(result.Errors);
+        Assert.Equal(1, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// 厳格指定された実行で NuGet 参照があるのに lock file が無い場合に専用 error code で失敗することを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute returns lock missing when NuGet lock is required")]
+    public void ExecuteReturnsLockMissingWhenNuGetLockIsRequired()
     {
         string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
         var provider = new FakeNuGetDependencyGraphProvider();
-        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider, requireNuGetLock: true);
 
         WorkflowResult result = loader.Execute(scriptPath);
 
@@ -51,14 +91,14 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// NuGet 参照がある validation で lock file が無い場合に専用 error code で失敗することを確認します。
+    /// 厳格指定された validation で NuGet 参照があるのに lock file が無い場合に専用 error code で失敗することを確認します。
     /// </summary>
-    [Fact(DisplayName = "Validate returns lock missing when NuGet reference has no lock file")]
-    public void ValidateReturnsLockMissingWhenNuGetReferenceHasNoLockFile()
+    [Fact(DisplayName = "Validate returns lock missing when NuGet lock is required")]
+    public void ValidateReturnsLockMissingWhenNuGetLockIsRequired()
     {
         string scriptPath = CreateScript(CreateWorkflowScript("CsvHelper", "33.0.1"));
         var provider = new FakeNuGetDependencyGraphProvider();
-        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider, requireNuGetLock: true);
 
         WorkflowValidationResult result = loader.Validate(scriptPath);
 
@@ -661,14 +701,14 @@ public sealed class NuGetLockContractTests
     }
 
     /// <summary>
-    /// NuGet script load で lock file が無い場合に provider 解決前の専用 error code で失敗することを確認します。
+    /// 厳格指定された NuGet script load で lock file が無い場合に provider 解決前の専用 error code で失敗することを確認します。
     /// </summary>
-    [Fact(DisplayName = "Execute returns lock missing for NuGet script load before provider")]
-    public void ExecuteReturnsLockMissingForNuGetScriptLoadBeforeProvider()
+    [Fact(DisplayName = "Execute returns lock missing for NuGet script load when lock is required")]
+    public void ExecuteReturnsLockMissingForNuGetScriptLoadWhenLockIsRequired()
     {
         string scriptPath = CreateScript(CreateNuGetLoadWorkflowScript("CsvHelper", "33.0.1", "CsvHelperLoadedStep"));
         var provider = new FakeNuGetDependencyGraphProvider();
-        CsxEntryLoader loader = CreateLoader(scriptPath, provider);
+        CsxEntryLoader loader = CreateLoader(scriptPath, provider, requireNuGetLock: true);
 
         WorkflowResult result = loader.Execute(scriptPath);
 
@@ -787,12 +827,14 @@ public sealed class NuGetLockContractTests
     private static CsxEntryLoader CreateLoader(
         string scriptPath,
         FakeNuGetDependencyGraphProvider provider,
-        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null)
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null,
+        bool requireNuGetLock = false)
     {
         return new CsxEntryLoader(new CsxEntryLoaderOptions
         {
             WorkflowRoot = Path.GetDirectoryName(scriptPath),
             AllowedNuGetReferences = allowedNuGetReferences ?? [new CsxNuGetReference("CsvHelper", "33.0.1")],
+            RequireNuGetLock = requireNuGetLock,
             NuGetDependencyGraphProvider = provider,
         });
     }
