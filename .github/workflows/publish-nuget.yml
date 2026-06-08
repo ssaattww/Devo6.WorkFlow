@@ -130,6 +130,7 @@ jobs:
             --no-build \
             --output ./artifacts \
             -p:ContinuousIntegrationBuild=true \
+            -p:BuildProjectReferences=false \
             -p:PackageVersion=${{ steps.version.outputs.package_version }}
 
       - name: Verify tool install
