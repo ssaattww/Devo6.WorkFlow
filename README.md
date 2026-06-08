@@ -66,12 +66,13 @@ dotnet add package Devo6.WorkFlow.Engine
 
 ## 複数フォルダの例
 
-`samples/multi-folder-composite/main.csx` は、別フォルダにある読み込み、変換、保存の Step を `#load` し、外側 `CompositeStep` の Step から内側 `CompositeStep` を実行します。
+`samples/multi-folder-composite/main.csx` は、参照用 NuGet パッケージを `#r "nuget: Devo6.WorkFlow.Engine, 0.1.0"` で参照し、別フォルダにある読み込み、変換、保存の Step を `#load` します。外側 `CompositeStep` の Step から内側 `CompositeStep` を実行します。
 
 ```text
 samples/multi-folder-composite/
   main.csx
   appsettings.yaml
+  devo6.nuget.lock.yaml
   shared/contracts.csx
   steps/load/appsettings.yaml
   steps/load/load-text-step.csx
@@ -82,10 +83,12 @@ samples/multi-folder-composite/
 ```
 
 ```bash
-engine run samples/multi-folder-composite/main.csx --config appsettings.yaml
+engine run samples/multi-folder-composite/main.csx --config appsettings.yaml --allow-nuget Devo6.WorkFlow.Engine,0.1.0
 ```
 
 この例では、外側 `CompositeStep` が Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。`steps/load/appsettings.yaml`、`steps/convert/appsettings.yaml`、`steps/save/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Convert.Prefix` だけを部分上書きします。
+
+NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 を取得できる環境で、実行側が同じ参照を `--allow-nuget` で許可し、`devo6.nuget.lock.yaml` と照合します。
 
 ## 最小例
 

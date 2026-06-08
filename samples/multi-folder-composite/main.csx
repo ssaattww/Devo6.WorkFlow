@@ -1,3 +1,5 @@
+#r "nuget: Devo6.WorkFlow.Engine, 0.1.0"
+
 #load "./shared/contracts.csx"
 #load "./steps/load/load-text-step.csx"
 #load "./steps/convert/convert-text-step.csx"

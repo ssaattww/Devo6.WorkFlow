@@ -10,6 +10,36 @@ namespace Devo6.WorkFlow.Tests;
 public sealed class SampleWorkflowTests
 {
     /// <summary>
+    /// サンプルが参照する NuGet package id を表します。
+    /// </summary>
+    private const string SampleNuGetPackageId = "Devo6.WorkFlow.Engine";
+
+    /// <summary>
+    /// サンプルが参照する NuGet package version を表します。
+    /// </summary>
+    private const string SampleNuGetPackageVersion = "0.1.0";
+
+    /// <summary>
+    /// サンプル lock file の target framework を表します。
+    /// </summary>
+    private const string SampleTargetFramework = "net8.0";
+
+    /// <summary>
+    /// サンプル lock file の runtime identifier を表します。
+    /// </summary>
+    private const string SampleRuntimeIdentifier = "ubuntu.24.04-x64";
+
+    /// <summary>
+    /// サンプル lock file の Dotnet.Script.Core version を表します。
+    /// </summary>
+    private const string SampleDotnetScriptCoreVersion = "2.0.1";
+
+    /// <summary>
+    /// サンプル lock file の package source 一覧を表します。
+    /// </summary>
+    private static readonly string[] SamplePackageSources = ["https://api.nuget.org/v3/index.json"];
+
+    /// <summary>
     /// リポジトリのルートパスを保持します。
     /// </summary>
     private static readonly string RepositoryRoot = FindRepositoryRoot();
@@ -27,7 +57,7 @@ public sealed class SampleWorkflowTests
 
         DeleteOutputDirectory(outputPath);
 
-        WorkflowResult result = new CsxEntryLoader().Execute(
+        WorkflowResult result = CreateSampleLoader().Execute(
             entryPath,
             options: new WorkflowExecutionOptions(engineArguments: new EngineArguments
             {
@@ -54,7 +84,7 @@ public sealed class SampleWorkflowTests
 
         DeleteOutputDirectory(outputPath);
 
-        WorkflowResult result = new CsxEntryLoader().Execute(
+        WorkflowResult result = CreateSampleLoader().Execute(
             entryPath,
             options: new WorkflowExecutionOptions(engineArguments: new EngineArguments
             {
@@ -84,6 +114,31 @@ public sealed class SampleWorkflowTests
         Assert.False(YamlPathExists(rootConfigPath, "Load"));
         Assert.Equal("converted: ", ReadYamlScalar(rootConfigPath, "Convert", "Prefix"));
         Assert.False(YamlPathExists(rootConfigPath, "Save"));
+    }
+
+    /// <summary>
+    /// 複数フォルダのサンプルが参照用 NuGet package を入口だけで参照することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "複数フォルダのサンプルは参照用 NuGet package を入口だけで参照する")]
+    public void MultiFolderCompositeSampleUsesNuGetReferencePackage()
+    {
+        string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
+        string entryPath = Path.Combine(sampleDirectory, "main.csx");
+        string lockPath = Path.Combine(sampleDirectory, "devo6.nuget.lock.yaml");
+        string entrySource = File.ReadAllText(entryPath);
+
+        Assert.Contains($"#r \"nuget: {SampleNuGetPackageId}, {SampleNuGetPackageVersion}\"", entrySource);
+        foreach (string scriptPath in Directory.EnumerateFiles(sampleDirectory, "*.csx", SearchOption.AllDirectories)
+            .Where(path => !string.Equals(Path.GetFullPath(path), Path.GetFullPath(entryPath), StringComparison.Ordinal)))
+        {
+            Assert.DoesNotContain("#r \"nuget:", File.ReadAllText(scriptPath));
+        }
+
+        string lockSource = File.ReadAllText(lockPath);
+        Assert.Contains($"packageId: {SampleNuGetPackageId}", lockSource);
+        Assert.Contains($"version: {SampleNuGetPackageVersion}", lockSource);
+        Assert.Contains("directReferences:", lockSource);
+        Assert.Contains("resolvedDependencies:", lockSource);
     }
 
     /// <summary>
@@ -123,6 +178,90 @@ public sealed class SampleWorkflowTests
         }
 
         throw new InvalidOperationException("リポジトリルートを特定できませんでした。");
+    }
+
+    /// <summary>
+    /// サンプルの NuGet 参照を外部通信なしで解決する loader を作成します。
+    /// </summary>
+    /// <returns>固定 NuGet graph を使う loader。</returns>
+    private static CsxEntryLoader CreateSampleLoader()
+    {
+        return new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            AllowedNuGetReferences = [new CsxNuGetReference(SampleNuGetPackageId, SampleNuGetPackageVersion)],
+            NuGetDependencyGraphProvider = new FixedNuGetDependencyGraphProvider(CreateSampleNuGetGraph()),
+        });
+    }
+
+    /// <summary>
+    /// サンプル用の固定 NuGet dependency graph を作成します。
+    /// </summary>
+    /// <returns>固定 NuGet dependency graph。</returns>
+    private static CsxNuGetDependencyGraph CreateSampleNuGetGraph()
+    {
+        return new CsxNuGetDependencyGraph(
+            CreateSampleNuGetDependencies(),
+            referencePaths:
+            [
+                typeof(CompositeStep).Assembly.Location,
+                typeof(IStep<>).Assembly.Location,
+            ],
+            resolutionMetadata: CreateSampleNuGetResolutionMetadata());
+    }
+
+    /// <summary>
+    /// サンプル用の固定 NuGet 依存関係を作成します。
+    /// </summary>
+    /// <returns>固定 NuGet 依存関係。</returns>
+    private static CsxResolvedNuGetDependency[] CreateSampleNuGetDependencies()
+    {
+        return
+        [
+            new(SampleNuGetPackageId, SampleNuGetPackageVersion, isDirect: true),
+            new("Dotnet.Script.Core", "2.0.1", isDirect: false),
+            new("Dotnet.Script.DependencyModel", "2.0.1", isDirect: false),
+            new("Dotnet.Script.DependencyModel.NuGet", "2.0.1", isDirect: false),
+            new("Gapotchenko.FX", "2024.2.5", isDirect: false),
+            new("Gapotchenko.FX.Reflection.Loader", "2024.2.5", isDirect: false),
+            new("Microsoft.CodeAnalysis.Common", "5.0.0-2.final", isDirect: false),
+            new("Microsoft.CodeAnalysis.CSharp", "5.0.0-2.final", isDirect: false),
+            new("Microsoft.CodeAnalysis.CSharp.Scripting", "5.0.0-2.final", isDirect: false),
+            new("Microsoft.CodeAnalysis.Scripting.Common", "5.0.0-2.final", isDirect: false),
+            new("Microsoft.DotNet.PlatformAbstractions", "3.1.6", isDirect: false),
+            new("Microsoft.Extensions.DependencyInjection.Abstractions", "8.0.0", isDirect: false),
+            new("Microsoft.Extensions.Logging.Abstractions", "8.0.0", isDirect: false),
+            new("Microsoft.NETCore.App", "8.0.27", isDirect: false),
+            new("Newtonsoft.Json", "13.0.3", isDirect: false),
+            new("NuGet.Common", "6.14.3", isDirect: false),
+            new("NuGet.Configuration", "6.14.3", isDirect: false),
+            new("NuGet.DependencyResolver.Core", "6.14.3", isDirect: false),
+            new("NuGet.Frameworks", "6.14.3", isDirect: false),
+            new("NuGet.LibraryModel", "6.14.3", isDirect: false),
+            new("NuGet.Packaging", "6.14.3", isDirect: false),
+            new("NuGet.ProjectModel", "6.14.3", isDirect: false),
+            new("NuGet.Protocol", "6.14.3", isDirect: false),
+            new("NuGet.Versioning", "6.14.3", isDirect: false),
+            new("ReadLine", "2.0.1", isDirect: false),
+            new("System.Collections.Immutable", "9.0.0", isDirect: false),
+            new("System.Formats.Asn1", "6.0.0", isDirect: false),
+            new("System.Reflection.Metadata", "9.0.0", isDirect: false),
+            new("System.Security.Cryptography.Pkcs", "6.0.4", isDirect: false),
+            new("System.Security.Cryptography.ProtectedData", "4.4.0", isDirect: false),
+            new("YamlDotNet", "16.3.0", isDirect: false),
+        ];
+    }
+
+    /// <summary>
+    /// サンプル用の固定 NuGet 解決 metadata を作成します。
+    /// </summary>
+    /// <returns>固定 NuGet 解決 metadata。</returns>
+    private static CsxNuGetResolutionMetadata CreateSampleNuGetResolutionMetadata()
+    {
+        return new CsxNuGetResolutionMetadata(
+            SampleTargetFramework,
+            SampleRuntimeIdentifier,
+            SamplePackageSources,
+            SampleDotnetScriptCoreVersion);
     }
 
     /// <summary>
@@ -193,5 +332,25 @@ public sealed class SampleWorkflowTests
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// 外部通信を使わずに固定された NuGet dependency graph を返します。
+    /// </summary>
+    /// <param name="graph">返却する固定 NuGet dependency graph。</param>
+    private sealed class FixedNuGetDependencyGraphProvider(CsxNuGetDependencyGraph graph) : ICsxNuGetDependencyGraphProvider
+    {
+        /// <summary>
+        /// 固定された NuGet dependency graph を返します。
+        /// </summary>
+        /// <param name="directReferences">script から読んだ直接 NuGet 参照。</param>
+        /// <param name="request">dependency graph 解決 request。</param>
+        /// <returns>固定された NuGet dependency graph。</returns>
+        public CsxNuGetDependencyGraph Resolve(
+            IReadOnlyList<CsxNuGetReference> directReferences,
+            CsxNuGetDependencyGraphRequest request)
+        {
+            return graph;
+        }
     }
 }
