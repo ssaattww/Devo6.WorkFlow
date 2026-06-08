@@ -1475,7 +1475,7 @@ NuGet script 読み込みの重複は、同一パッケージ ID、解決済み 
 | ファイル参照 | 許可一覧に登録されたディレクトリ配下のみ許可 |
 | NuGet 参照 | 許可一覧に登録されたパッケージ ID とバージョンのみ許可 |
 | 浮動バージョン | 禁止 |
-| パッケージ参照元 | 既定の参照元または明示許可された参照元のみ許可 |
+| パッケージ参照元 | 通常の NuGet 設定に従う。`verifyPackageSources: true` の場合だけロックファイルと照合 |
 
 NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` の仕組みを利用する。
 
@@ -1485,7 +1485,7 @@ NuGet ロックファイルは `#r "nuget: package, version"` と `#load "nuget:
 
 `#load "nuget: package, version"` も NuGet 直接参照として扱い、`devo6.nuget.lock.yaml` の `directReferences`、`resolvedDependencies`、`metadata` 比較の対象に含める。
 
-`directReferences` はディレクティブ種別を区別しないパッケージ ID、version、参照元の正規化集合とし、`#r` と `#load` の両方から得た直接 NuGet パッケージ参照を含める。
+`directReferences` はディレクティブ種別を区別しないパッケージ ID と version の正規化集合とし、`#r` と `#load` の両方から得た直接 NuGet パッケージ参照を含める。
 
 `#load "nuget: ..."` はパッケージ内 script を実行可能 source として取り込むが、新しい許可一覧を増やさず、NuGet `#r` と同じ許可済みパッケージ ID と version の規則を適用する。
 
@@ -1497,8 +1497,13 @@ NuGet ロックファイルは `#r "nuget: package, version"` と `#load "nuget:
 - 解決済み依存関係 (`resolvedDependencies`)
 - 対象 (`targetFramework`)
 - 実行時識別子 (`runtimeIdentifier`)
-- パッケージ参照元 (`packageSources`)
+- 参照元照合の有無 (`verifyPackageSources`)
+- 必要な場合だけパッケージ参照元 (`packageSources`)
 - `Dotnet.Script.Core` version
+
+`verifyPackageSources` の既定値は `false` とする。未指定または `false` の場合、NuGet 復元は NuGet.Config など通常の NuGet 参照元を使い、ロック検証では `packageSources` の必須チェックと一致チェックを行わない。
+
+`verifyPackageSources: true` の場合だけ `packageSources` を必須の再現性情報とし、実際の NuGet 参照元一覧と順序を無視して一致することを検証する。
 
 絶対実行時 assembly path は実行環境に依存するため、ロックファイルには記録しない。
 
@@ -1507,9 +1512,11 @@ NuGet ロックファイルは `#r "nuget: package, version"` と `#load "nuget:
 1. 許可外 NuGet 参照、浮動バージョン、`dotnet-script` 互換でない NuGet `#load` 文法を `SCRIPT_REFERENCE_NOT_ALLOWED` として拒否する
 2. NuGet 直接参照がある場合、復元前に `devo6.nuget.lock.yaml` の欠落を `SCRIPT_NUGET_LOCK_MISSING` として拒否する
 3. 直接参照のパッケージ ID と version がロックファイルと一致しない場合、復元前に `SCRIPT_NUGET_LOCK_MISMATCH` として拒否する
-4. `Dotnet.Script.Core` による依存関係解決を行う
-5. 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする
-6. 解決済み依存関係または `metadata` がロックファイルと一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする
+4. ロックファイルに `targetFramework`、`runtimeIdentifier`、`Dotnet.Script.Core` version が無い場合、または `verifyPackageSources: true` で `packageSources` が無い場合は、復元前に `SCRIPT_NUGET_LOCK_MISMATCH` として拒否する
+5. `Dotnet.Script.Core` による依存関係解決を行う
+6. 復元そのものが失敗した場合は `SCRIPT_NUGET_RESTORE_FAILED` とする
+7. 解決済み依存関係、または `targetFramework`、`runtimeIdentifier`、`Dotnet.Script.Core` version がロックファイルと一致しない場合は `SCRIPT_NUGET_LOCK_MISMATCH` とする
+8. `verifyPackageSources: true` の場合だけ、実際の参照元一覧との不一致を `SCRIPT_NUGET_LOCK_MISMATCH` とする
 
 リポジトリ側はロックファイルの読み書き、欠落、不一致、許可済み直接参照の完全一致、解決済み依存関係の比較だけを薄く持つ。
 
@@ -2200,7 +2207,7 @@ NuGet 参照の再現性は、利用者向けの `devo6.nuget.lock.yaml` で扱�
 
 NuGet 復元と依存関係解決は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。
 
-エンジン側は利用者向けの `devo6.nuget.lock.yaml` と、許可済み直接参照、解決済み依存関係、`targetFramework`、実行時識別子、パッケージ参照元、`Dotnet.Script.Core` version の比較を担当する。
+エンジン側は利用者向けの `devo6.nuget.lock.yaml` と、許可済み直接参照、解決済み依存関係、`targetFramework`、実行時識別子、`Dotnet.Script.Core` version の比較を担当する。パッケージ参照元は `verifyPackageSources: true` の場合だけ比較する。
 
 `dotnet-script` 互換の `#load "nuget: PackageId, Version"` を採用し、パッケージ内 path をディレクティブに追加する独自仕様は採用しない。
 

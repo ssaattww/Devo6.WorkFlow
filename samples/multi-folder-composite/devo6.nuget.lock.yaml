@@ -2,8 +2,7 @@ version: 1
 entry: main.csx
 targetFramework: net8.0
 runtimeIdentifier: ubuntu.24.04-x64
-packageSources:
-  - https://api.nuget.org/v3/index.json
+verifyPackageSources: false
 dotnetScriptCoreVersion: 2.0.1
 directReferences:
   - packageId: Devo6.WorkFlow.Engine

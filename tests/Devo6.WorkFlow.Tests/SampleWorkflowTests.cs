@@ -137,6 +137,8 @@ public sealed class SampleWorkflowTests
         string lockSource = File.ReadAllText(lockPath);
         Assert.Contains($"packageId: {SampleNuGetPackageId}", lockSource);
         Assert.Contains($"version: {SampleNuGetPackageVersion}", lockSource);
+        Assert.Contains("verifyPackageSources: false", lockSource);
+        Assert.DoesNotContain("packageSources:", lockSource);
         Assert.Contains("directReferences:", lockSource);
         Assert.Contains("resolvedDependencies:", lockSource);
     }

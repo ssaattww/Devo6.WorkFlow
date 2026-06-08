@@ -692,10 +692,17 @@ public sealed class CsxEntryLoader
     {
         if (string.IsNullOrWhiteSpace(lockFile.TargetFramework)
             || string.IsNullOrWhiteSpace(lockFile.RuntimeIdentifier)
-            || string.IsNullOrWhiteSpace(lockFile.DotnetScriptCoreVersion)
-            || lockFile.PackageSources is null
-            || lockFile.PackageSources.Count == 0
-            || lockFile.PackageSources.Any(string.IsNullOrWhiteSpace))
+            || string.IsNullOrWhiteSpace(lockFile.DotnetScriptCoreVersion))
+        {
+            throw new CsxReferenceValidationException(
+                WorkflowErrorCodes.ScriptNugetLockMismatch,
+                "NuGet lock file is missing reproducibility metadata.");
+        }
+
+        if (lockFile.VerifyPackageSources
+            && (lockFile.PackageSources is null
+                || lockFile.PackageSources.Count == 0
+                || lockFile.PackageSources.Any(string.IsNullOrWhiteSpace)))
         {
             throw new CsxReferenceValidationException(
                 WorkflowErrorCodes.ScriptNugetLockMismatch,
@@ -713,7 +720,7 @@ public sealed class CsxEntryLoader
         if (!string.Equals(actualMetadata.TargetFramework, lockFile.TargetFramework, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(actualMetadata.RuntimeIdentifier, lockFile.RuntimeIdentifier, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(actualMetadata.DotnetScriptCoreVersion, lockFile.DotnetScriptCoreVersion, StringComparison.OrdinalIgnoreCase)
-            || !PackageSourcesEqual(actualMetadata.PackageSources, lockFile.PackageSources))
+            || (lockFile.VerifyPackageSources && !PackageSourcesEqual(actualMetadata.PackageSources, lockFile.PackageSources)))
         {
             throw new CsxReferenceValidationException(
                 WorkflowErrorCodes.ScriptNugetLockMismatch,
@@ -1788,6 +1795,11 @@ public sealed class CsxEntryLoader
         /// lock file に記録された runtime identifier を取得または設定します。
         /// </summary>
         public string RuntimeIdentifier { get; set; } = "";
+
+        /// <summary>
+        /// package source 一覧を解決 metadata と照合するかどうかを取得または設定します。
+        /// </summary>
+        public bool VerifyPackageSources { get; set; }
 
         /// <summary>
         /// lock file に記録された package source 一覧を取得または設定します。

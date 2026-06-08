@@ -259,7 +259,7 @@ NuGet script パッケージは `dotnet-script` 互換の形式で読み込め�
 #load "nuget: Simple.Targets.Csx, 6.0.0"
 ```
 
-`#r "nuget: ..."` と `#load "nuget: ..."` は `devo6.nuget.lock.yaml` の対象です。ロックファイルはワークフロー root に置き、直接参照、解決済み依存関係、`targetFramework`、実行時識別子、パッケージ参照元などを記録します。ロックファイルの欠落や不一致は検証または実行前に失敗します。
+`#r "nuget: ..."` と `#load "nuget: ..."` は `devo6.nuget.lock.yaml` の対象です。ロックファイルはワークフロー root に置き、直接参照、解決済み依存関係、`targetFramework`、実行時識別子、`Dotnet.Script.Core` version を記録します。既定では NuGet.Config など通常の NuGet 参照元を使い、`verifyPackageSources: true` を指定した場合だけ `packageSources` と実際の参照元一覧を順序非依存で照合します。ロックファイルの欠落や不一致は検証または実行前に失敗します。
 
 ## 現行契約外
 
