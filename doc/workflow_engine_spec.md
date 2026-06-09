@@ -286,7 +286,7 @@ Config ファイルの標準形式は YAML とする。
 
 この YAML は実行時設定の入力であり、ワークフロー定義ではない。
 
-Config ファイルの相対パスは、Entry `.csx` の存在するディレクトリを基準に解決する。
+workflow config ファイルの相対パスは、Entry `.csx` の存在するディレクトリを基準に解決する。
 
 `appsettings.yaml` の例:
 
@@ -308,7 +308,7 @@ Save:
 
 Step を別フォルダに分ける場合、各 Step フォルダにその Step Config 型だけを表す既定 Config YAML を置いてよい。たとえば `steps/load/appsettings.yaml` は `LoadStep.Config` の既定値、`steps/convert/appsettings.yaml` は `ConvertStep.Config` の既定値として扱う。
 
-実行時に `--config` へ渡す YAML は、CompositeStep 境界 Config 型に対応する root Config ファイルである。root Config は、Step 側の既定 Config YAML に対する部分上書きとして扱う。エンジンは最初の Step 実行前に、Step 側の既定 Config YAML、root Config の該当区画、CLI `--set` の順に値を重ねてから境界 Config 型へ変換する。
+実行時に `--workflow-config` へ渡す YAML は、CompositeStep 境界 Config 型に対応する root Config ファイルである。root Config は、Step 側の既定 Config YAML に対する部分上書きとして扱う。エンジンは最初の Step 実行前に、Step 側の既定 Config YAML、root Config の該当区画、CLI `--workflow-set` または `--wset` の順に値を重ねてから境界 Config 型へ変換する。
 
 root Config の例:
 
@@ -357,7 +357,7 @@ var Main = CompositeStep.Define("Main")
 
 `WithConfig<TConfig>(string sectionPath, string defaultConfigPath)` は、直前に登録した Step のメタ情報として Step Config 型、境界 Config 型上のプロパティ path、既定 Config YAML path を保持する。`defaultConfigPath` は Entry `.csx` の存在するディレクトリを基準に解決する。
 
-CLI `run` は Entry `.csx` をロードした後、宣言済み Step Config ごとに既定 Config YAML を読み、`--config` の root YAML にある該当区画を部分上書きとして重ねる。その後、結合済み YAML 全体を境界 Config 型へ変換する。
+CLI `run` は Entry `.csx` をロードした後、宣言済み Step Config ごとに既定 Config YAML を読み、`--workflow-config` の root YAML にある該当区画を部分上書きとして重ねる。その後、結合済み YAML 全体を境界 Config 型へ変換する。
 
 `run` は最初の Step を実行する前に、境界 Config 型への型変換、CLI override 適用、`DataAnnotations` と `IValidatableObject` の検証をすべて完了する。いずれか 1 つでも失敗した場合、最初の Step は実行しない。
 
@@ -367,7 +367,7 @@ Step 登録単位 Config があるのに `WithConfig<MainConfig>()` のような
 
 旧 `.WithConfig<TConfig>()` だけを使う Entry 全体 Config 互換 API は維持する。Step 登録単位 Config がない場合は従来どおり YAML 全体を `TConfig` に変換し、最初の Step 実行前に `StepContext.Set<TConfig>(config)` で登録する。
 
-任意の複数 `--config` 指定、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は採用しない。
+任意の複数 `--workflow-config` 指定、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は採用しない。
 
 Step フォルダに置いた既定 Config YAML は、宣言済み Step Config の規約 path または明示 `defaultConfigPath` としてのみ読み込む。標準エンジンは未宣言 Step の Config を探索せず、複数 root Config の優先順位解決も行わない。
 
@@ -499,18 +499,25 @@ Step は Config 専用引数を受け取らない。標準 Config は対象 Step
 エンジン起動時に Config ファイルを指定できる。
 
 ```bash
-engine run main.csx --config config/appsettings.yaml
+engine run main.csx --workflow-config config/appsettings.yaml
+engine run main.csx --engine-config config/engine.yaml
 ```
 
-`--config` は Config ファイルパスとして `EngineArguments` に保持する。
+`--workflow-config` は workflow config ファイルパスとして `EngineArguments` に保持する。workflow config は CompositeStep 境界 Config と Step Config にだけ使い、エンジン実行条件には使わない。
 
-Entry が Step 登録単位 Config を使っている場合、CLI `run` は `--config` の YAML 全体を CompositeStep 境界 Config 型に変換し、Step 実行前に検証する。
+`--engine-config` は engine config ファイルパスとして `EngineArguments` に保持する。engine config はログ、timeout、retry などのエンジン実行条件にだけ使い、CompositeStep 境界 Config や Step Config へ混ぜない。
 
-Entry が旧 Entry 全体 Config 互換 API だけを使っている場合、CLI `run` は従来どおり `--config` の YAML 全体をその `TConfig` に変換し、Step 実行前に検証する。
+Entry が Step 登録単位 Config を使っている場合、CLI `run` は Step 側の既定 Config YAML、`--workflow-config` の YAML、CLI `--workflow-set` または `--wset` の順に workflow config を構成し、Step 実行前に検証する。
 
-`--config` 未指定で、Entry が Config API を使っていない場合は既存どおり成功する。
+Entry が旧 Entry 全体 Config 互換 API だけを使っている場合、CLI `run` は `--workflow-config` の YAML 全体をその `TConfig` に変換し、Step 実行前に検証する。
 
-`--config` 未指定で、Entry が Config API を使っている場合は、Step 実行前に `CONFIG_NOT_FOUND` で失敗する。利用者へ早く原因を返すためである。
+`--workflow-config` 未指定で、Entry が Config API を使っていない場合は既存どおり成功する。
+
+`--workflow-config` 未指定でも、宣言済み Step Config が既定 Config YAML だけで満たせる場合は成功する。宣言済み Config を構成するための既定 Config YAML も root 区画も存在しない場合は、Step 実行前に `CONFIG_LOAD_FAILED` で失敗する。
+
+`--workflow-config` または `--engine-config` が指定されていて path が存在しない場合は、`CONFIG_NOT_FOUND` で失敗する。
+
+CLI の `help` 表示と `help` コマンドは、`--engine-config`、エンジン既定 YAML の実行時に解決した完全パス、`--workflow-config`、`--workflow-set` / `--wset`、`--engine-set` / `--eset` を表示する。`.NET` ツール導入後のエンジン既定 YAML の完全パスは環境依存であるため、設計上は実行時に解決した path を表示する契約だけを持つ。`README.md` には配置例として `src/Devo6.WorkFlow.Cli/config/engine.defaults.yaml` を書く。
 
 ### 6.6 CLI による Config 上書き
 
@@ -519,23 +526,27 @@ CLI 引数で Config の一部を上書きできることを要件とする。
 例:
 
 ```bash
-engine run main.csx --config config/appsettings.yaml --set Convert.ToUpper=false
-engine run main.csx --config config/appsettings.yaml --set Save.Path=./override.txt
+engine run main.csx --workflow-config config/appsettings.yaml --workflow-set Convert.ToUpper=false
+engine run main.csx --workflow-config config/appsettings.yaml --wset Save.Path=./override.txt
+engine run main.csx --engine-set Logging.Console.Enabled=false
+engine run main.csx --eset Logging.File.Format=Json
 ```
 
-`--set` は、CompositeStep 境界 Config 型に対するプロパティ path override として扱う。
+`--workflow-set` は、CompositeStep 境界 Config 型に対するプロパティ path override として扱う。`--wset` は `--workflow-set` と同じ意味の短縮名とする。`--set` は採用しない。
 
-書式は `--set Key=value` とする。CLI 解析層は最初の `=` より前を key、最初の `=` 以降を値として保持する。値の中の `=` は許可する。
+`--engine-set` は、engine config 型に対するプロパティ path override として扱う。`--eset` は `--engine-set` と同じ意味の短縮名とする。engine config override は workflow config override と別に保持し、CompositeStep 境界 Config や Step Config へ適用しない。
 
-CLI 解析層で `--set` に値がない場合、`key=value` になっていない場合、または key が空の場合は、Config 型を見ない CLI 解析エラーとして終了コード 2 で失敗する。
+書式は `--workflow-set Key=value`、`--wset Key=value`、`--engine-set Key=value`、`--eset Key=value` とする。CLI 解析層は最初の `=` より前を key、最初の `=` 以降を値として保持する。値の中の `=` は許可する。
 
-Step 登録単位 Config では、key の先頭は宣言済みの境界 Config プロパティ path と一致しなければならない。プロパティ path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は `MainConfig.Convert.ToUpper` への override として扱い、対象 Step 実行直前には `MainConfig.Convert` を `StepContext.Set<ConvertStep.Config>()` へ登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
+CLI 解析層で override 引数に値がない場合、`key=value` になっていない場合、または key が空の場合は、Config 型を見ない CLI 解析エラーとして終了コード 2 で失敗する。
 
-同一 Entry 内の宣言済みプロパティ path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済みプロパティ path に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
+Step 登録単位 Config では、key の先頭は宣言済みの境界 Config プロパティ path と一致しなければならない。プロパティ path は `.` 区切りの path 要素として完全一致させる。`--workflow-set Convert.ToUpper=false` は `MainConfig.Convert.ToUpper` への override として扱い、対象 Step 実行直前には `MainConfig.Convert` を `StepContext.Set<ConvertStep.Config>()` へ登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
+
+同一 Entry 内の宣言済みプロパティ path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済みプロパティ path に一致しない `--workflow-set` または `--wset` も `CONFIG_LOAD_FAILED` とする。
 
 プロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名は大小文字を区別する完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
 
-Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を `TConfig` のプロパティ path として扱う。
+Entry 全体 Config 互換 API では、`--workflow-set` または `--wset` の key 全体を `TConfig` のプロパティ path として扱う。
 
 入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
 
@@ -543,9 +554,33 @@ Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を `T
 
 型変換は override 対象プロパティの型に対して行う。標準契約では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。型変換に失敗した場合は `CONFIG_LOAD_FAILED` とする。
 
-複数 override は、同一 key について最後の指定を有効にする。これは `EngineArguments.Settings` の既存 `Dictionary` 契約と合わせる。
+複数 override は、同一 key について最後の指定を有効にする。workflow config override と engine config override は別の集合として扱う。
 
-`EngineArguments.Settings` は、override 適用後も CLI から受け取った元の文字列を保持する。Step は標準 Config の検証済み値と、CLI 指定そのものの両方を参照できる。
+`EngineArguments.WorkflowSettings` と `EngineArguments.EngineSettings` は、override 適用後も CLI から受け取った元の文字列を保持する。Step は標準 Config の検証済み値と、workflow config 用の CLI 指定そのものを参照できる。engine config 用の CLI 指定はエンジン実行条件であり、Step Config として登録しない。
+
+### 6.7 Engine config
+
+engine config は、workflow config とは別の YAML として扱う。
+
+engine config の既定 YAML は `src/Devo6.WorkFlow.Cli/config/engine.defaults.yaml` に配置する。`.NET` ツールとして導入された後の実際の完全パスは環境依存であるため、CLI は実行時に解決した完全パスを `help` 表示へ出す。
+
+engine config の読み込み順は固定とする。
+
+1. 既定 YAML を読み込む
+2. `--engine-config` の YAML を部分上書きとして適用する
+3. `--engine-set` または `--eset` のプロパティ path override を適用する
+
+workflow config の読み込み順は固定とする。
+
+1. 宣言済み Step Config ごとの既定 Config YAML を読み込む
+2. `--workflow-config` の YAML を部分上書きとして適用する
+3. `--workflow-set` または `--wset` のプロパティ path override を適用する
+
+engine config と workflow config は処理が似ているため、YAML 読み込み、部分 merge、path override 適用、型変換、`DataAnnotations` と `IValidatableObject` 検証は共通処理を使う。ただし、入口は `WorkflowConfigLoader` と `EngineConfigLoader` のように分け、読み込み対象、既定値、エラー文脈、適用先を混同しない。
+
+engine config には少なくともログ設定を含める。ログ設定は標準出力とファイル出力を持つ。ファイル名の既定は `{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log` とする。`RootStepName` は解決済み root CompositeStep の完全修飾 Entry 名から取得する。ファイル名に使えない文字は安全な文字へ置換する。
+
+ログ形式は engine config で設定できる。ログ形式の具体値は実装時に決めてよいが、標準出力とファイルのそれぞれに対して通常の文字列形式と構造化形式を選べる余地を残す。
 
 ---
 
@@ -805,14 +840,18 @@ root `appsettings.yaml` は `Pipeline.Report.Heading` のような部分上書�
 5. `.csx` を `Dotnet.Script.Core` 経由でロードする
 6. `.csx` 上の CompositeStep 定義を取得する
 7. Entry の Step Config メタ情報を確認する
-8. 必要な場合は `--config` の root YAML を読み込む
-9. Step 登録単位 Config では宣言済み Step Config ごとの既定 Config YAML を読み込む
-10. root YAML の宣言済み Step Config 区画を既定 Config YAML に部分上書きする
-11. 結合済み YAML 全体を境界 Config 型または Entry 全体 Config 型へ変換する
-12. `--set` のプロパティ path override を Config に適用する
-13. `DataAnnotations` と `IValidatableObject` で Config を検証する
-14. 検証済み Config を対象 Step の実行直前に `StepContext` に登録する
-15. 指定された Step を実行する
+8. エンジン既定 YAML を読み込む
+9. 必要な場合は `--engine-config` の YAML を engine config へ部分上書きする
+10. `--engine-set` または `--eset` のプロパティ path override を engine config に適用する
+11. engine config を型変換し、`DataAnnotations` と `IValidatableObject` で検証する
+12. 必要な場合は `--workflow-config` の root YAML を読み込む
+13. Step 登録単位 Config では宣言済み Step Config ごとの既定 Config YAML を読み込む
+14. root YAML の宣言済み Step Config 区画を既定 Config YAML に部分上書きする
+15. 結合済み YAML 全体を境界 Config 型または Entry 全体 Config 型へ変換する
+16. `--workflow-set` または `--wset` のプロパティ path override を Config に適用する
+17. `DataAnnotations` と `IValidatableObject` で Config を検証する
+18. 検証済み Config を対象 Step の実行直前に `StepContext` に登録する
+19. 指定された Step を実行する
 
 ---
 
@@ -845,10 +884,10 @@ public enum FailurePolicy
 - 存在しない Step 名の実行
 - `StepInput.Get<T>()` で値が存在しない
 - `StepInput.Get<T>(name)` で値が存在しない
-- Entry が標準 Config 型を要求しているが `--config` が未指定
+- Entry が標準 Config 型を要求しているが workflow config を構成できない
 - 指定された Config ファイルが存在しない
 - Config ファイルの読み込み、YAML 構文、型変換、または検証の失敗
-- `--set` の存在しないプロパティ、型変換失敗、または配列またはリストの添字不正
+- `--workflow-set`、`--wset`、`--engine-set`、`--eset` の存在しないプロパティ、型変換失敗、または配列またはリストの添字不正
 - Step 実行時例外
 - `.csx` のロード失敗
 - NuGet 解決失敗
@@ -856,15 +895,15 @@ public enum FailurePolicy
 - NuGet ロックファイルと参照または解決済み依存関係の不一致
 - `#load` 解決失敗
 
-Entry が標準 Config 型を要求している場合の `--config` 未指定と、存在しない Config ファイルは `CONFIG_NOT_FOUND` とする。
+指定された `--workflow-config` または `--engine-config` が存在しない場合は `CONFIG_NOT_FOUND` とする。
 
-読み込み不能、YAML 構文エラー、型変換失敗、`--set` の Config 適用失敗、`DataAnnotations` または `IValidatableObject` の失敗は `CONFIG_LOAD_FAILED` とする。
+読み込み不能、YAML 構文エラー、型変換失敗、Config override 適用失敗、`DataAnnotations` または `IValidatableObject` の失敗は `CONFIG_LOAD_FAILED` とする。
 
 ### 11.4 retry と timeout
 
 Step 本体の通常例外に対する retry を提供する。
 
-retry は `WorkflowExecutionOptions.Retry` で指定する。
+retry は `WorkflowExecutionOptions.Retry` で指定する。CLI 実行では、将来個別引数を増やすのではなく engine config から `WorkflowExecutionOptions.Retry` に反映する設計に寄せる。
 
 `RetryOptions.MaxAttempts` は初回を含む最大試行回数とする。
 
@@ -874,7 +913,7 @@ retry は `WorkflowExecutionOptions.Retry` で指定する。
 
 retry は全 Step 一律の指定に限定する。
 
-Step 別 retry、待機時間制御、例外型による絞り込み、CLI 指定、Config 指定は標準 retry 契約には含めない。
+Step 別 retry、待機時間制御、例外型による絞り込み、CLI 個別引数指定、workflow config 指定は標準 retry 契約には含めない。
 
 retry 対象は Step 本体の通常例外に限定する。
 
@@ -892,7 +931,7 @@ retry 対象は Step 本体の通常例外に限定する。
 
 全試行が失敗した場合、後続 Step は開始しない。
 
-timeout は `WorkflowExecutionOptions.StepTimeout` で指定する。
+timeout は `WorkflowExecutionOptions.StepTimeout` で指定する。CLI 実行では、将来個別引数を増やすのではなく engine config から `WorkflowExecutionOptions.StepTimeout` に反映する設計に寄せる。
 
 `StepTimeout` の既定値は `null` とし、timeout を設定しない現行動作を維持する。
 
@@ -1228,12 +1267,12 @@ public sealed class WorkflowExecutionOptions
     public RetryOptions? Retry { get; init; }
 
     /// <summary>
-    /// エンジンと Step のログ出力に使う logger factory を取得または設定します。
+    /// エンジンと Step のログ出力に使うログ生成器を取得または設定します。
     /// </summary>
     public ILoggerFactory? LoggerFactory { get; init; }
 
     /// <summary>
-    /// CLI 由来の config path と set override を StepContext に渡すための引数を取得または設定します。
+    /// CLI 由来の workflow config path、engine config path、override を StepContext に渡すための引数を取得または設定します。
     /// </summary>
     public EngineArguments? EngineArguments { get; init; }
 }
@@ -1251,7 +1290,7 @@ public sealed class RetryOptions
 
 `StepTimeout` が `null` の場合、timeout 用の `CancellationTokenSource` は作らず、外部 `CancellationToken` だけを使う。
 
-`StepTimeout` は CLI オプションではなく、エンジン実行時オプションとして扱う。
+`StepTimeout` はエンジン実行時オプションとして扱う。CLI は timeout 専用引数を増やさず、engine config で指定された timeout を `WorkflowExecutionOptions.StepTimeout` へ反映する。
 
 `Retry` は全 Step 一律の retry 設定として扱う。
 
@@ -1259,13 +1298,17 @@ public sealed class RetryOptions
 
 `Retry.MaxAttempts` は初回を含む最大試行回数であり、`MaxAttempts = 3` は最大 3 回の Step 本体実行を表す。
 
-`Retry` は CLI オプションまたは Config から直接指定しない。
+`Retry` はエンジン実行時オプションとして扱う。CLI は retry 専用引数を増やさず、engine config で指定された retry を `WorkflowExecutionOptions.Retry` へ反映する。
+
+`LoggerFactory` は外部から与えられるログ生成器として維持する。CLI は engine config のログ設定を使って標準出力とファイルのログ出力先を構成し、その結果を `WorkflowExecutionOptions.LoggerFactory` へ反映する。
 
 標準 Config 型と境界 Config プロパティ path は `WorkflowExecutionOptions` ではなく、Entry の `CompositeStep` メタ情報から取得する。
 
-CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `ConfigType`、`StepConfigRegistrations`、`EngineArguments.ConfigPath`、`EngineArguments.Settings` を使って Step 登録単位 Config を読み込む。Entry 全体 Config 互換 API を使う場合は、互換メタ情報の `ConfigType` を使う。
+CLI `run` は `.csx` ロード後に Entry を解決し、Entry の `ConfigType`、`StepConfigRegistrations`、`EngineArguments.WorkflowConfigPath`、`EngineArguments.WorkflowSettings` を使って Step 登録単位 Config を読み込む。Entry 全体 Config 互換 API を使う場合は、互換メタ情報の `ConfigType` を使う。
 
-`EngineArguments.Settings` は元の文字列を保持する。標準 Config に適用された後も、Step は CLI 指定値そのものを参照できる。
+CLI `run` はエンジン既定 YAML、`EngineArguments.EngineConfigPath`、`EngineArguments.EngineSettings` を使って engine config を読み込む。engine config は `WorkflowExecutionOptions.StepTimeout`、`WorkflowExecutionOptions.Retry`、`WorkflowExecutionOptions.LoggerFactory` などの実行条件へ反映するが、CompositeStep 境界 Config や Step Config へは登録しない。
+
+`EngineArguments.WorkflowSettings` と `EngineArguments.EngineSettings` は元の文字列を保持する。標準 Config に適用された後も、Step は workflow config 用の CLI 指定値そのものを参照できる。engine config 用の CLI 指定値はエンジン実行条件の入力であり、Step Config として参照させる契約にはしない。
 
 YAML 解析器は実装時に .NET 依存を追加してよい。候補として `YamlDotNet` を利用できるが、設計は特定ライブラリに強く依存しない。
 
@@ -1390,7 +1433,7 @@ workflow-root/
 
 `#load` 内の相対パスは、`#load` を書いた `.csx` の存在するディレクトリを基準とする。
 
-`steps/` 配下の `appsettings.yaml` は、宣言済み Step Config の既定値として置ける。標準実行時に `--config` へ渡す Config は `config/appsettings.yaml` のような境界 Config 型に対応する root Config ファイルである。エンジンは宣言済み Step Config ごとに Step 側既定 Config YAML を読み込み、root Config の該当区画を部分上書きとして重ねてから境界 Config 型へ変換する。
+`steps/` 配下の `appsettings.yaml` は、宣言済み Step Config の既定値として置ける。標準実行時に `--workflow-config` へ渡す Config は `config/appsettings.yaml` のような境界 Config 型に対応する root Config ファイルである。エンジンは宣言済み Step Config ごとに Step 側既定 Config YAML を読み込み、root Config の該当区画を部分上書きとして重ねてから境界 Config 型へ変換する。
 
 たとえば `WithConfig<LoadStep.Config>("Load")` は、Entry `.csx` の存在するディレクトリを基準に `steps/load/appsettings.yaml` を既定 Config YAML として読む。`WithConfig<ConvertStep.Config>("Text.Convert")` は `steps/text/convert/appsettings.yaml` を読む。規約パスと異なる既定 Config YAML を使う場合は、`WithConfig<TConfig>(sectionPath, defaultConfigPath)` で明示する。
 
@@ -1609,7 +1652,8 @@ CLI は実行前検証のために `validate` を提供する。
 engine validate main.csx
 engine validate main.csx --entry Build
 engine validate main.csx --entry Deploy.Build
-engine validate main.csx --config appsettings.yaml
+engine validate main.csx --workflow-config appsettings.yaml
+engine validate main.csx --engine-config engine.yaml
 ```
 
 ### 17.2 検証対象
@@ -1629,7 +1673,8 @@ engine validate main.csx --config appsettings.yaml
 - `.csx` のコンパイル
 - `IStep<TOut>` または `IAsyncStep<TOut>` 実装の確認
 - `StepInput` と `StepContext` の API 互換
-- Config ファイル指定時の存在確認
+- workflow config ファイル指定時の存在確認
+- engine config ファイル指定時の存在確認
 
 実行時の `StepInput` 内容に依存する型検証は、実行時に行う。
 
@@ -1641,7 +1686,9 @@ Entry 解決と重複検証は、Entry `.csx` と `#load` 先を読み込んだ�
 
 完全修飾名が重複する場合は、指定 Entry の有無にかかわらず `DUPLICATE_STEP_NAME` として失敗する。
 
-`validate` は Config path の存在確認までを必須とする。Config 型変換、`--set` の override 適用、Config 値検証は `validate` では行わず、`run` 時に行う。
+`validate` は workflow config path と engine config path の存在確認までを必須とする。workflow config の型変換、`--workflow-set` または `--wset` の override 適用、Config 値検証は `validate` では行わず、`run` 時に行う。engine config の型変換、`--engine-set` または `--eset` の override 適用、値検証も既存方針に合わせて `run` 時の実行条件として扱う。
+
+`validate` でも `help` 表示と同じエンジン既定 YAML の解決済み完全パスを表示できるようにする。
 
 ### 17.3 StepInput 検証
 
@@ -1655,9 +1702,9 @@ Entry 解決と重複検証は、Entry `.csx` と `#load` 先を読み込んだ�
 
 CLI `run` では、Entry が Step 登録単位 Config API または Entry 全体 Config 互換 API を使う場合に標準 Config 読み込みを行う。
 
-`--config` と `--set` は `EngineArguments` として `StepContext` に格納する。
+`--workflow-config`、`--workflow-set`、`--wset`、`--engine-config`、`--engine-set`、`--eset` は `EngineArguments` として `StepContext` に格納する。
 
-Step 登録単位 Config API では、宣言済み Step Config ごとに既定 Config YAML を読み込む。root YAML に該当区画が存在する場合は、既定 Config YAML に対する部分上書きとして適用する。その後、結合済み YAML 全体を CompositeStep 境界 Config 型に変換し、`--set` を境界 Config 型のプロパティ path override として適用し、`DataAnnotations` と `IValidatableObject` を境界 Config 型から検証する。
+Step 登録単位 Config API では、宣言済み Step Config ごとに既定 Config YAML を読み込む。root YAML に該当区画が存在する場合は、既定 Config YAML に対する部分上書きとして適用する。その後、結合済み YAML 全体を CompositeStep 境界 Config 型に変換し、`--workflow-set` または `--wset` を境界 Config 型のプロパティ path override として適用し、`DataAnnotations` と `IValidatableObject` を境界 Config 型から検証する。
 
 宣言済み `sectionPath` が root YAML に存在しなくても、既定 Config YAML が存在する場合はその既定値だけで Step Config を生成できる。
 
@@ -1677,7 +1724,7 @@ Step 登録単位 Config があるのに CompositeStep 境界 Config 型が宣�
 
 宣言済み `sectionPath` が YAML 上に存在し、その値が空または `{}` の場合は、Step Config 型を生成でき、検証に通れば成功とする。検証に失敗した場合は `CONFIG_LOAD_FAILED` とする。
 
-Entry 全体 Config 互換 API では、従来どおり YAML 全体を `TConfig` に型変換し、`--set` key 全体を `TConfig` へ適用してから検証する。
+Entry 全体 Config 互換 API では、YAML 全体を `TConfig` に型変換し、`--workflow-set` または `--wset` の key 全体を `TConfig` へ適用してから検証する。
 
 ユーザーが定義した Config 読み込み Step を使う場合は、その Step 内で型変換と検証を行う。
 
@@ -1839,7 +1886,13 @@ trace 値を `System.Text.Json` で直列化できない場合でも、既定動
 
 ログはエンジンで独自実装せず、`Microsoft.Extensions.Logging` を利用する。
 
-エンジンは `ILoggerFactory` を外部から受け取り、具体的な logger provider には直接依存しない。
+エンジンは `ILoggerFactory` を外部から受け取り、具体的なログ出力先には直接依存しない。
+
+CLI 実行では、engine config のログ設定から標準出力とファイル出力を構成する。
+
+ファイル出力の既定ファイル名は `{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log` とする。`RootStepName` は解決済み root CompositeStep の完全修飾 Entry 名から取得する。ファイル名に使えない文字は安全な文字へ置換する。
+
+ログ形式は engine config で設定できる。標準出力とファイル出力は個別に形式を選べる設計とする。
 
 ユーザー Step は `StepContext.Logger` から記録出力を取得する。
 
@@ -1959,7 +2012,7 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - 非同期ワークフロー実行 API
 - `StepInput` の型付き、名前付き取得
 - `StepContext` の共有値保持
-- Config ファイルパスと `--set` の `EngineArguments` 格納
+- workflow config ファイルパス、engine config ファイルパス、Config override の `EngineArguments` 格納
 - ローカルファイル `#load`
 - 明示許可された `#r`
 - 固定 version の NuGet 参照
@@ -1973,17 +2026,24 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - retry 試行ごとのログと trace
 - 標準 Config 読み込み
 - CLI override による標準 Config 上書き
+- エンジン既定 YAML、`--engine-config`、`--engine-set` / `--eset` による engine config 読み込み
+- `--workflow-config`、`--workflow-set` / `--wset` による workflow config 読み込み
+- `WorkflowConfigLoader` と `EngineConfigLoader` の入口分離
+- YAML 読み込み、部分 merge、path override 適用、型変換、Config 検証の共通処理
 - Step 内 `Config` 型
 - CompositeStep 境界 Config 型を宣言する `WithConfig<TConfig>()`
 - Step 登録単位の `WithConfig<TConfig>(string sectionPath)` による Step Config 型と境界 Config プロパティ path メタ情報
 - Step 登録単位の `WithConfig<TConfig>(string sectionPath, string defaultConfigPath)` による既定 Config YAML path メタ情報
 - 規約 path または明示 path からの Step 既定 Config YAML 読み込み
-- Step 既定 Config YAML、root Config 区画、CLI `--set` の順による上書き
+- Step 既定 Config YAML、root Config 区画、CLI `--workflow-set` / `--wset` の順による上書き
 - CLI `run` の境界 Config 型変換、CLI override 適用、Config 検証
-- CLI `run` の `--set` プロパティ path override と Config 検証前適用
+- CLI `run` の `--workflow-set` / `--wset` プロパティ path override と Config 検証前適用
+- CLI `run` の `--engine-set` / `--eset` プロパティ path override と engine config 検証前適用
 - 対象 Step 実行直前の `StepContext.Set<TStep.Config>()` 登録
 - Step 登録単位 Config がない場合の `WithConfig<TConfig>()` による Entry 全体 Config 互換 API
-- `engine validate` での Config path 存在確認
+- `engine validate` での workflow config path と engine config path 存在確認
+- `help` 表示と `validate` におけるエンジン既定 YAML の解決済み完全パス表示
+- engine config のログ設定による標準出力とファイル出力
 - 値を含む `ExecutionTrace`
 - `TraceValueCapture.Serialized` と `TraceValueCapture.Redacted`
 - NuGet ロックファイルによる直接参照と解決済み依存関係の再現性検証
@@ -2003,16 +2063,16 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - 分岐実行
 - 統合実行
 - 未信頼 `.csx` の安全な実行
-- 任意の複数 `--config` 指定
+- 任意の複数 `--workflow-config` 指定
+- 任意の複数 `--engine-config` 指定
 - 標準 Config 読み込みによる永続的な名前付き Config 取得
 - Config 型自動推論
 - Step 型への Config 自動注入
-- `--set` による配列全体またはリスト全体の置換
-- `--set` による配列またはリストの自動拡張
+- `--workflow-set`、`--wset`、`--engine-set`、`--eset` による配列全体またはリスト全体の置換
+- `--workflow-set`、`--wset`、`--engine-set`、`--eset` による配列またはリストの自動拡張
 - `engine validate` での Config 型変換、override 型検証、Config 値検証
 - CLI の timeout オプション
 - CLI の retry オプション
-- Config による retry 指定
 - Step 別 retry 方針
 - retry 待機時間制御
 - retry の例外型による絞り込み
@@ -2096,7 +2156,7 @@ retry は以下を採用する。
 retry の標準契約には以下を含めない。
 
 - CLI の retry オプション
-- Config による retry 指定
+- workflow config による retry 指定
 - Step 別 retry 方針
 - retry 待機時間制御
 - retry の例外型による絞り込み
@@ -2107,7 +2167,7 @@ retry の標準契約には以下を含めない。
 
 Entry 側は `WithConfig<TBoundaryConfig>()` で CompositeStep 境界 Config 型を宣言し、Step 登録単位の `WithConfig<TConfig>(string sectionPath)` で Step Config 型と境界 Config 型上のプロパティ path を明示する。既定 Config YAML が規約 path と異なる場合は、`WithConfig<TConfig>(string sectionPath, string defaultConfigPath)` で既定 Config YAML path も明示する。
 
-CLI `run` は `.csx` ロード後、Entry の境界 Config 型、Step Config メタ情報、`--config` の path を使って root YAML を読み込む。Step 登録単位 Config では、各 Step の既定 Config YAML を読み、root YAML の宣言済み Step Config 区画を部分上書きとして重ねてから YAML 全体を境界 Config 型へ変換する。
+CLI `run` は `.csx` ロード後、Entry の境界 Config 型、Step Config メタ情報、`--workflow-config` の path を使って root YAML を読み込む。Step 登録単位 Config では、各 Step の既定 Config YAML を読み、root YAML の宣言済み Step Config 区画を部分上書きとして重ねてから YAML 全体を境界 Config 型へ変換する。
 
 宣言された境界 Config と Step Config はすべて最初の Step 実行前に読み込み、型変換、override 適用、`DataAnnotations` と `IValidatableObject` による検証まで完了する。
 
@@ -2117,29 +2177,29 @@ Step 登録単位 Config があるのに境界 Config 型宣言がない場合�
 
 Step 登録単位 Config がない場合、既存の `WithConfig<TConfig>()` は Entry 全体 Config 互換 API として残す。
 
-`--set` は `EngineArguments.Settings` に保持し、標準 Config へも適用する。
+`--workflow-set` と `--wset` は `EngineArguments.WorkflowSettings` に保持し、標準 Config へも適用する。
 
-任意の複数 `--config` 指定、標準 Config 読み込みによる永続的な名前付き Config 取得、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は標準 Config 契約には含めない。
+任意の複数 `--workflow-config` 指定、標準 Config 読み込みによる永続的な名前付き Config 取得、Config 型自動推論、Step 型への Config 自動注入、Step 専用引数は標準 Config 契約には含めない。
 
 Step 配下に置く既定 Config YAML は、Step Config 型の入力例または再利用素材として扱う。標準 Config 読み込みは未宣言 Step の YAML を探索しない。宣言済み Step Config に対しては、明示 `defaultConfigPath` があればそれを読み、なければ規約 path を読む。
 
 ### 21.3 CLI override の仕様
 
-`--set` は CompositeStep 境界 Config 型に対するプロパティ path override として扱う。
+`--workflow-set` は CompositeStep 境界 Config 型に対するプロパティ path override として扱う。`--wset` は `--workflow-set` と同じ意味の短縮名とする。
 
 適用順は以下とする。
 
-1. `--config` の root YAML を読み込む
-2. 宣言済み Step Config ごとの既定 Config YAML を読み込む
+1. 宣言済み Step Config ごとの既定 Config YAML を読み込む
+2. `--workflow-config` の root YAML を読み込む
 3. root YAML の宣言済み Step Config 区画を既定 Config YAML に部分上書きする
 4. 結合済み YAML 全体を境界 Config 型へ変換する
-5. `--set` を境界 Config 型のプロパティ path override として適用する
+5. `--workflow-set` または `--wset` を境界 Config 型のプロパティ path override として適用する
 6. `DataAnnotations` と `IValidatableObject` を検証する
 7. 対象 Step の実行直前に、宣言済み `sectionPath` のプロパティ値を `StepContext` に登録する
 
-プロパティ path は `.` 区切りの path 要素として完全一致させる。`--set Convert.ToUpper=false` は、境界 Config 型の `Convert.ToUpper` に対する override として扱う。対象 Step 実行直前には、`Convert` プロパティ値を `StepContext.Set<ConvertStep.Config>()` に登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
+プロパティ path は `.` 区切りの path 要素として完全一致させる。`--workflow-set Convert.ToUpper=false` は、境界 Config 型の `Convert.ToUpper` に対する override として扱う。対象 Step 実行直前には、`Convert` プロパティ値を `StepContext.Set<ConvertStep.Config>()` に登録する。`ConvertExtra.ToUpper` は `Convert` プロパティ path に一致しない。
 
-同一 Entry 内の宣言済みプロパティ path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済みプロパティ path に一致しない `--set` も `CONFIG_LOAD_FAILED` とする。
+同一 Entry 内の宣言済みプロパティ path は、互いに先頭から同じ path 要素列になってはならない。たとえば `Convert` と `Convert.Options` の併用は標準契約に含めず、違反時は最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。宣言済みプロパティ path に一致しない `--workflow-set` または `--wset` も `CONFIG_LOAD_FAILED` とする。
 
 プロパティ path は C# の公開プロパティ名を `.` でたどる。プロパティ名の照合は実行環境の言語設定に依存しない `StringComparison.Ordinal` 相当の完全一致とし、存在しないプロパティは `CONFIG_LOAD_FAILED` とする。
 
@@ -2151,13 +2211,13 @@ Step 配下に置く既定 Config YAML は、Step Config 型の入力例また�
 
 同一 key の複数 override は後勝ちとする。
 
-無効書式、存在しないプロパティ、型変換失敗、配列またはリストの添字不正は `CONFIG_LOAD_FAILED` とする。ただし、CLI 解析層で `--set` の値がない、`key=value` になっていない、または key が空の場合は CLI 解析エラーとして終了コード 2 で失敗する。
+無効書式、存在しないプロパティ、型変換失敗、配列またはリストの添字不正は `CONFIG_LOAD_FAILED` とする。ただし、CLI 解析層で override 引数の値がない、`key=value` になっていない、または key が空の場合は CLI 解析エラーとして終了コード 2 で失敗する。
 
-`engine validate` は Config path の存在確認までを維持し、override の型検証は `engine run` で行う。
+`engine validate` は workflow config path と engine config path の存在確認までを維持し、override の型検証は `engine run` で行う。
 
-任意の複数 `--config` 指定時の統合規則は標準 Config 契約には含めない。
+任意の複数 `--workflow-config` 指定時の統合規則は標準 Config 契約には含めない。
 
-Entry 全体 Config 互換 API では、従来どおり `--set` key 全体を Entry 全体 Config 型へのプロパティ path override として扱う。
+Entry 全体 Config 互換 API では、`--workflow-set` または `--wset` の key 全体を Entry 全体 Config 型へのプロパティ path override として扱う。
 
 ### 21.4 Produce 後の値の寿命
 

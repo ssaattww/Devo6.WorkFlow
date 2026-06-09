@@ -72,7 +72,7 @@ public sealed class SampleWorkflowTests
             options: new WorkflowExecutionOptions(engineArguments: new EngineArguments
             {
                 EntryPath = entryPath,
-                ConfigPath = configPath,
+                WorkflowConfigPath = configPath,
             }));
 
         Assert.True(
@@ -110,8 +110,8 @@ public sealed class SampleWorkflowTests
             options: new WorkflowExecutionOptions(engineArguments: new EngineArguments
             {
                 EntryPath = entryPath,
-                ConfigPath = configPath,
-                Settings = new Dictionary<string, string>
+                WorkflowConfigPath = configPath,
+                WorkflowSettings = new Dictionary<string, string>
                 {
                     ["Pipeline.Normalize.Uppercase"] = "false",
                     ["Pipeline.Report.Heading"] = "Override report",

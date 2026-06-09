@@ -896,7 +896,7 @@ public sealed class CsxEntryLoader
             return null;
         }
 
-        string configPath = options?.EngineArguments?.ConfigPath ?? "";
+        string configPath = options?.EngineArguments?.WorkflowConfigPath ?? "";
         if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath))
         {
             failure = Failure(
@@ -915,7 +915,7 @@ public sealed class CsxEntryLoader
 
             if (stepConfigRegistrations.Count == 0)
             {
-                object standardConfig = StandardConfigLoader.Load(configPath, configType!, options?.EngineArguments?.Settings);
+                object standardConfig = StandardConfigLoader.Load(configPath, configType!, options?.EngineArguments?.WorkflowSettings);
                 preparedOptions = preparedOptions.WithStandardConfig(standardConfig);
             }
 
@@ -927,7 +927,7 @@ public sealed class CsxEntryLoader
                     entryDirectory,
                     configType!,
                     stepConfigRegistrations,
-                    options?.EngineArguments?.Settings);
+                    options?.EngineArguments?.WorkflowSettings);
                 preparedOptions = preparedOptions.WithStepConfigs(stepConfigs);
             }
 

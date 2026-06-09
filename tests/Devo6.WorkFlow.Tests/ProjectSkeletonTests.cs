@@ -95,6 +95,30 @@ public sealed class ProjectSkeletonTests
     }
 
     /// <summary>
+    /// CLI プロジェクトがエンジン既定 YAML をビルド出力と NuGet パッケージへ同梱する設定を持つことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "CLI プロジェクトは engine.defaults.yaml を出力とパッケージに同梱する")]
+    public void CliProjectIncludesEngineDefaultsYamlInOutputAndPackage()
+    {
+        XDocument project = LoadCliProject();
+        string expectedInclude = @"config\engine.defaults.yaml";
+
+        XElement[] defaultsItems = project
+            .Descendants("None")
+            .Where(item =>
+                string.Equals(
+                    item.Attribute("Include")?.Value.Replace('/', '\\'),
+                    expectedInclude,
+                    StringComparison.Ordinal))
+            .ToArray();
+
+        XElement engineDefaultsItem = Assert.Single(defaultsItems);
+        Assert.Equal("PreserveNewest", GetItemMetadata(engineDefaultsItem, "CopyToOutputDirectory"));
+        Assert.Equal("true", GetItemMetadata(engineDefaultsItem, "Pack"));
+        Assert.Equal(@"config\", GetItemMetadata(engineDefaultsItem, "PackagePath"));
+    }
+
+    /// <summary>
     /// Engine プロジェクトが参照用パッケージとして作成できる設定を持つことを検査します。
     /// </summary>
     [Fact(DisplayName = "Engine project は参照用パッケージとして設定されている")]
@@ -277,6 +301,17 @@ public sealed class ProjectSkeletonTests
         return project
             .Descendants("ProjectReference")
             .Single(element => element.Attribute("Include")?.Value == include);
+    }
+
+    /// <summary>
+    /// 指定した Item のメタデータ値を取得します。
+    /// </summary>
+    /// <param name="item">対象 item。</param>
+    /// <param name="metadataName">取得するメタデータ名。</param>
+    /// <returns>メタデータ値。未指定なら空文字。</returns>
+    private static string GetItemMetadata(XElement item, string metadataName)
+    {
+        return item.Element(metadataName)?.Value ?? item.Attribute(metadataName)?.Value ?? string.Empty;
     }
 
     /// <summary>

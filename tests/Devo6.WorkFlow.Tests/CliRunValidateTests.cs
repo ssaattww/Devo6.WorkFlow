@@ -2,6 +2,7 @@ using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Cli;
 using Devo6.WorkFlow.Engine;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 
 namespace Devo6.WorkFlow.Tests;
 
@@ -70,6 +71,36 @@ public sealed class CliRunValidateTests
         CliResult result = await RunCliAsync("validate", scriptPath);
 
         AssertSuccess(result);
+    }
+
+    /// <summary>
+    /// 引数が無い場合の help 表示に engine defaults YAML の実行時解決済み完全パスが含まれることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine 引数なしヘルプはエンジン既定 YAML の解決済み完全パスを表示する")]
+    public async Task EngineNoArgsHelpにエンジン既定YAMLの完全パスを表示する()
+    {
+        CliResult result = await RunCliAsync();
+
+        string defaultsPath = ExtractEngineDefaultsPath(result.StandardOutput);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("engine.defaults.yaml", defaultsPath);
+        Assert.Contains(Path.Combine("config", "engine.defaults.yaml"), defaultsPath);
+        Assert.True(Path.IsPathFullyQualified(defaultsPath));
+    }
+
+    /// <summary>
+    /// help コマンド実行時に引数なしヘルプと同じ engine defaults YAML 解決済み完全パスを表示することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "engine help は引数なし help と同じエンジン既定 YAML path を表示する")]
+    public async Task EngineHelpCommandで引数なしHelpと同じ完全パスを表示する()
+    {
+        CliResult result = await RunCliAsync("help");
+        string defaultsPath = ExtractEngineDefaultsPath(result.StandardOutput);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(Path.IsPathFullyQualified(defaultsPath));
+        Assert.EndsWith(Path.Combine("config", "engine.defaults.yaml"), defaultsPath, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -309,9 +340,9 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
-    /// --config が Entry .csx directory 基準で解決され EngineArguments から公開されることを検査します。
+    /// --workflow-config が Entry .csx directory 基準で解決され EngineArguments から公開されることを検査します。
     /// </summary>
-    [Fact(DisplayName = "--config は Entry directory 基準で解決され StepContext から取得できる")]
+    [Fact(DisplayName = "--workflow-config は Entry directory 基準で解決され StepContext から取得できる")]
     public async Task ConfigはEntryDirectory基準で解決されStepContextから取得できる()
     {
         string scriptPath = CreateScript(
@@ -325,9 +356,9 @@ public sealed class CliRunValidateTests
                 public string Execute(StepInput input)
                 {
                     EngineArguments arguments = input.Context.Get<EngineArguments>();
-                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "config-path.txt"), arguments.ConfigPath);
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "config-path.txt"), arguments.WorkflowConfigPath);
 
-                    return arguments.ConfigPath;
+                    return arguments.WorkflowConfigPath;
                 }
             }
 
@@ -339,16 +370,16 @@ public sealed class CliRunValidateTests
         string configPath = Path.Combine(directory, "appsettings.yaml");
         File.WriteAllText(configPath, "name: test");
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertSuccess(result);
         Assert.Equal(configPath, File.ReadAllText(Path.Combine(directory, "config-path.txt")));
     }
 
     /// <summary>
-    /// 複数の --set 値が EngineArguments から文字列として公開されることを検査します。
+    /// 複数の --workflow-set 値が EngineArguments から文字列として公開されることを検査します。
     /// </summary>
-    [Fact(DisplayName = "複数 --set は文字列として StepContext から取得できる")]
+    [Fact(DisplayName = "複数 --workflow-set は文字列として StepContext から取得できる")]
     public async Task 複数Setは文字列としてStepContextから取得できる()
     {
         string scriptPath = CreateScript(
@@ -363,7 +394,7 @@ public sealed class CliRunValidateTests
                 public string Execute(StepInput input)
                 {
                     EngineArguments arguments = input.Context.Get<EngineArguments>();
-                    string text = string.Join("|", arguments.Settings.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}={pair.Value}"));
+                    string text = string.Join("|", arguments.WorkflowSettings.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}={pair.Value}"));
                     File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "settings.txt"), text);
 
                     return text;
@@ -378,9 +409,9 @@ public sealed class CliRunValidateTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--set",
+            "--workflow-set",
             "convert.toUpper=false",
-            "--set",
+            "--workflow-set",
             "save.path=out.txt");
 
         AssertSuccess(result);
@@ -388,10 +419,583 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
-    /// Config 型を見ない --set 無効書式が command error になることを検査します。
+    /// --wset は --workflow-set と同じ扱いで WorkflowSettings へ格納されることを検査します。
     /// </summary>
-    /// <param name="setArgument">CLI 解析で拒否される --set 引数。</param>
-    [Theory(DisplayName = "Config 型を見ない --set 無効書式は exit code 2 になる")]
+    [Fact(DisplayName = "--wset は --workflow-set と同じ扱いで WorkflowSettings へ格納される")]
+    public async Task WsetAliasStoresWorkflowSettings()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+            using System.Linq;
+
+            public sealed class ArgumentsStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    string text = string.Join("|", arguments.WorkflowSettings.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}={pair.Value}"));
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "settings.txt"), text);
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<ArgumentsStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--wset",
+            "convert.toUpper=false",
+            "--wset",
+            "save.path=out.txt");
+
+        AssertSuccess(result);
+        Assert.Equal("convert.toUpper=false|save.path=out.txt", File.ReadAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "settings.txt")));
+    }
+
+    /// <summary>
+    /// --engine-config が Entry directory 基準で解決され StepContext から公開されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "--engine-config は Entry directory 基準で解決され StepContext から取得できる")]
+    public async Task EngineConfigIsResolvedFromEntryDirectoryAndAvailableFromStepContext()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            public sealed class ArgumentsStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "config-path.txt"), arguments.EngineConfigPath);
+
+                    return arguments.EngineConfigPath;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<ArgumentsStep, string>()
+                    .StoreAs();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string engineConfigPath = Path.Combine(directory, "engine.yaml");
+        File.WriteAllText(engineConfigPath, "logging: enabled");
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--engine-config", "engine.yaml");
+
+        AssertSuccess(result);
+        Assert.Equal(engineConfigPath, File.ReadAllText(Path.Combine(directory, "config-path.txt")));
+    }
+
+    /// <summary>
+    /// --engine-set と --eset は EngineSettings へ文字列として格納されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "--engine-set と --eset は EngineSettings に文字列として保存される")]
+    public async Task EngineSetAliasStoresEngineSettings()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+            using System.Linq;
+
+            public sealed class ArgumentsStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    string text = string.Join("|", arguments.EngineSettings.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}={pair.Value}"));
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "settings.txt"), text);
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<ArgumentsStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--engine-set",
+            "Logging.Console.Enabled=true",
+            "--eset",
+            "Logging.File.Format=Json");
+
+        AssertSuccess(result);
+        Assert.Equal("Logging.Console.Enabled=true|Logging.File.Format=Json", File.ReadAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "settings.txt")));
+    }
+
+    /// <summary>
+    /// ログファイル設定を YAML の Logging.File から有効化すると、実行ログが EntryName を含むファイル名で出力されることを検証します。
+    /// </summary>
+    [Fact(DisplayName = "engine config の Logging.File 設定でファイルログを有効化すると Entry ログファイルが作成される")]
+    public async Task EngineRunCreatesFileLogWhenFileLoggingEnabledInConfig()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string engineConfigPath = Path.Combine(directory, "engine.yaml");
+        File.WriteAllText(
+            engineConfigPath,
+            """
+            Logging:
+              File:
+                Enabled: true
+                Directory: logs
+                NameFormat: "{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log"
+              Console:
+                Enabled: false
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--engine-config", "engine.yaml");
+
+        AssertSuccess(result);
+        string logsDirectory = Path.Combine(directory, "logs");
+        string[] logFiles = Directory.GetFiles(logsDirectory, "*_Main.log");
+        Assert.Single(logFiles);
+        string content = File.ReadAllText(logFiles[0]);
+        Assert.Contains("Entry started", content, StringComparison.Ordinal);
+        Assert.Contains("Entry succeeded", content, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// --engine-set によって File ログ設定を有効化するとログファイルを作成できることを検証します。
+    /// </summary>
+    [Fact(DisplayName = "--engine-set で File.Enabled=true と File.Directory=logs を指定するとログファイルが作成される")]
+    public async Task EngineRunWritesFileLogWhenFileLoggingEnabledByEngineSet()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--engine-set",
+            "Logging.File.Enabled=true",
+            "--engine-set",
+            "Logging.File.Directory=logs");
+
+        AssertSuccess(result);
+
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string logsDirectory = Path.Combine(directory, "logs");
+        string[] logFiles = Directory.GetFiles(logsDirectory, "*_Main.log");
+        Assert.Single(logFiles);
+    }
+
+    /// <summary>
+    /// Logging.Console.Enabled=true のとき、CLI run の標準出力に engine/step のログ本文が含まれることを検証します。
+    /// </summary>
+    [Fact(DisplayName = "Logging.Console.Enabled=true のとき CLI 出力にエンジンログが含まれる")]
+    public async Task EngineRunWritesEngineLogsToConsoleWhenConsoleEnabled()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--engine-set",
+            "Logging.Console.Enabled=true");
+
+        AssertSuccess(result);
+        Assert.Contains("Entry started", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 未知の Logging ファイル形式を engine-set で指定すると run が CONFIG_LOAD_FAILED で失敗することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "Logging.File.Format に未対応の値を指定すると run が CONFIG_LOAD_FAILED になる")]
+    public async Task EngineRunFailsWithUnsupportedLoggingFileFormat()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--engine-set",
+            "Logging.File.Format=Bad");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.ConfigLoadFailed, result.StandardError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// engine config の Logging セクションに未知キーを含めると run が CONFIG_LOAD_FAILED で失敗することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "engine config の Logging で未知キーを使うと CONFIG_LOAD_FAILED になる")]
+    public async Task EngineRunFailsWithUnsupportedLoggingConfigPath()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string engineConfigPath = Path.Combine(directory, "engine.yaml");
+        File.WriteAllText(
+            engineConfigPath,
+            """
+            Logging:
+              File:
+                Unknown: true
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--engine-config", "engine.yaml");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.ConfigLoadFailed, result.StandardError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// --engine-set に未知のトップレベル path を指定すると run が CONFIG_LOAD_FAILED で失敗することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "--engine-set の未知トップレベル path は CONFIG_LOAD_FAILED になる")]
+    public async Task EngineRunFailsWithUnsupportedEngineSetRootPath()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--engine-set", "Typo.Value=1");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.ConfigLoadFailed, result.StandardError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// --engine-set / --eset のドットなし未知 path と section 直接指定は CONFIG_LOAD_FAILED で失敗することを検証します。
+    /// </summary>
+    /// <param name="option">engine 設定 CLI オプション。</param>
+    /// <param name="setting">拒否される engine 設定。</param>
+    [Theory(DisplayName = "engine-set のドットなし未知 path と section 直接指定は CONFIG_LOAD_FAILED になる")]
+    [InlineData("--engine-set", "Typo=1")]
+    [InlineData("--engine-set", "Retry=1")]
+    [InlineData("--eset", "Logging=Json")]
+    public async Task EngineRunFailsWithUnsupportedEngineSetTopLevelSetting(string option, string setting)
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, option, setting);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.ConfigLoadFailed, result.StandardError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// engine config の未知トップレベル section は CONFIG_LOAD_FAILED で失敗することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "engine config の未知トップレベル section は CONFIG_LOAD_FAILED になる")]
+    public async Task EngineRunFailsWithUnsupportedEngineConfigRootPath()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string engineConfigPath = Path.Combine(directory, "engine.yaml");
+        File.WriteAllText(
+            engineConfigPath,
+            """
+            Typo:
+              Value: 1
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--engine-config", "engine.yaml");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.ConfigLoadFailed, result.StandardError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// engine config の既知 section 内に未知キーを含めると CONFIG_LOAD_FAILED で失敗することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "engine config の既知 section 内未知キーは CONFIG_LOAD_FAILED になる")]
+    public async Task EngineRunFailsWithUnsupportedEngineConfigNestedPath()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string engineConfigPath = Path.Combine(directory, "engine.yaml");
+        File.WriteAllText(
+            engineConfigPath,
+            """
+            Retry:
+              Unknown: 1
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--engine-config", "engine.yaml");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.ConfigLoadFailed, result.StandardError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// --engine-set の Timeout.StepTimeout が CLI 実行時の step timeout として適用され、タイムアウトで失敗することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "engine set の Timeout.StepTimeout で step timeout を上書きすると timeout 失敗する")]
+    public async Task EngineRunUsesTimeoutFromEngineSet()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System;
+            using System.Threading;
+            using System.Threading.Tasks;
+
+            public sealed class SlowAsyncStep : IAsyncStep<string>
+            {
+                public async Task<string> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+
+                    return "slow";
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .RunAsync<SlowAsyncStep, string>()
+                    .StoreAs();
+            """);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--engine-set", "Timeout.StepTimeout=00:00:00.030");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.StepTimeout, result.StandardError);
+    }
+
+    /// <summary>
+    /// engine YAML の Retry.MaxAttempts を 3 にした場合、2 回失敗後 3 回目で成功することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "engine-config の Retry.MaxAttempts=3 で step が 2 回失敗して 3 回目で成功する")]
+    public async Task EngineRunUsesRetryFromEngineConfig()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+            using System;
+            using System.Threading;
+
+            public sealed class RetryState
+            {
+                public static int Attempts;
+            }
+
+            public sealed class RetryStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    int attempt = Interlocked.Increment(ref RetryState.Attempts);
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "attempt.txt"), attempt.ToString());
+
+                    if (attempt < 3)
+                    {
+                        throw new InvalidOperationException($"attempt:{attempt}");
+                    }
+
+                    return "ok";
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<RetryStep, string>()
+                    .StoreAs();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string engineConfigPath = Path.Combine(directory, "engine.yaml");
+        File.WriteAllText(engineConfigPath, "Retry:\n  MaxAttempts: 3");
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--engine-config", "engine.yaml");
+
+        AssertSuccess(result);
+        Assert.Equal("3", File.ReadAllText(Path.Combine(directory, "attempt.txt")));
+    }
+
+    /// <summary>
+    /// `--eset Retry.MaxAttempts=1` が engine-config の 3 を上書きし、再試行せず失敗することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "engine-set の Retry.MaxAttempts=1 で engine-config の Retry.MaxAttempts=3 を上書きする")]
+    public async Task EngineRunOverwritesEngineConfigRetryWithEngineSet()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+            using System;
+            using System.Threading;
+
+            public sealed class RetryState
+            {
+                public static int Attempts;
+            }
+
+            public sealed class RetryStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    int attempt = Interlocked.Increment(ref RetryState.Attempts);
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "attempt.txt"), attempt.ToString());
+
+                    if (attempt < 3)
+                    {
+                        throw new InvalidOperationException($"attempt:{attempt}");
+                    }
+
+                    return "ok";
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<RetryStep, string>()
+                    .StoreAs();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string engineConfigPath = Path.Combine(directory, "engine.yaml");
+        File.WriteAllText(engineConfigPath, "Retry:\n  MaxAttempts: 3");
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--engine-config",
+            "engine.yaml",
+            "--eset",
+            "Retry.MaxAttempts=1");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.StepExecutionFailed, result.StandardError);
+        Assert.Equal("1", File.ReadAllText(Path.Combine(directory, "attempt.txt")));
+    }
+
+    /// <summary>
+    /// Config 型を見ない --workflow-set 無効書式が command error になることを検査します。
+    /// </summary>
+    /// <param name="setArgument">CLI 解析で拒否される --workflow-set 引数。</param>
+    [Theory(DisplayName = "Config 型を見ない --workflow-set 無効書式は exit code 2 になる")]
     [InlineData("=value")]
     [InlineData("key")]
     public async Task InvalidSetSyntaxFailsWithCommandErrorExitCode2(string setArgument)
@@ -411,10 +1015,68 @@ public sealed class CliRunValidateTests
                     .StoreAs();
             """);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--set", setArgument);
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-set", setArgument);
 
         Assert.Equal(2, result.ExitCode);
-        Assert.Contains("--set", result.StandardError);
+        Assert.Contains("key=value", result.StandardError);
+    }
+
+    /// <summary>
+    /// old --config と --set は CLI 解析で受け付けられないことを検査します。
+    /// </summary>
+    /// <param name="option">旧オプション名。</param>
+    /// <param name="value">旧オプションに対応する値。</param>
+    [Theory(DisplayName = "旧 --config と --set は command error になる")]
+    [InlineData("--config", "appsettings.yaml")]
+    [InlineData("--set", "Convert.ToUpper=false")]
+    public void LegacyOptionsAreRejected(string option, string value)
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+
+        int exitCode = Program.Run(["run", scriptPath, option, value]);
+
+        Assert.Equal(2, exitCode);
+    }
+
+    /// <summary>
+    /// validate は workflow-config が指定されていなくても engine-config の存在確認が実行されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "validate は --engine-config の存在確認を行う")]
+    public async Task ValidateChecksMissingEngineConfigFile()
+    {
+        string scriptPath = CreateScript(
+            """
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "main";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """);
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "title: test");
+
+        CliResult result = await RunCliAsync("validate", scriptPath, "--workflow-config", "appsettings.yaml", "--engine-config", "missing-engine.yaml");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(WorkflowErrorCodes.ConfigNotFound, result.StandardError);
+        Assert.Contains("missing-engine.yaml", result.StandardError);
     }
 
     /// <summary>
@@ -580,6 +1242,24 @@ public sealed class CliRunValidateTests
         await process.WaitForExitAsync();
 
         return new CliResult(process.ExitCode, standardOutput, standardError);
+    }
+
+    /// <summary>
+    /// ヘルプ出力から engine defaults YAML の解決済み完全パスを抽出します。
+    /// </summary>
+    /// <param name="standardOutput">CLI 標準出力。</param>
+    /// <returns>ヘルプ出力に含まれる engine defaults YAML パス。</returns>
+    private static string ExtractEngineDefaultsPath(string standardOutput)
+    {
+        Match defaultsPathMatch = Regex.Match(
+            standardOutput,
+            @"(?im)^\s*Engine defaults:\s*(?<path>.+\.defaults\.yaml)\s*$");
+
+        Assert.True(
+            defaultsPathMatch.Success,
+            $"ヘルプ出力に engine defaults YAML 行が含まれませんでした。{Environment.NewLine}{standardOutput}");
+
+        return defaultsPathMatch.Groups["path"].Value;
     }
 
     /// <summary>

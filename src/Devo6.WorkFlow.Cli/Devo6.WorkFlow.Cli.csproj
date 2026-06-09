@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="config\engine.defaults.yaml" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="config\" />
   </ItemGroup>
 
 </Project>
