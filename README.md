@@ -86,13 +86,17 @@ samples/multi-folder-composite/
   steps/report/build-report-step.csx
   steps/save/appsettings.yaml
   steps/save/save-text-step.csx
+  engine.yaml
+  README.md
 ```
 
 ```bash
-engine run samples/multi-folder-composite/main.csx --config appsettings.yaml
+engine run samples/multi-folder-composite/main.csx --workflow-config appsettings.yaml --engine-config engine.yaml
 ```
 
-この例では、外側 `CompositeStep` が `Pipeline.*` と `Save` の境界 Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。各 `steps/*/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Pipeline.Report.Heading` だけを部分上書きします。CLI からは `--set Pipeline.Normalize.Uppercase=false` や `--set Pipeline.Report.Heading=...` のように上書きできます。
+この例では、外側 `CompositeStep` が `Pipeline.*` と `Save` の境界 Config を読み込み、同じ `StepInput` と `StepContext` を使って内側 `CompositeStep` を実行します。各 `steps/*/appsettings.yaml` を Step 側の既定 Config として読み、root の `appsettings.yaml` は `Pipeline.Report.Heading` だけを部分上書きします。CLI からは `--wset Pipeline.Normalize.Uppercase=false` や `--wset Pipeline.Report.Heading=...` のように上書きできます。
+
+engine config とログ出力の利用例は `samples/multi-folder-composite/README.md` を参照してください。`--wset` で workflow 値、`--eset` で engine 値を上書きできます。
 
 NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.0 と `YamlDotNet` 16.3.0 を取得できる環境であれば、そのまま通常の NuGet 設定で解決します。`NuGet.config` がある場合は通常の NuGet 設定として使われます。必要に応じて `--allow-nuget PackageId,Version` を指定すると、その一覧に含まれない NuGet 直接参照を拒否できます。このサンプルは通常利用を示すためロックファイルを置きません。再現性を固定したい場合だけ `devo6.nuget.lock.yaml` を置き、`--locked` を指定します。
 
