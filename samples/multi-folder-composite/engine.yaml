@@ -1,0 +1,9 @@
+Logging:
+  Console:
+    Enabled: true
+    Format: Text
+  File:
+    Enabled: true
+    Directory: logs
+    NameFormat: "{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log"
+    Format: Text

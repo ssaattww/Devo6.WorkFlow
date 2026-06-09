@@ -1,0 +1,13 @@
+Logging:
+  Console:
+    Enabled: true
+    Format: Text
+  File:
+    Enabled: false
+    Directory: ""
+    NameFormat: "{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log"
+    Format: Text
+Timeout:
+  StepTimeout: null
+Retry:
+  MaxAttempts: 1

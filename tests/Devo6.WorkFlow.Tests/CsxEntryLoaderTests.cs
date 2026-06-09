@@ -445,7 +445,7 @@ public sealed class CsxEntryLoaderTests
             new WorkflowExecutionOptions(engineArguments: new EngineArguments
             {
                 EntryPath = scriptPath,
-                ConfigPath = configPath,
+                WorkflowConfigPath = configPath,
             }));
 
         Assert.True(result.Succeeded);

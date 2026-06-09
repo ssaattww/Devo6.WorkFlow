@@ -11,12 +11,23 @@ public sealed class EngineArguments
     public string EntryPath { get; init; } = "";
 
     /// <summary>
-    /// 解決済み config file path を取得します。config file が指定されていない場合は空文字列です。
+    /// 解決済み workflow config file path を取得します。workflow config file が指定されていない場合は空文字列です。
     /// </summary>
-    public string ConfigPath { get; init; } = "";
+    public string WorkflowConfigPath { get; init; } = "";
 
     /// <summary>
-    /// 複数の --set key=value 引数から渡された文字列 override 設定を取得します。
+    /// 解決済み engine config file path を取得します。engine config file が指定されていない場合は空文字列です。
     /// </summary>
-    public IReadOnlyDictionary<string, string> Settings { get; init; } = new Dictionary<string, string>();
+    public string EngineConfigPath { get; init; } = "";
+
+    /// <summary>
+    /// workflow config override を文字列として保持する workflow 設定項目を取得します。
+    /// </summary>
+    public IReadOnlyDictionary<string, string> WorkflowSettings { get; init; } = new Dictionary<string, string>();
+
+    /// <summary>
+    /// engine config override を文字列として保持する engine 設定項目を取得します。
+    /// </summary>
+    public IReadOnlyDictionary<string, string> EngineSettings { get; init; } = new Dictionary<string, string>();
+
 }

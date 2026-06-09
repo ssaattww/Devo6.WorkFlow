@@ -72,7 +72,7 @@ public sealed class SampleWorkflowTests
             options: new WorkflowExecutionOptions(engineArguments: new EngineArguments
             {
                 EntryPath = entryPath,
-                ConfigPath = configPath,
+                WorkflowConfigPath = configPath,
             }));
 
         Assert.True(
@@ -110,8 +110,8 @@ public sealed class SampleWorkflowTests
             options: new WorkflowExecutionOptions(engineArguments: new EngineArguments
             {
                 EntryPath = entryPath,
-                ConfigPath = configPath,
-                Settings = new Dictionary<string, string>
+                WorkflowConfigPath = configPath,
+                WorkflowSettings = new Dictionary<string, string>
                 {
                     ["Pipeline.Normalize.Uppercase"] = "false",
                     ["Pipeline.Report.Heading"] = "Override report",
@@ -141,6 +141,35 @@ public sealed class SampleWorkflowTests
         Assert.False(YamlPathExists(rootConfigPath, "Pipeline", "Analyze"));
         Assert.False(YamlPathExists(rootConfigPath, "Save"));
         Assert.Equal("Composite sample report", ReadYamlScalar(rootConfigPath, "Pipeline", "Report", "Heading"));
+    }
+
+    /// <summary>
+    /// 複数フォルダのサンプルが engine config と利用手順を分けて示すことを検査します。
+    /// </summary>
+    [Fact(DisplayName = "複数フォルダのサンプルは engine config と実行例を示す")]
+    public void MultiFolderCompositeSampleDocumentsEngineConfigAndRunExamples()
+    {
+        string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
+        string engineConfigPath = Path.Combine(sampleDirectory, "engine.yaml");
+        string readmePath = Path.Combine(sampleDirectory, "README.md");
+
+        Assert.True(File.Exists(engineConfigPath));
+        Assert.Equal("true", ReadYamlScalar(engineConfigPath, "Logging", "File", "Enabled"));
+        Assert.Equal("logs", ReadYamlScalar(engineConfigPath, "Logging", "File", "Directory"));
+        Assert.Equal("{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log", ReadYamlScalar(engineConfigPath, "Logging", "File", "NameFormat"));
+        Assert.Equal("Text", ReadYamlScalar(engineConfigPath, "Logging", "File", "Format"));
+
+        Assert.True(File.Exists(readmePath));
+        string readme = File.ReadAllText(readmePath);
+        Assert.Contains("--workflow-config", readme);
+        Assert.Contains("--engine-config", readme);
+        Assert.Contains("--wset", readme);
+        Assert.Contains("--eset", readme);
+        Assert.Contains("Logging.Console.Enabled: true", readme);
+        Assert.Contains("標準出力", readme);
+        Assert.Contains("260609-120000_Main.log", readme);
+        Assert.Contains("{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log", readme);
+        Assert.Contains("Main", readme);
     }
 
     /// <summary>
@@ -391,4 +420,5 @@ public sealed class SampleWorkflowTests
             return graph;
         }
     }
+
 }

@@ -16,7 +16,7 @@ public sealed class StandardConfigLoadingContractTests
     /// <summary>
     /// CLI run が YAML Config を型付き値として StepContext に登録することを検査します。
     /// </summary>
-    [Fact(DisplayName = "engine run main.csx --config は YAML 値を StepContext から型付き取得できる")]
+    [Fact(DisplayName = "engine run main.csx --workflow-config は YAML 値を StepContext から型付き取得できる")]
     public async Task CliRunWithConfigLoadsYamlIntoStepContext()
     {
         string scriptPath = CreateScript(
@@ -52,7 +52,7 @@ public sealed class StandardConfigLoadingContractTests
         string directory = Path.GetDirectoryName(scriptPath)!;
         File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "Title: configured" + Environment.NewLine + "Port: 5071" + Environment.NewLine);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertSuccess(result);
         Assert.Equal("configured|5071", File.ReadAllText(Path.Combine(directory, "config-marker.txt")));
@@ -61,8 +61,8 @@ public sealed class StandardConfigLoadingContractTests
     /// <summary>
     /// Entry directory 基準の相対 Config path 解決が実行 cwd に依存しないことを検査します。
     /// </summary>
-    [Fact(DisplayName = "--config config/appsettings.yaml は Entry directory 基準で解決される")]
-    public async Task RelativeConfigPathIsResolvedFromEntryDirectory()
+    [Fact(DisplayName = "--workflow-config config/appsettings.yaml は Entry directory 基準で解決される")]
+    public async Task RelativeWorkflowConfigPathIsResolvedFromEntryDirectory()
     {
         string scriptPath = CreateScript(
             """
@@ -103,7 +103,7 @@ public sealed class StandardConfigLoadingContractTests
             unrelatedWorkingDirectory,
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "config/appsettings.yaml");
 
         AssertSuccess(result);
@@ -140,7 +140,7 @@ public sealed class StandardConfigLoadingContractTests
     /// <summary>
     /// CLI run が境界 Config 経由で Step 登録単位 Config を各 Step の StepContext に登録することを検査します。
     /// </summary>
-    [Fact(DisplayName = "engine run main.csx --config は境界 Config から Step ごとの Config を読み込む")]
+    [Fact(DisplayName = "engine run main.csx --workflow-config は境界 Config から Step ごとの Config を読み込む")]
     public async Task CliRunWithBoundaryConfigLoadsEachDeclaredStepConfig()
     {
         string scriptPath = CreateStepConfigScript();
@@ -160,11 +160,11 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "config/appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "Convert.ToUpper=false",
-            "--set",
+            "--workflow-set",
             "Save.Path=cli.txt");
 
         AssertSuccess(result);
@@ -176,7 +176,7 @@ public sealed class StandardConfigLoadingContractTests
     /// <summary>
     /// 規約パスの Step 既定 Config、root Config の部分上書き、CLI 上書きの順に値が重なることを検査します。
     /// </summary>
-    [Fact(DisplayName = "Step 既定 Config は root 部分上書き後に --set で最終上書きできる")]
+    [Fact(DisplayName = "Step 既定 Config は root 部分上書き後に --workflow-set で最終上書きできる")]
     public async Task CliRunMergesConventionStepDefaultConfigWithRootOverridesAndSet()
     {
         string scriptPath = CreateDefaultStepConfigScript();
@@ -192,9 +192,9 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "Convert.ToUpper=false");
 
         AssertSuccess(result);
@@ -214,7 +214,7 @@ public sealed class StandardConfigLoadingContractTests
         WriteStepDefaultConfigFiles(directory, convertPrefix: "default: ", convertToUpper: true);
         File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertSuccess(result);
         Assert.Equal("True|default: |default-input", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
@@ -225,7 +225,7 @@ public sealed class StandardConfigLoadingContractTests
     /// 明示 defaultConfigPath オーバーロードが規約パスより優先されることを検査します。
     /// </summary>
     [Fact(DisplayName = "WithConfig の明示 defaultConfigPath は規約パスより優先される")]
-    public async Task CliRunUsesExplicitStepDefaultConfigPath()
+    public async Task CliRunUsesExplicitStepDefaultWorkflowConfigPath()
     {
         string scriptPath = CreateDefaultStepConfigScript(useExplicitConvertDefaultConfigPath: true);
         string directory = Path.GetDirectoryName(scriptPath)!;
@@ -239,7 +239,7 @@ public sealed class StandardConfigLoadingContractTests
             """);
         File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertSuccess(result);
         Assert.Equal("False|explicit: |default-input", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
@@ -263,7 +263,7 @@ public sealed class StandardConfigLoadingContractTests
             Save: steps/save/appsettings.yaml
             """);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertSuccess(result);
         Assert.Equal("False|scalar: |default-input", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
@@ -295,9 +295,9 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "Inner.ToUpper=false");
 
         AssertSuccess(result);
@@ -460,7 +460,7 @@ public sealed class StandardConfigLoadingContractTests
               Path: yaml.txt
             """);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
         Assert.False(File.Exists(Path.Combine(directory, "load-marker.txt")));
@@ -483,16 +483,16 @@ public sealed class StandardConfigLoadingContractTests
               Path: yaml.txt
             """);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
         Assert.False(File.Exists(Path.Combine(directory, "load-marker.txt")));
     }
 
     /// <summary>
-    /// 未宣言 property path 接頭辞の --set が最初の Step 実行前に失敗することを検査します。
+    /// 未宣言 property path 接頭辞の --workflow-set が最初の Step 実行前に失敗することを検査します。
     /// </summary>
-    [Fact(DisplayName = "未宣言 Step Config property path 接頭辞の --set は CONFIG_LOAD_FAILED になる")]
+    [Fact(DisplayName = "未宣言 Step Config property path 接頭辞の --workflow-set は CONFIG_LOAD_FAILED になる")]
     public async Task UndeclaredStepConfigSetPrefixFailsBeforeFirstStepExecution()
     {
         string scriptPath = CreateStepConfigScript();
@@ -511,9 +511,9 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "ConvertExtra.ToUpper=false");
 
         AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
@@ -537,16 +537,16 @@ public sealed class StandardConfigLoadingContractTests
                 Mode: normal
             """);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
         Assert.False(File.Exists(Path.Combine(directory, "prefix-marker.txt")));
     }
 
     /// <summary>
-    /// validate が Step Config 型変換や --set 適用を行わず Config path 存在確認までで成功することを検査します。
+    /// validate が Step Config 型変換や --workflow-set 適用を行わず Config path 存在確認までで成功することを検査します。
     /// </summary>
-    [Fact(DisplayName = "validate は Step Config の型変換と --set 適用を行わない")]
+    [Fact(DisplayName = "validate は Step Config の型変換と --workflow-set 適用を行わない")]
     public async Task ValidateDoesNotLoadStepConfigSectionsOrApplySetOverrides()
     {
         string scriptPath = CreateStepConfigScript();
@@ -561,9 +561,9 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "validate",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "Convert.ToUpper=not-a-bool");
 
         AssertSuccess(result);
@@ -571,9 +571,9 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
-    /// Config 型要求時に --config 未指定なら Step 実行前に CONFIG_NOT_FOUND になることを検査します。
+    /// Config 型要求時に --workflow-config 未指定なら Step 実行前に CONFIG_NOT_FOUND になることを検査します。
     /// </summary>
-    [Fact(DisplayName = "WithConfig 使用時に --config 未指定なら CONFIG_NOT_FOUND で失敗する")]
+    [Fact(DisplayName = "WithConfig 使用時に --workflow-config 未指定なら CONFIG_NOT_FOUND で失敗する")]
     public async Task MissingConfigArgumentFailsBeforeStepExecutionWithConfigNotFound()
     {
         string scriptPath = CreateConfigReadingScript("missing-argument-marker.txt");
@@ -592,7 +592,7 @@ public sealed class StandardConfigLoadingContractTests
     {
         string scriptPath = CreateConfigReadingScript("missing-file-marker.txt");
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "missing.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "missing.yaml");
 
         AssertFailure(result, WorkflowErrorCodes.ConfigNotFound);
         Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(scriptPath)!, "missing-file-marker.txt")));
@@ -607,7 +607,7 @@ public sealed class StandardConfigLoadingContractTests
         string scriptPath = CreateConfigReadingScript("type-conversion-marker.txt");
         File.WriteAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "appsettings.yaml"), "Title: broken" + Environment.NewLine + "Port: not-a-number" + Environment.NewLine);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
         Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(scriptPath)!, "type-conversion-marker.txt")));
@@ -653,17 +653,17 @@ public sealed class StandardConfigLoadingContractTests
             """);
         File.WriteAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "appsettings.yaml"), "{}" + Environment.NewLine);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml");
 
         AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
         Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(scriptPath)!, "validation-marker.txt")));
     }
 
     /// <summary>
-    /// CLI run の --set が標準 Config を上書きし、raw 設定も保持することを検査します。
+    /// CLI run の --workflow-set が標準 Config を上書きし、raw 設定も保持することを検査します。
     /// </summary>
-    [Fact(DisplayName = "CLI run の --set は YAML 値を上書きし EngineArguments.Settings も保持する")]
-    public async Task CliRunSetOverridesStandardConfigAndPreservesRawSettings()
+    [Fact(DisplayName = "CLI run の --workflow-set は YAML 値を上書きし EngineArguments.WorkflowSettings も保持する")]
+    public async Task CliRunSetOverridesStandardConfigAndPreservesRawWorkflowSettings()
     {
         string scriptPath = CreateScript(
             """
@@ -711,7 +711,7 @@ public sealed class StandardConfigLoadingContractTests
                 {
                     EngineArguments arguments = input.Context.Get<EngineArguments>();
                     AppConfig config = input.Context.Get<AppConfig>();
-                    string text = $"{config.Convert.ToUpper}|{config.Save.Path}|{arguments.Settings["Convert.ToUpper"]}|{arguments.Settings["Save.Path"]}";
+                    string text = $"{config.Convert.ToUpper}|{config.Save.Path}|{arguments.WorkflowSettings["Convert.ToUpper"]}|{arguments.WorkflowSettings["Save.Path"]}";
                     File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "override-marker.txt"), text);
 
                     return text;
@@ -736,11 +736,11 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "Convert.ToUpper=false",
-            "--set",
+            "--workflow-set",
             "Save.Path=cli.txt");
 
         AssertSuccess(result);
@@ -748,10 +748,10 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
-    /// 同一 key の --set は後の値を Config と raw 設定に反映することを検査します。
+    /// 同一 key の --workflow-set は後の値を Config と raw 設定に反映することを検査します。
     /// </summary>
-    [Fact(DisplayName = "同一 key の --set は後勝ちで Config と EngineArguments.Settings に反映される")]
-    public async Task RepeatedSetUsesLastValueForConfigAndRawSettings()
+    [Fact(DisplayName = "同一 key の --workflow-set は後勝ちで Config と EngineArguments.WorkflowSettings に反映される")]
+    public async Task RepeatedSetUsesLastValueForConfigAndRawWorkflowSettings()
     {
         string scriptPath = CreateScript(
             """
@@ -778,7 +778,7 @@ public sealed class StandardConfigLoadingContractTests
                 {
                     EngineArguments arguments = input.Context.Get<EngineArguments>();
                     AppConfig config = input.Context.Get<AppConfig>();
-                    string text = $"{config.Title}|{arguments.Settings["Title"]}";
+                    string text = $"{config.Title}|{arguments.WorkflowSettings["Title"]}";
                     File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "last-wins-marker.txt"), text);
 
                     return text;
@@ -796,11 +796,11 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "Title=first",
-            "--set",
+            "--workflow-set",
             "Title=second");
 
         AssertSuccess(result);
@@ -808,9 +808,9 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
-    /// 入れ子 property の途中が null の場合に --set が中間 Config を自動生成することを検査します。
+    /// 入れ子 property の途中が null の場合に --workflow-set が中間 Config を自動生成することを検査します。
     /// </summary>
-    [Fact(DisplayName = "入れ子 property の --set は null 中間 Config を自動生成する")]
+    [Fact(DisplayName = "入れ子 property の --workflow-set は null 中間 Config を自動生成する")]
     public async Task SetCreatesMissingNestedConfigObjects()
     {
         string scriptPath = CreateScript(
@@ -861,16 +861,16 @@ public sealed class StandardConfigLoadingContractTests
         string directory = Path.GetDirectoryName(scriptPath)!;
         File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml", "--set", "Convert.ToUpper=true");
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml", "--workflow-set", "Convert.ToUpper=true");
 
         AssertSuccess(result);
         Assert.Equal("True", File.ReadAllText(Path.Combine(directory, "nested-marker.txt")));
     }
 
     /// <summary>
-    /// --set が bool、int、enum、nullable primitive を対象型へ変換することを検査します。
+    /// --workflow-set が bool、int、enum、nullable primitive を対象型へ変換することを検査します。
     /// </summary>
-    [Fact(DisplayName = "--set は bool int enum nullable primitive を Config 型へ変換する")]
+    [Fact(DisplayName = "--workflow-set は bool int enum nullable primitive を Config 型へ変換する")]
     public async Task SetConvertsPrimitiveEnumAndNullableValues()
     {
         string scriptPath = CreateScript(
@@ -944,15 +944,15 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "Enabled=true",
-            "--set",
+            "--workflow-set",
             "Port=8080",
-            "--set",
+            "--workflow-set",
             "Mode=Fast",
-            "--set",
+            "--workflow-set",
             "OptionalLimit=42");
 
         AssertSuccess(result);
@@ -960,9 +960,9 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
-    /// --set が list と array の既存要素 property を上書きすることを検査します。
+    /// --workflow-set が list と array の既存要素 property を上書きすることを検査します。
     /// </summary>
-    [Fact(DisplayName = "--set は list と array の既存要素 property を上書きする")]
+    [Fact(DisplayName = "--workflow-set は list と array の既存要素 property を上書きする")]
     public async Task SetOverridesExistingListAndArrayElements()
     {
         string scriptPath = CreateScript(
@@ -1029,11 +1029,11 @@ public sealed class StandardConfigLoadingContractTests
         CliResult result = await RunCliAsync(
             "run",
             scriptPath,
-            "--config",
+            "--workflow-config",
             "appsettings.yaml",
-            "--set",
+            "--workflow-set",
             "Items[0].Name=cli-list",
-            "--set",
+            "--workflow-set",
             "ArrayItems[0].Name=cli-array");
 
         AssertSuccess(result);
@@ -1041,10 +1041,10 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
-    /// Config 型への --set 適用失敗が Step 実行前に CONFIG_LOAD_FAILED になることを検査します。
+    /// Config 型への --workflow-set 適用失敗が Step 実行前に CONFIG_LOAD_FAILED になることを検査します。
     /// </summary>
-    /// <param name="setArgument">失敗させる --set 引数。</param>
-    [Theory(DisplayName = "Config 型への --set 適用失敗は CONFIG_LOAD_FAILED で Step を実行しない")]
+    /// <param name="setArgument">失敗させる --workflow-set 引数。</param>
+    [Theory(DisplayName = "Config 型への --workflow-set 適用失敗は CONFIG_LOAD_FAILED で Step を実行しない")]
     [InlineData("Missing.Name=value")]
     [InlineData("Port=not-a-number")]
     [InlineData("Items[1].Name=value")]
@@ -1110,22 +1110,22 @@ public sealed class StandardConfigLoadingContractTests
               - Name: yaml
             """);
 
-        CliResult result = await RunCliAsync("run", scriptPath, "--config", "appsettings.yaml", "--set", setArgument);
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml", "--workflow-set", setArgument);
 
         AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
         Assert.False(File.Exists(Path.Combine(directory, "invalid-set-marker.txt")));
     }
 
     /// <summary>
-    /// validate は T24 で --set の型検証を行わず Config path 存在確認までで成功することを検査します。
+    /// validate は T24 で --workflow-set の型検証を行わず Config path 存在確認までで成功することを検査します。
     /// </summary>
-    [Fact(DisplayName = "validate は T24 で --set の型検証を行わない")]
+    [Fact(DisplayName = "validate は T24 で --workflow-set の型検証を行わない")]
     public async Task ValidateDoesNotTypeCheckSetOverridesDuringT24()
     {
         string scriptPath = CreateConfigReadingScript("validate-set-marker.txt");
         File.WriteAllText(Path.Combine(Path.GetDirectoryName(scriptPath)!, "appsettings.yaml"), "Title: configured" + Environment.NewLine + "Port: 5071" + Environment.NewLine);
 
-        CliResult result = await RunCliAsync("validate", scriptPath, "--config", "appsettings.yaml", "--set", "Port=not-a-number");
+        CliResult result = await RunCliAsync("validate", scriptPath, "--workflow-config", "appsettings.yaml", "--workflow-set", "Port=not-a-number");
 
         AssertSuccess(result);
         Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(scriptPath)!, "validate-set-marker.txt")));
