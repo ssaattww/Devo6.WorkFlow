@@ -71,10 +71,12 @@ Step は定義順に逐次実行する。
 以下は逐次実行モデルには含めない。
 
 - 並列実行
-- 分岐実行
-- 統合実行
+- 分岐の並列実行
+- 分岐結果の暗黙統合
 - 複雑な依存関係解決
 - Step の自動依存解決
+
+条件付き実行は標準定義 API に含める。ただし、`If` と `Switch` は選択された分岐だけを定義順に実行する制御単位であり、並列実行や複数分岐の統合は行わない。
 
 ### 3.2 自動推論しない
 
@@ -362,6 +364,10 @@ CLI `run` は Entry `.csx` をロードした後、宣言済み Step Config ご�
 `run` は最初の Step を実行する前に、境界 Config 型への型変換、CLI override 適用、`DataAnnotations` と `IValidatableObject` の検証をすべて完了する。いずれか 1 つでも失敗した場合、最初の Step は実行しない。
 
 実行時は、対象 Step の実行直前に、境界 Config 型上の `sectionPath` プロパティ値を取り出し、`StepContext.Set<TConfig>(config)` で登録する。たとえば `WithConfig<LoadStep.Config>("Load")` は、`MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録する宣言である。
+
+`WithConfig<TConfig>(sectionPath)` は、通常 Step、`Lambda Step`、`RunIf`、`TapIf`、および `If` / `Switch` の分岐内実行単位に付けられる。分岐内実行単位に付けた Config も、標準 Config 読み込みの実行前読み込み、型変換、override 適用、検証の対象に含める。
+
+`RunIf` と `TapIf` に付けた Config は、条件判定と `fallback` 評価より前に `StepContext` へ登録済みでなければならない。これにより、`when`、`otherwise`、または条件判定が `StepInput.Context` から対象 Config を読める。
 
 Step 登録単位 Config があるのに `WithConfig<MainConfig>()` のような境界 Config 型宣言がない場合は、最初の Step 実行前に `CONFIG_LOAD_FAILED` とする。
 
@@ -704,6 +710,43 @@ trace 値を保存する場合は、`StoreAs` にも明示する。
     .Discard();
 ```
 
+### 7.6 条件付き実行定義 API
+
+標準定義 API は、通常 Step と非同期 Step に加えて、次の実行単位を持つ。
+
+- `Lambda Step`
+- `RunIf`
+- `TapIf`
+- `If`
+- `Switch`
+
+`Lambda Step` は、関数式を名前付き Step として実行し、その戻り値を現在値にする。`CompositeStep.Define(...)` の直後でも、既存の連鎖呼び出しの途中でも使える。`StepInput` を受け取る形式と非同期形式を用意し、必要な Config は通常 Step と同じく `WithConfig` で宣言する。
+
+`RunIf<TStep, TNext>` は、条件が true の場合だけ `TStep` を実行する。条件が false の場合は Step 本体を実行せず、必須の `fallback` 関数から `TNext` を取得して現在値にする。ここでの `skip` は「値なし」ではなく、「Step 本体を実行せず `fallback` 値を返す」契約である。
+
+戻り値型が変わらない `RunIf<TStep>` は、条件が false の場合に現在の `TOut` をそのまま `fallback` として次へ流す省略 API とする。
+
+`TapIf<TStep>` は副作用用の条件付き Step である。`TStep` は `Unit` を返す Step だけを許可し、条件が true の場合も false の場合も現在値の型と値を変更しない。条件が false の場合は Step 本体を実行しない。
+
+次のような `WithCriteria` 型の単純 `skip` は採用しない。
+
+```csharp
+.Run<ConvertStep, ConvertResult>()
+    .WithCriteria(x => x.ShouldConvert)
+```
+
+この形では、条件が false のときに `ConvertResult` が生成されないにもかかわらず、連鎖呼び出しの型は `CompositeStep<ConvertResult>` に進んでしまう。条件付き実行では、型安全性を保つため false 時の値を明示する。
+
+`If<TNext>` は `then` 分岐と `else` 分岐のどちらか一方を実行し、選択分岐の戻り値を現在値にする。`then` 分岐と `else` 分岐はどちらも同じ `TNext` を返さなければならない。
+
+`Switch<TCase, TNext>` は `selector` の値に一致する `case` 分岐を実行し、一致する `case` がない場合は `default` 分岐を実行する。すべての `case` 分岐と `default` 分岐は同じ `TNext` を返さなければならない。`Default` は必須であり、未定義の場合は定義時エラーとする。同じ `case` 値を複数登録した場合も定義時エラーとする。
+
+`BranchBuilder<TOut>` は、`If` と `Switch` の分岐内で現在の `TOut` から始まる部分的な連鎖呼び出しを定義する構築 API である。分岐内では通常 Step、非同期 Step、`Lambda Step`、`RunIf`、`TapIf`、入れ子の `If`、入れ子の `Switch` を使える。分岐内の `Produce`、`StoreAs`、`Discard` は選択された分岐の実行単位にだけ適用する。
+
+`SwitchCaseBuilder<TIn, TCase, TOut>` は、`Switch` の `case` と `default` を登録する構築 API である。`case` 値の重複を定義時に検出し、`Default` が 1 つだけ登録されることを保証する。
+
+初期実装では空分岐を禁止する。条件により値を変えずに通過させたい場合は、空分岐ではなく `Lambda Step` などで明示的な `passthrough` を書く。
+
 ---
 
 ## 8. Step 定義
@@ -915,7 +958,9 @@ retry は全 Step 一律の指定に限定する。
 
 Step 別 retry、待機時間制御、例外型による絞り込み、CLI 個別引数指定、workflow config 指定は標準 retry 契約には含めない。
 
-retry 対象は Step 本体の通常例外に限定する。
+retry 対象は通常 Step、`Lambda Step`、`RunIf`、`TapIf` の単一実行単位本体の通常例外に限定する。
+
+`If` と `Switch` 全体は retry 単位にしない。選択された分岐内の通常 Step、`Lambda Step`、`RunIf`、`TapIf` は、それぞれ通常の単一実行単位として retry / timeout の対象にする。
 
 最終的に `STEP_EXECUTION_FAILED` になる候補だけを retry 対象とする。
 
@@ -1190,6 +1235,17 @@ public static class CompositeStep
         string? namespaceName = null);
 }
 
+public sealed class CompositeStepDefinition
+{
+    public CompositeStep<TOut> Run<TOut>(
+        string name,
+        Func<StepInput, TOut> body);
+
+    public CompositeStep<TOut> RunAsync<TOut>(
+        string name,
+        Func<StepInput, CancellationToken, Task<TOut>> body);
+}
+
 public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 {
     public CompositeStep<TOut> WithConfig<TConfig>();
@@ -1205,6 +1261,97 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
     public CompositeStep<TStepOut> RunAsync<TStep, TStepOut>()
         where TStep : IAsyncStep<TStepOut>, new();
+
+    public CompositeStep<TNext> Run<TNext>(
+        string name,
+        Func<TOut, TNext> body);
+
+    public CompositeStep<TNext> Run<TNext>(
+        string name,
+        Func<TOut, StepInput, TNext> body);
+
+    public CompositeStep<TNext> RunAsync<TNext>(
+        string name,
+        Func<TOut, StepInput, CancellationToken, Task<TNext>> body);
+
+    public CompositeStep<TNext> RunIf<TStep, TNext>(
+        Func<TOut, bool> when,
+        Func<TOut, TNext> otherwise)
+        where TStep : IStep<TNext>, new();
+
+    public CompositeStep<TNext> RunIf<TStep, TNext>(
+        Func<TOut, StepInput, bool> when,
+        Func<TOut, StepInput, TNext> otherwise)
+        where TStep : IStep<TNext>, new();
+
+    public CompositeStep<TNext> RunIfAsync<TStep, TNext>(
+        Func<TOut, bool> when,
+        Func<TOut, TNext> otherwise)
+        where TStep : IAsyncStep<TNext>, new();
+
+    public CompositeStep<TNext> RunIfAsync<TStep, TNext>(
+        Func<TOut, StepInput, bool> when,
+        Func<TOut, StepInput, TNext> otherwise)
+        where TStep : IAsyncStep<TNext>, new();
+
+    public CompositeStep<TNext> RunIfAsync<TStep, TNext>(
+        Func<TOut, StepInput, bool> when,
+        Func<TOut, StepInput, CancellationToken, Task<TNext>> otherwiseAsync)
+        where TStep : IAsyncStep<TNext>, new();
+
+    public CompositeStep<TOut> RunIf<TStep>(
+        Func<TOut, bool> when)
+        where TStep : IStep<TOut>, new();
+
+    public CompositeStep<TOut> RunIf<TStep>(
+        Func<TOut, StepInput, bool> when)
+        where TStep : IStep<TOut>, new();
+
+    public CompositeStep<TOut> RunIfAsync<TStep>(
+        Func<TOut, bool> when)
+        where TStep : IAsyncStep<TOut>, new();
+
+    public CompositeStep<TOut> RunIfAsync<TStep>(
+        Func<TOut, StepInput, bool> when)
+        where TStep : IAsyncStep<TOut>, new();
+
+    public CompositeStep<TOut> TapIf<TStep>(
+        Func<TOut, bool> when)
+        where TStep : IStep<Unit>, new();
+
+    public CompositeStep<TOut> TapIf<TStep>(
+        Func<TOut, StepInput, bool> when)
+        where TStep : IStep<Unit>, new();
+
+    public CompositeStep<TOut> TapIfAsync<TStep>(
+        Func<TOut, bool> when)
+        where TStep : IAsyncStep<Unit>, new();
+
+    public CompositeStep<TOut> TapIfAsync<TStep>(
+        Func<TOut, StepInput, bool> when)
+        where TStep : IAsyncStep<Unit>, new();
+
+    public CompositeStep<TNext> If<TNext>(
+        string name,
+        Func<TOut, bool> condition,
+        Func<BranchBuilder<TOut>, BranchBuilder<TNext>> thenFlow,
+        Func<BranchBuilder<TOut>, BranchBuilder<TNext>> elseFlow);
+
+    public CompositeStep<TNext> If<TNext>(
+        string name,
+        Func<TOut, StepInput, bool> condition,
+        Func<BranchBuilder<TOut>, BranchBuilder<TNext>> thenFlow,
+        Func<BranchBuilder<TOut>, BranchBuilder<TNext>> elseFlow);
+
+    public CompositeStep<TNext> Switch<TCase, TNext>(
+        string name,
+        Func<TOut, TCase> selector,
+        Func<SwitchCaseBuilder<TOut, TCase, TNext>, SwitchCaseBuilder<TOut, TCase, TNext>> cases);
+
+    public CompositeStep<TNext> Switch<TCase, TNext>(
+        string name,
+        Func<TOut, StepInput, TCase> selector,
+        Func<SwitchCaseBuilder<TOut, TCase, TNext>, SwitchCaseBuilder<TOut, TCase, TNext>> cases);
 
     public TOut Execute(StepInput input);
 
@@ -1236,6 +1383,132 @@ public sealed class StepConfigRegistration
     public Type ConfigType { get; }
 
     public string? DefaultConfigPath { get; }
+}
+
+public sealed class BranchBuilder<TOut>
+{
+    public BranchBuilder<TStepOut> Run<TStep, TStepOut>()
+        where TStep : IStep<TStepOut>, new();
+
+    public BranchBuilder<TStepOut> RunAsync<TStep, TStepOut>()
+        where TStep : IAsyncStep<TStepOut>, new();
+
+    public BranchBuilder<TNext> Run<TNext>(
+        string name,
+        Func<TOut, TNext> body);
+
+    public BranchBuilder<TNext> Run<TNext>(
+        string name,
+        Func<TOut, StepInput, TNext> body);
+
+    public BranchBuilder<TNext> RunAsync<TNext>(
+        string name,
+        Func<TOut, StepInput, CancellationToken, Task<TNext>> body);
+
+    public BranchBuilder<TNext> RunIf<TStep, TNext>(
+        Func<TOut, bool> when,
+        Func<TOut, TNext> otherwise)
+        where TStep : IStep<TNext>, new();
+
+    public BranchBuilder<TNext> RunIf<TStep, TNext>(
+        Func<TOut, StepInput, bool> when,
+        Func<TOut, StepInput, TNext> otherwise)
+        where TStep : IStep<TNext>, new();
+
+    public BranchBuilder<TNext> RunIfAsync<TStep, TNext>(
+        Func<TOut, bool> when,
+        Func<TOut, TNext> otherwise)
+        where TStep : IAsyncStep<TNext>, new();
+
+    public BranchBuilder<TNext> RunIfAsync<TStep, TNext>(
+        Func<TOut, StepInput, bool> when,
+        Func<TOut, StepInput, TNext> otherwise)
+        where TStep : IAsyncStep<TNext>, new();
+
+    public BranchBuilder<TNext> RunIfAsync<TStep, TNext>(
+        Func<TOut, StepInput, bool> when,
+        Func<TOut, StepInput, CancellationToken, Task<TNext>> otherwiseAsync)
+        where TStep : IAsyncStep<TNext>, new();
+
+    public BranchBuilder<TOut> RunIf<TStep>(
+        Func<TOut, bool> when)
+        where TStep : IStep<TOut>, new();
+
+    public BranchBuilder<TOut> RunIf<TStep>(
+        Func<TOut, StepInput, bool> when)
+        where TStep : IStep<TOut>, new();
+
+    public BranchBuilder<TOut> RunIfAsync<TStep>(
+        Func<TOut, bool> when)
+        where TStep : IAsyncStep<TOut>, new();
+
+    public BranchBuilder<TOut> RunIfAsync<TStep>(
+        Func<TOut, StepInput, bool> when)
+        where TStep : IAsyncStep<TOut>, new();
+
+    public BranchBuilder<TOut> TapIf<TStep>(
+        Func<TOut, bool> when)
+        where TStep : IStep<Unit>, new();
+
+    public BranchBuilder<TOut> TapIf<TStep>(
+        Func<TOut, StepInput, bool> when)
+        where TStep : IStep<Unit>, new();
+
+    public BranchBuilder<TOut> TapIfAsync<TStep>(
+        Func<TOut, bool> when)
+        where TStep : IAsyncStep<Unit>, new();
+
+    public BranchBuilder<TOut> TapIfAsync<TStep>(
+        Func<TOut, StepInput, bool> when)
+        where TStep : IAsyncStep<Unit>, new();
+
+    public BranchBuilder<TNext> If<TNext>(
+        string name,
+        Func<TOut, bool> condition,
+        Func<BranchBuilder<TOut>, BranchBuilder<TNext>> thenFlow,
+        Func<BranchBuilder<TOut>, BranchBuilder<TNext>> elseFlow);
+
+    public BranchBuilder<TNext> If<TNext>(
+        string name,
+        Func<TOut, StepInput, bool> condition,
+        Func<BranchBuilder<TOut>, BranchBuilder<TNext>> thenFlow,
+        Func<BranchBuilder<TOut>, BranchBuilder<TNext>> elseFlow);
+
+    public BranchBuilder<TNext> Switch<TCase, TNext>(
+        string name,
+        Func<TOut, TCase> selector,
+        Func<SwitchCaseBuilder<TOut, TCase, TNext>, SwitchCaseBuilder<TOut, TCase, TNext>> cases);
+
+    public BranchBuilder<TNext> Switch<TCase, TNext>(
+        string name,
+        Func<TOut, StepInput, TCase> selector,
+        Func<SwitchCaseBuilder<TOut, TCase, TNext>, SwitchCaseBuilder<TOut, TCase, TNext>> cases);
+
+    public BranchBuilder<TOut> WithConfig<TConfig>(string sectionPath);
+
+    public BranchBuilder<TOut> WithConfig<TConfig>(
+        string sectionPath,
+        string defaultConfigPath);
+
+    public BranchBuilder<TOut> Produce<TValue>(Func<TOut, TValue> selector);
+
+    public BranchBuilder<TOut> Produce<TValue>(
+        string name,
+        Func<TOut, TValue> selector);
+
+    public BranchBuilder<TOut> StoreAs();
+
+    public BranchBuilder<TOut> Discard();
+}
+
+public sealed class SwitchCaseBuilder<TIn, TCase, TOut>
+{
+    public SwitchCaseBuilder<TIn, TCase, TOut> Case(
+        TCase value,
+        Func<BranchBuilder<TIn>, BranchBuilder<TOut>> branch);
+
+    public SwitchCaseBuilder<TIn, TCase, TOut> Default(
+        Func<BranchBuilder<TIn>, BranchBuilder<TOut>> branch);
 }
 ```
 
@@ -1814,6 +2087,10 @@ timeout または外部キャンセルを検出した後、エンジンは後続
 
 timeout と外部キャンセルは retry 対象外とし、観測した時点で workflow を失敗終了する。
 
+`RunIf` false は Step 本体を実行せず、`fallback` 値を現在値として返す。`TapIf` false は Step 本体を実行せず、元の現在値をそのまま返す。
+
+`If` と `Switch` は選択された分岐の戻り値を現在値として返す。分岐内で `Produce` した値は、選択された分岐のものだけが `StepInput` に登録される。
+
 trace 値の基礎単位は、Step 成功後に `Produce` または `StoreAs` の値登録処理が成功して `StepInput` に登録された値である。
 
 Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の値一覧は空である。
@@ -1842,6 +2119,9 @@ STEP_INPUT_NOT_FOUND
 STEP_INPUT_TYPE_MISMATCH
 CONFIG_NOT_FOUND
 CONFIG_LOAD_FAILED
+CONDITION_EVALUATION_FAILED
+SWITCH_SELECTOR_FAILED
+SWITCH_CASE_NOT_FOUND
 STEP_CANCELED
 STEP_EXECUTION_FAILED
 STEP_TIMEOUT
@@ -1861,6 +2141,12 @@ timeout と外部キャンセルの両方が観測される場合は、外部キ
 retry で全試行が失敗した場合も、retry 専用エラーコードは追加せず `STEP_EXECUTION_FAILED` を使う。
 
 `Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とし、既存の Step 失敗として扱う。
+
+`RunIf`、`TapIf`、`If` の条件評価が失敗した場合は `CONDITION_EVALUATION_FAILED` とする。
+
+`Switch` の `selector` 評価が失敗した場合は `SWITCH_SELECTOR_FAILED` とする。標準契約では `Switch` の `Default` を必須にするため、`SWITCH_CASE_NOT_FOUND` は通常発生しないが、将来 `default` なしの拡張を扱うために予約する。
+
+`Switch` の `Default` 未定義と `case` 重複は定義時エラーとし、workflow 実行結果のエラーコードには変換しない。
 
 明示的な厳格指定で NuGet ロックファイルが必要な workflow root に存在しない場合は `SCRIPT_NUGET_LOCK_MISSING` とする。
 
@@ -1986,7 +2272,13 @@ timeout が発生した場合、対象 Step の trace は `ExecutionTraceStepSta
 
 timeout または外部キャンセルの後に実行しなかった後続 Step は trace に追加しない。
 
-`TimedOut`、`Canceled`、`Skipped` などの trace 状態は追加しない。
+`ExecutionTraceStepStatus` には `Succeeded`、`Failed`、`Skipped` を持たせる。`TimedOut` と `Canceled` は trace 状態としては追加せず、`Failed` と `ErrorCode` で表す。
+
+`RunIf` false と `TapIf` false は workflow 失敗ではないが、対象実行単位の trace を `Skipped` として記録する。`RunIf` false では `fallback` 値を現在値にし、その `fallback` 値に対する `Produce` や `StoreAs` は通常どおり実行できる。`RunIf` false の `Produce` または `StoreAs` が明示的に trace 保存を指定している場合、その値は `Skipped` trace の `ProducedValues` に保存する。
+
+`TapIf` false は現在値を変更せず、直後の `Produce` または `StoreAs` が明示的に trace 保存を指定している場合は、元の現在値から生成した値を `Skipped` trace の `ProducedValues` に保存する。
+
+`If` と `Switch` の制御単位自体は、選択された分岐の実行が成功した場合に `Succeeded` として扱う。未選択分岐内の実行単位は trace に追加しない。
 
 Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは値生成処理を実行しないため、当該 trace の `ProducedValues` は空である。
 
@@ -2010,6 +2302,13 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - `IAsyncStep<TOut>.ExecuteAsync(StepInput input, CancellationToken cancellationToken)`
 - 非同期 Step 登録 API
 - 非同期ワークフロー実行 API
+- `Lambda Step`
+- `RunIf`
+- `TapIf`
+- `If`
+- `Switch`
+- `BranchBuilder`
+- `SwitchCaseBuilder`
 - `StepInput` の型付き、名前付き取得
 - `StepContext` の共有値保持
 - workflow config ファイルパス、engine config ファイルパス、Config override の `EngineArguments` 格納
@@ -2060,8 +2359,8 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - Step 専用 Config 引数
 - Step 間の自動依存解決
 - 並列実行
-- 分岐実行
-- 統合実行
+- 分岐の並列実行
+- 分岐結果の暗黙統合
 - 未信頼 `.csx` の安全な実行
 - 任意の複数 `--workflow-config` 指定
 - 任意の複数 `--engine-config` 指定
@@ -2076,6 +2375,8 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - Step 別 retry 方針
 - retry 待機時間制御
 - retry の例外型による絞り込み
+- 空分岐
+- `WithCriteria` 型の単純 `skip`
 - 実行中 Step の強制停止
 - workflow 全体 timeout
 - timeout またはキャンセル専用の trace 状態
@@ -2095,7 +2396,7 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 ・上流出力を自動的に下流入力へ変換すること
 ・Config を Step 専用引数または Step 型プロパティへ自動注入すること
 ・並列実行すること
-・分岐、統合を逐次実行モデルに含めること
+・分岐の並列実行や暗黙統合を逐次実行モデルに含めること
 ```
 
 ---
@@ -2143,7 +2444,7 @@ retry は以下を採用する。
 - `Retry = null` または `MaxAttempts <= 1` は retry なしとする
 - `MaxAttempts` は初回を含む最大試行回数とする
 - retry は全 Step 一律の指定に限定する
-- retry 対象は Step 本体の通常例外だけとする
+- retry 対象は通常 Step、`Lambda Step`、`RunIf`、`TapIf` の単一実行単位本体の通常例外だけとする
 - timeout と外部キャンセルは retry 対象外とする
 - timeout と外部キャンセルの両方が観測される場合は外部キャンセルを優先する
 - `Produce`、`StoreAs`、`Discard` の失敗は retry 対象外とする
@@ -2276,7 +2577,25 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 
 `TRACE_SERIALIZATION_FAILED` は trace 外部保存や厳格動作用として残し、既定 workflow 失敗には使わない。
 
-### 21.6 csx 依存の再現性
+### 21.6 条件付き実行
+
+条件付き実行では、連鎖呼び出しの型と実行時の値がずれないことを最優先する。
+
+`RunIf<TStep, TNext>` は false 時の `fallback` を必須にし、`RunIf<TStep>` は現在の `TOut` を `fallback` として扱う省略 API にする。`TapIf<TStep>` は副作用専用であり、`Unit` を返す Step だけを許可して現在値を変更しない。
+
+`If<TNext>` の `then` 分岐と `else` 分岐、`Switch<TCase, TNext>` の `case` 分岐と `default` 分岐は同じ `TNext` を返す。`Switch` は `Default` を必須にし、`case` 値の重複を定義時に失敗させる。
+
+`BranchBuilder<TOut>` は分岐内の部分的な連鎖呼び出しを作るための構築 API であり、分岐内実行単位の Config 宣言も Entry の実行前読み込みと検証対象に含める。`SwitchCaseBuilder<TIn, TCase, TOut>` は `case` と `default` の登録、重複検出、`default` 必須契約を担う。
+
+`RunIf` と `TapIf` の `WithConfig` は、条件判定や `fallback` 評価より前に読み込まれて `StepContext` へ登録される。分岐内 `WithConfig` も、選択されるかどうかにかかわらず実行前 Config 検証の対象に含める。
+
+`RunIf` false と `TapIf` false は `ExecutionTraceStepStatus.Skipped` として trace に記録する。`If` と `Switch` の未選択分岐は trace に出さない。
+
+retry と timeout は通常 Step、`Lambda Step`、`RunIf`、`TapIf` に適用する。`If` と `Switch` 全体は retry 単位にせず、選択された分岐内の実行単位ごとに適用する。
+
+初期実装では空分岐を禁止する。値を変えずに通す場合は、`Lambda Step` などで明示的な `passthrough` を定義する。
+
+### 21.7 csx 依存の再現性
 
 NuGet 参照の再現性は、利用者が必要に応じて置く `devo6.nuget.lock.yaml` で扱う。
 
@@ -2298,7 +2617,7 @@ NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解�
 
 必要に応じてローカルの NuGet 参照元を使う追加検証を用意するが、通常の `dotnet test` の前提にはしない。
 
-### 21.7 Step 名の名前空間化
+### 21.8 Step 名の名前空間化
 
 Entry として公開される `CompositeStep` は短い名前と任意の名前空間名を持つ。
 
@@ -2349,6 +2668,7 @@ StepInput は可変長の型付き・名前付き入力集合である。
 StepContext は StepInput に自動で含まれる。
 Config は StepContext に置く。
 上流 Step の結果を下流に渡す場合は Produce で明示する。
+条件付き実行は `fallback` と同一戻り値型の分岐により型安全性を保つ。
 Entry の公開名は CompositeStep の完全修飾名として扱う。
 エンジンは Step 間の接続を自動推論しない。
 ```
@@ -2358,6 +2678,7 @@ Entry の公開名は CompositeStep の完全修飾名として扱う。
 - Step の疎結合
 - Config と実行時データの統一的な扱い
 - 上流出力の一部だけを下流へ渡す明示性
+- 条件付き実行と現在値型の一貫性
 - Flow/Step 概念の一本化
 - `.csx` での実用的な書き心地
 - `Dotnet.Script.Core` による NuGet / 外部 `.csx` 解決
