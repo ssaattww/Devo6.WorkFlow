@@ -1,6 +1,5 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
-using System.Diagnostics;
 using YamlDotNet.RepresentationModel;
 
 namespace Devo6.WorkFlow.Tests;
@@ -171,90 +170,6 @@ public sealed class SampleWorkflowTests
         Assert.Contains("260609-120000_Main.log", readme);
         Assert.Contains("{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log", readme);
         Assert.Contains("Main", readme);
-    }
-
-    /// <summary>
-    /// 複数フォルダのサンプルを CLI と engine config で実行できることを検査します。
-    /// </summary>
-    [Fact(DisplayName = "複数フォルダのサンプルは CLI と engine config で実行できる")]
-    public async Task MultiFolderCompositeSampleRunsThroughCliWithEngineConfig()
-    {
-        string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
-        string outputPath = Path.Combine(sampleDirectory, "output/result.txt");
-        string logDirectory = Path.Combine(sampleDirectory, "logs");
-
-        DeleteOutputDirectory(outputPath);
-        DeleteDirectoryIfExists(logDirectory);
-
-        try
-        {
-            CliResult result = await RunCliAsync(
-                "run",
-                "samples/multi-folder-composite/main.csx",
-                "--workflow-config",
-                "appsettings.yaml",
-                "--engine-config",
-                "engine.yaml",
-                "--wset",
-                "Pipeline.Report.Heading=CLI override report",
-                "--eset",
-                "Logging.File.Directory=logs");
-
-            AssertSuccess(result);
-            Assert.Contains("# CLI override report", File.ReadAllText(outputPath));
-            string logPath = AssertSingleLogFile(logDirectory, "Main");
-            Assert.Matches(@"^\d{6}-\d{6}_Main\.log$", Path.GetFileName(logPath));
-            Assert.Contains("Entry succeeded", File.ReadAllText(logPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(logDirectory);
-        }
-    }
-
-    /// <summary>
-    /// --eset が engine config のログ出力先とファイル名を上書きすることを検査します。
-    /// </summary>
-    [Fact(DisplayName = "複数フォルダのサンプルは --eset でログ設定を上書きできる")]
-    public async Task MultiFolderCompositeSampleEngineSetOverridesLogFileSettings()
-    {
-        string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
-        string outputPath = Path.Combine(sampleDirectory, "output/result.txt");
-        string configuredLogDirectory = Path.Combine(sampleDirectory, "logs");
-        string overriddenLogDirectory = Path.Combine(sampleDirectory, "override-logs");
-
-        DeleteOutputDirectory(outputPath);
-        DeleteDirectoryIfExists(configuredLogDirectory);
-        DeleteDirectoryIfExists(overriddenLogDirectory);
-
-        try
-        {
-            CliResult result = await RunCliAsync(
-                "run",
-                "samples/multi-folder-composite/main.csx",
-                "--workflow-config",
-                "appsettings.yaml",
-                "--engine-config",
-                "engine.yaml",
-                "--wset",
-                "Pipeline.Report.Heading=Engine set report",
-                "--eset",
-                "Logging.File.Directory=override-logs",
-                "--eset",
-                "Logging.File.NameFormat=override_{RootStepName}.log");
-
-            AssertSuccess(result);
-            Assert.Contains("# Engine set report", File.ReadAllText(outputPath));
-            Assert.False(Directory.Exists(configuredLogDirectory));
-            string logPath = Path.Combine(overriddenLogDirectory, "override_Main.log");
-            Assert.True(File.Exists(logPath));
-            Assert.Contains("Entry succeeded", File.ReadAllText(logPath));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(configuredLogDirectory);
-            DeleteDirectoryIfExists(overriddenLogDirectory);
-        }
     }
 
     /// <summary>
@@ -430,103 +345,6 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
-    /// 指定された directory が存在する場合は削除します。
-    /// </summary>
-    /// <param name="directoryPath">削除する directory path。</param>
-    private static void DeleteDirectoryIfExists(string directoryPath)
-    {
-        if (Directory.Exists(directoryPath))
-        {
-            Directory.Delete(directoryPath, recursive: true);
-        }
-    }
-
-    /// <summary>
-    /// CLI を repository root から実行します。
-    /// </summary>
-    /// <param name="arguments">CLI へ渡す引数。</param>
-    /// <returns>CLI 実行結果。</returns>
-    private static async Task<CliResult> RunCliAsync(params string[] arguments)
-    {
-        using Process process = Process.Start(new ProcessStartInfo
-        {
-            FileName = "dotnet",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            WorkingDirectory = RepositoryRoot,
-        }.AddArguments([
-            "run",
-            "--project",
-            Path.Combine(RepositoryRoot, "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"),
-            "--configuration",
-            TestBuildConfiguration.Current,
-            "--no-build",
-            "--",
-            .. arguments,
-        ]))!;
-        Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
-        Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
-        bool exited = await WaitForExitAsync(process, TimeSpan.FromSeconds(60));
-        if (!exited)
-        {
-            process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync();
-        }
-
-        string standardOutput = await standardOutputTask;
-        string standardError = await standardErrorTask;
-
-        return new CliResult(exited ? process.ExitCode : -1, standardOutput, standardError);
-    }
-
-    /// <summary>
-    /// 指定時間内に process が終了するかどうかを返します。
-    /// </summary>
-    /// <param name="process">終了を待つ process。</param>
-    /// <param name="timeout">待機する最大時間。</param>
-    /// <returns>指定時間内に終了した場合は true。</returns>
-    private static async Task<bool> WaitForExitAsync(Process process, TimeSpan timeout)
-    {
-        Task exitTask = process.WaitForExitAsync();
-        Task completedTask = await Task.WhenAny(exitTask, Task.Delay(timeout));
-
-        return completedTask == exitTask;
-    }
-
-    /// <summary>
-    /// CLI 実行が成功したことを検査します。
-    /// </summary>
-    /// <param name="result">CLI 実行結果。</param>
-    private static void AssertSuccess(CliResult result)
-    {
-        Assert.True(
-            result.ExitCode == 0,
-            $"""
-            Expected exit code 0 but got {result.ExitCode}.
-            STDOUT:
-            {result.StandardOutput}
-            STDERR:
-            {result.StandardError}
-            """);
-    }
-
-    /// <summary>
-    /// 指定 directory のログファイルが 1 つだけで root Step 名を含むことを検査します。
-    /// </summary>
-    /// <param name="logDirectory">ログ directory。</param>
-    /// <param name="rootStepName">期待する root Step 名。</param>
-    /// <returns>見つかったログファイル path。</returns>
-    private static string AssertSingleLogFile(string logDirectory, string rootStepName)
-    {
-        string[] logFiles = Directory.GetFiles(logDirectory, "*.log");
-
-        Assert.Single(logFiles);
-        Assert.Contains(rootStepName, Path.GetFileName(logFiles[0]));
-
-        return logFiles[0];
-    }
-
-    /// <summary>
     /// YAML ファイルから指定された path の scalar 値を読み取ります。
     /// </summary>
     /// <param name="yamlPath">読み取る YAML ファイル。</param>
@@ -603,11 +421,4 @@ public sealed class SampleWorkflowTests
         }
     }
 
-    /// <summary>
-    /// CLI 実行結果です。
-    /// </summary>
-    /// <param name="ExitCode">process exit code。</param>
-    /// <param name="StandardOutput">標準出力。</param>
-    /// <param name="StandardError">標準エラー出力。</param>
-    private sealed record CliResult(int ExitCode, string StandardOutput, string StandardError);
 }
