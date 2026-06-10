@@ -74,6 +74,18 @@ public sealed class CompositeStepDefinition
     }
 
     /// <summary>
+    /// 最初の同期 Lambda Step を登録します。
+    /// </summary>
+    /// <typeparam name="TOut">Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">StepInput から出力値を作る処理。</param>
+    /// <returns>拡張または実行できる composite step。</returns>
+    public CompositeStep<TOut> Run<TOut>(string name, Func<StepInput, TOut> body)
+    {
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, [StepRegistration.CreateLambda(name, body)]);
+    }
+
+    /// <summary>
     /// 最初の非同期 Step を登録します。
     /// </summary>
     /// <typeparam name="TStep">実行する非同期 Step 型。</typeparam>
@@ -83,6 +95,18 @@ public sealed class CompositeStepDefinition
         where TStep : IAsyncStep<TOut>, new()
     {
         return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, [StepRegistration.CreateAsync<TStep, TOut>()]);
+    }
+
+    /// <summary>
+    /// 最初の非同期 Lambda Step を登録します。
+    /// </summary>
+    /// <typeparam name="TOut">Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">StepInput と cancellation token から出力値を作る非同期処理。</param>
+    /// <returns>拡張または実行できる composite step。</returns>
+    public CompositeStep<TOut> RunAsync<TOut>(string name, Func<StepInput, CancellationToken, Task<TOut>> body)
+    {
+        return new CompositeStep<TOut>(Name, NamespaceName, QualifiedName, [StepRegistration.CreateLambdaAsync(name, body)]);
     }
 
     /// <summary>
@@ -174,6 +198,38 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     }
 
     /// <summary>
+    /// 現在値を受け取る同期 Lambda Step を末尾へ追加します。
+    /// </summary>
+    /// <typeparam name="TNext">追加した Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">現在値から次の出力値を作る処理。</param>
+    /// <returns>末尾 Step の出力型を更新した composite step。</returns>
+    public CompositeStep<TNext> Run<TNext>(string name, Func<TOut, TNext> body)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+
+        return Run(name, (current, input) => body(current));
+    }
+
+    /// <summary>
+    /// 現在値と StepInput を受け取る同期 Lambda Step を末尾へ追加します。
+    /// </summary>
+    /// <typeparam name="TNext">追加した Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">現在値と StepInput から次の出力値を作る処理。</param>
+    /// <returns>末尾 Step の出力型を更新した composite step。</returns>
+    public CompositeStep<TNext> Run<TNext>(string name, Func<TOut, StepInput, TNext> body)
+    {
+        return new CompositeStep<TNext>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(StepRegistration.CreateLambda(name, body)),
+            ConfigType,
+            StepConfigRegistrations);
+    }
+
+    /// <summary>
     /// 非同期 Step を末尾へ追加します。
     /// </summary>
     /// <typeparam name="TStep">追加する非同期 Step 型。</typeparam>
@@ -187,6 +243,24 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             NamespaceName,
             QualifiedName,
             Append(StepRegistration.CreateAsync<TStep, TNext>()),
+            ConfigType,
+            StepConfigRegistrations);
+    }
+
+    /// <summary>
+    /// 現在値、StepInput、cancellation token を受け取る非同期 Lambda Step を末尾へ追加します。
+    /// </summary>
+    /// <typeparam name="TNext">追加した Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">現在値、StepInput、cancellation token から次の出力値を作る非同期処理。</param>
+    /// <returns>末尾 Step の出力型を更新した composite step。</returns>
+    public CompositeStep<TNext> RunAsync<TNext>(string name, Func<TOut, StepInput, CancellationToken, Task<TNext>> body)
+    {
+        return new CompositeStep<TNext>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(StepRegistration.CreateLambdaAsync(name, body)),
             ConfigType,
             StepConfigRegistrations);
     }
@@ -337,7 +411,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
         foreach (StepRegistration step in steps)
         {
-            currentValue = await step.ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
+            currentValue = await step.ExecuteAsync(input, currentValue, cancellationToken).ConfigureAwait(false);
             step.Produce(input, currentValue);
         }
 
@@ -417,7 +491,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                 try
                 {
                     SetStepConfig(context, options.StepConfigs, stepIndex);
-                    currentValue = await step.ExecuteAsync(input, stepCancellation.Token).ConfigureAwait(false);
+                    currentValue = await step.ExecuteAsync(input, currentValue, stepCancellation.Token).ConfigureAwait(false);
 
                     StepCancellationFailure? cancellationFailure = DetectCancellationFailure(
                         step,
@@ -865,7 +939,7 @@ internal sealed class StepRegistration
 {
     private readonly string name;
     private readonly Type stepType;
-    private readonly Func<StepInput, CancellationToken, Task<object?>> executeAsync;
+    private readonly Func<StepInput, object?, CancellationToken, Task<object?>> executeAsync;
     private readonly IReadOnlyList<StepValueProducer> producers;
 
     /// <summary>
@@ -878,9 +952,14 @@ internal sealed class StepRegistration
     private StepRegistration(
         string name,
         Type stepType,
-        Func<StepInput, CancellationToken, Task<object?>> executeAsync,
+        Func<StepInput, object?, CancellationToken, Task<object?>> executeAsync,
         IReadOnlyList<StepValueProducer> producers)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(stepType);
+        ArgumentNullException.ThrowIfNull(executeAsync);
+        ArgumentNullException.ThrowIfNull(producers);
+
         this.name = name;
         this.stepType = stepType;
         this.executeAsync = executeAsync;
@@ -909,7 +988,7 @@ internal sealed class StepRegistration
         return new StepRegistration(
             typeof(TStep).Name,
             typeof(TStep),
-            (input, cancellationToken) =>
+            (input, currentValue, cancellationToken) =>
             {
                 return Task.FromResult<object?>(new TStep().Execute(input));
             },
@@ -928,7 +1007,90 @@ internal sealed class StepRegistration
         return new StepRegistration(
             typeof(TStep).Name,
             typeof(TStep),
-            async (input, cancellationToken) => await new TStep().ExecuteAsync(input, cancellationToken).ConfigureAwait(false),
+            async (input, currentValue, cancellationToken) => await new TStep().ExecuteAsync(input, cancellationToken).ConfigureAwait(false),
+            []);
+    }
+
+    /// <summary>
+    /// 最初に実行する同期 Lambda Step の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TOut">Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">StepInput から出力値を作る処理。</param>
+    /// <returns>作成した Step 登録情報。</returns>
+    public static StepRegistration CreateLambda<TOut>(string name, Func<StepInput, TOut> body)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(body);
+
+        return new StepRegistration(
+            name,
+            typeof(LambdaStepRegistrationMarker),
+            (input, currentValue, cancellationToken) => Task.FromResult<object?>(body(input)),
+            []);
+    }
+
+    /// <summary>
+    /// 現在値を受け取る同期 Lambda Step の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TCurrent">Lambda Step へ渡す現在値の型。</typeparam>
+    /// <typeparam name="TNext">Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">現在値と StepInput から次の出力値を作る処理。</param>
+    /// <returns>作成した Step 登録情報。</returns>
+    public static StepRegistration CreateLambda<TCurrent, TNext>(string name, Func<TCurrent, StepInput, TNext> body)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(body);
+
+        return new StepRegistration(
+            name,
+            typeof(LambdaStepRegistrationMarker),
+            (input, currentValue, cancellationToken) => Task.FromResult<object?>(body((TCurrent)currentValue!, input)),
+            []);
+    }
+
+    /// <summary>
+    /// 最初に実行する非同期 Lambda Step の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TOut">Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">StepInput と cancellation token から出力値を作る非同期処理。</param>
+    /// <returns>作成した Step 登録情報。</returns>
+    public static StepRegistration CreateLambdaAsync<TOut>(
+        string name,
+        Func<StepInput, CancellationToken, Task<TOut>> body)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(body);
+
+        return new StepRegistration(
+            name,
+            typeof(LambdaStepRegistrationMarker),
+            async (input, currentValue, cancellationToken) => await body(input, cancellationToken).ConfigureAwait(false),
+            []);
+    }
+
+    /// <summary>
+    /// 現在値を受け取る非同期 Lambda Step の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TCurrent">Lambda Step へ渡す現在値の型。</typeparam>
+    /// <typeparam name="TNext">Lambda Step が返す出力型。</typeparam>
+    /// <param name="name">trace と log に記録する Step 名。</param>
+    /// <param name="body">現在値、StepInput、cancellation token から次の出力値を作る非同期処理。</param>
+    /// <returns>作成した Step 登録情報。</returns>
+    public static StepRegistration CreateLambdaAsync<TCurrent, TNext>(
+        string name,
+        Func<TCurrent, StepInput, CancellationToken, Task<TNext>> body)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(body);
+
+        return new StepRegistration(
+            name,
+            typeof(LambdaStepRegistrationMarker),
+            async (input, currentValue, cancellationToken) =>
+                await body((TCurrent)currentValue!, input, cancellationToken).ConfigureAwait(false),
             []);
     }
 
@@ -936,11 +1098,12 @@ internal sealed class StepRegistration
     /// 登録済み Step を実行します。
     /// </summary>
     /// <param name="input">Step へ渡す入力値。</param>
+    /// <param name="currentValue">直前の Step が返した現在値。</param>
     /// <param name="cancellationToken">Step へ渡す cancellation token。</param>
     /// <returns>Step が返した出力値。</returns>
-    public Task<object?> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
+    public Task<object?> ExecuteAsync(StepInput input, object? currentValue, CancellationToken cancellationToken)
     {
-        return executeAsync(input, cancellationToken);
+        return executeAsync(input, currentValue, cancellationToken);
     }
 
     /// <summary>
@@ -993,6 +1156,19 @@ internal sealed class StepRegistration
         }
 
         return producedValues;
+    }
+}
+
+/// <summary>
+/// Lambda Step の登録単位 Config metadata で使う内部 Step 型を表します。
+/// </summary>
+internal sealed class LambdaStepRegistrationMarker
+{
+    /// <summary>
+    /// 外部から生成しない marker 型として初期化を隠します。
+    /// </summary>
+    private LambdaStepRegistrationMarker()
+    {
     }
 }
 
