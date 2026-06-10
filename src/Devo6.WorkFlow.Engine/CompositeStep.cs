@@ -266,6 +266,226 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     }
 
     /// <summary>
+    /// 条件が true の場合だけ同期 Step を実行し、false の場合は代替値を現在値にします。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する同期 Step 型。</typeparam>
+    /// <typeparam name="TNext">条件付き実行後の現在値型。</typeparam>
+    /// <param name="when">現在値から実行可否を判定する処理。</param>
+    /// <param name="otherwise">条件が false の場合に代替値を作る処理。</param>
+    /// <returns>末尾 Step の出力型を更新した composite step。</returns>
+    public CompositeStep<TNext> RunIf<TStep, TNext>(Func<TOut, bool> when, Func<TOut, TNext> otherwise)
+        where TStep : IStep<TNext>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+        ArgumentNullException.ThrowIfNull(otherwise);
+
+        return RunIf<TStep, TNext>((current, input) => when(current), (current, input) => otherwise(current));
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ同期 Step を実行し、false の場合は StepInput を使った代替値を現在値にします。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する同期 Step 型。</typeparam>
+    /// <typeparam name="TNext">条件付き実行後の現在値型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <param name="otherwise">条件が false の場合に現在値と StepInput から代替値を作る処理。</param>
+    /// <returns>末尾 Step の出力型を更新した composite step。</returns>
+    public CompositeStep<TNext> RunIf<TStep, TNext>(Func<TOut, StepInput, bool> when, Func<TOut, StepInput, TNext> otherwise)
+        where TStep : IStep<TNext>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+        ArgumentNullException.ThrowIfNull(otherwise);
+
+        return new CompositeStep<TNext>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(StepRegistration.CreateRunIf<TStep, TOut, TNext>(when, otherwise)),
+            ConfigType,
+            StepConfigRegistrations);
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ非同期 Step を実行し、false の場合は代替値を現在値にします。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Step 型。</typeparam>
+    /// <typeparam name="TNext">条件付き実行後の現在値型。</typeparam>
+    /// <param name="when">現在値から実行可否を判定する処理。</param>
+    /// <param name="otherwise">条件が false の場合に代替値を作る処理。</param>
+    /// <returns>末尾 Step の出力型を更新した composite step。</returns>
+    public CompositeStep<TNext> RunIfAsync<TStep, TNext>(Func<TOut, bool> when, Func<TOut, TNext> otherwise)
+        where TStep : IAsyncStep<TNext>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+        ArgumentNullException.ThrowIfNull(otherwise);
+
+        return RunIfAsync<TStep, TNext>((current, input) => when(current), (current, input) => otherwise(current));
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ非同期 Step を実行し、false の場合は StepInput を使った代替値を現在値にします。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Step 型。</typeparam>
+    /// <typeparam name="TNext">条件付き実行後の現在値型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <param name="otherwise">条件が false の場合に現在値と StepInput から代替値を作る処理。</param>
+    /// <returns>末尾 Step の出力型を更新した composite step。</returns>
+    public CompositeStep<TNext> RunIfAsync<TStep, TNext>(Func<TOut, StepInput, bool> when, Func<TOut, StepInput, TNext> otherwise)
+        where TStep : IAsyncStep<TNext>, new()
+    {
+        ArgumentNullException.ThrowIfNull(otherwise);
+
+        return RunIfAsync<TStep, TNext>(
+            when,
+            (current, input, cancellationToken) => Task.FromResult(otherwise(current, input)));
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ非同期 Step を実行し、false の場合は非同期代替値を現在値にします。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Step 型。</typeparam>
+    /// <typeparam name="TNext">条件付き実行後の現在値型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <param name="otherwiseAsync">条件が false の場合に代替値を作る非同期処理。</param>
+    /// <returns>末尾 Step の出力型を更新した composite step。</returns>
+    public CompositeStep<TNext> RunIfAsync<TStep, TNext>(
+        Func<TOut, StepInput, bool> when,
+        Func<TOut, StepInput, CancellationToken, Task<TNext>> otherwiseAsync)
+        where TStep : IAsyncStep<TNext>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+        ArgumentNullException.ThrowIfNull(otherwiseAsync);
+
+        return new CompositeStep<TNext>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(StepRegistration.CreateRunIfAsync<TStep, TOut, TNext>(when, otherwiseAsync)),
+            ConfigType,
+            StepConfigRegistrations);
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ同一型同期 Step を実行し、false の場合は現在値を維持します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する同期 Step 型。</typeparam>
+    /// <param name="when">現在値から実行可否を判定する処理。</param>
+    /// <returns>現在値型を維持する composite step。</returns>
+    public CompositeStep<TOut> RunIf<TStep>(Func<TOut, bool> when)
+        where TStep : IStep<TOut>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+
+        return RunIf<TStep>((current, input) => when(current));
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ同一型同期 Step を実行し、false の場合は現在値を維持します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する同期 Step 型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <returns>現在値型を維持する composite step。</returns>
+    public CompositeStep<TOut> RunIf<TStep>(Func<TOut, StepInput, bool> when)
+        where TStep : IStep<TOut>, new()
+    {
+        return RunIf<TStep, TOut>(when, (current, input) => current);
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ同一型非同期 Step を実行し、false の場合は現在値を維持します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Step 型。</typeparam>
+    /// <param name="when">現在値から実行可否を判定する処理。</param>
+    /// <returns>現在値型を維持する composite step。</returns>
+    public CompositeStep<TOut> RunIfAsync<TStep>(Func<TOut, bool> when)
+        where TStep : IAsyncStep<TOut>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+
+        return RunIfAsync<TStep>((current, input) => when(current));
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ同一型非同期 Step を実行し、false の場合は現在値を維持します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Step 型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <returns>現在値型を維持する composite step。</returns>
+    public CompositeStep<TOut> RunIfAsync<TStep>(Func<TOut, StepInput, bool> when)
+        where TStep : IAsyncStep<TOut>, new()
+    {
+        return RunIfAsync<TStep, TOut>(when, (current, input) => current);
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ同期 Unit Step を実行し、現在値は維持します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する同期 Unit Step 型。</typeparam>
+    /// <param name="when">現在値から実行可否を判定する処理。</param>
+    /// <returns>現在値型を維持する composite step。</returns>
+    public CompositeStep<TOut> TapIf<TStep>(Func<TOut, bool> when)
+        where TStep : IStep<Unit>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+
+        return TapIf<TStep>((current, input) => when(current));
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ同期 Unit Step を実行し、現在値は維持します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する同期 Unit Step 型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <returns>現在値型を維持する composite step。</returns>
+    public CompositeStep<TOut> TapIf<TStep>(Func<TOut, StepInput, bool> when)
+        where TStep : IStep<Unit>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+
+        return new CompositeStep<TOut>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(StepRegistration.CreateTapIf<TStep, TOut>(when)),
+            ConfigType,
+            StepConfigRegistrations);
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ非同期 Unit Step を実行し、現在値は維持します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Unit Step 型。</typeparam>
+    /// <param name="when">現在値から実行可否を判定する処理。</param>
+    /// <returns>現在値型を維持する composite step。</returns>
+    public CompositeStep<TOut> TapIfAsync<TStep>(Func<TOut, bool> when)
+        where TStep : IAsyncStep<Unit>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+
+        return TapIfAsync<TStep>((current, input) => when(current));
+    }
+
+    /// <summary>
+    /// 条件が true の場合だけ非同期 Unit Step を実行し、現在値は維持します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Unit Step 型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <returns>現在値型を維持する composite step。</returns>
+    public CompositeStep<TOut> TapIfAsync<TStep>(Func<TOut, StepInput, bool> when)
+        where TStep : IAsyncStep<Unit>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+
+        return new CompositeStep<TOut>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(StepRegistration.CreateTapIfAsync<TStep, TOut>(when)),
+            ConfigType,
+            StepConfigRegistrations);
+    }
+
+    /// <summary>
     /// Entry が要求する標準 Config 型をメタ情報として設定します。
     /// </summary>
     /// <typeparam name="TConfig">StepContext に登録する標準 Config 型。</typeparam>
@@ -411,7 +631,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
         foreach (StepRegistration step in steps)
         {
-            currentValue = await step.ExecuteAsync(input, currentValue, cancellationToken).ConfigureAwait(false);
+            StepExecutionResult result = await step.ExecuteAsync(input, currentValue, cancellationToken).ConfigureAwait(false);
+            currentValue = result.Value;
             step.Produce(input, currentValue);
         }
 
@@ -473,6 +694,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             StepRegistration step = steps[stepIndex];
             var succeededAttempt = 1;
             Stopwatch? succeededAttemptStopwatch = null;
+            ExecutionTraceStepStatus succeededStatus = ExecutionTraceStepStatus.Succeeded;
 
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
@@ -491,7 +713,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                 try
                 {
                     SetStepConfig(context, options.StepConfigs, stepIndex);
-                    currentValue = await step.ExecuteAsync(input, currentValue, stepCancellation.Token).ConfigureAwait(false);
+                    StepExecutionResult stepResult = await step.ExecuteAsync(input, currentValue, stepCancellation.Token).ConfigureAwait(false);
+                    currentValue = stepResult.Value;
 
                     StepCancellationFailure? cancellationFailure = DetectCancellationFailure(
                         step,
@@ -512,6 +735,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
                     succeededAttempt = attempt;
                     succeededAttemptStopwatch = stopwatch;
+                    succeededStatus = stepResult.Status;
                     break;
                 }
                 catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
@@ -537,6 +761,35 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                         attempt,
                         StepCancellationFailure.TimedOut(step.Name, stepCancellation.Timeout!.Value, exception.Message),
                         engineLogger);
+                }
+                catch (StepConditionEvaluationException exception)
+                {
+                    stopwatch.Stop();
+                    traceSteps.Add(new ExecutionTraceStep(
+                        step.Name,
+                        ExecutionTraceStepStatus.Failed,
+                        stopwatch.Elapsed,
+                        WorkflowErrorCodes.ConditionEvaluationFailed,
+                        attempt));
+                    engineLogger.LogError(
+                        exception.InnerException,
+                        "Step condition failed on attempt {Attempt} with error code {ErrorCode}",
+                        attempt,
+                        WorkflowErrorCodes.ConditionEvaluationFailed);
+                    engineLogger.LogError(
+                        exception.InnerException,
+                        "Entry failed on attempt {Attempt} with error code {ErrorCode}",
+                        attempt,
+                        WorkflowErrorCodes.ConditionEvaluationFailed);
+
+                    return new WorkflowResult
+                    {
+                        EntryName = QualifiedName,
+                        Succeeded = false,
+                        ErrorCode = WorkflowErrorCodes.ConditionEvaluationFailed,
+                        ErrorMessage = exception.InnerException?.Message ?? exception.Message,
+                        Trace = new ExecutionTrace(traceSteps),
+                    };
                 }
                 catch (Exception exception)
                 {
@@ -598,12 +851,19 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                 succeededAttemptStopwatch.Stop();
                 traceSteps.Add(new ExecutionTraceStep(
                     step.Name,
-                    ExecutionTraceStepStatus.Succeeded,
+                    succeededStatus,
                     succeededAttemptStopwatch.Elapsed,
                     null,
                     succeededAttempt,
                     producedValues));
-                engineLogger.LogInformation("Step succeeded on attempt {Attempt}", succeededAttempt);
+                if (succeededStatus == ExecutionTraceStepStatus.Skipped)
+                {
+                    engineLogger.LogInformation("Step skipped on attempt {Attempt}", succeededAttempt);
+                }
+                else
+                {
+                    engineLogger.LogInformation("Step succeeded on attempt {Attempt}", succeededAttempt);
+                }
             }
             catch (Exception exception)
             {
@@ -939,7 +1199,7 @@ internal sealed class StepRegistration
 {
     private readonly string name;
     private readonly Type stepType;
-    private readonly Func<StepInput, object?, CancellationToken, Task<object?>> executeAsync;
+    private readonly Func<StepInput, object?, CancellationToken, Task<StepExecutionResult>> executeAsync;
     private readonly IReadOnlyList<StepValueProducer> producers;
 
     /// <summary>
@@ -952,7 +1212,7 @@ internal sealed class StepRegistration
     private StepRegistration(
         string name,
         Type stepType,
-        Func<StepInput, object?, CancellationToken, Task<object?>> executeAsync,
+        Func<StepInput, object?, CancellationToken, Task<StepExecutionResult>> executeAsync,
         IReadOnlyList<StepValueProducer> producers)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -990,7 +1250,7 @@ internal sealed class StepRegistration
             typeof(TStep),
             (input, currentValue, cancellationToken) =>
             {
-                return Task.FromResult<object?>(new TStep().Execute(input));
+                return Task.FromResult(StepExecutionResult.Succeeded(new TStep().Execute(input)));
             },
             []);
     }
@@ -1007,7 +1267,8 @@ internal sealed class StepRegistration
         return new StepRegistration(
             typeof(TStep).Name,
             typeof(TStep),
-            async (input, currentValue, cancellationToken) => await new TStep().ExecuteAsync(input, cancellationToken).ConfigureAwait(false),
+            async (input, currentValue, cancellationToken) =>
+                StepExecutionResult.Succeeded(await new TStep().ExecuteAsync(input, cancellationToken).ConfigureAwait(false)),
             []);
     }
 
@@ -1026,7 +1287,7 @@ internal sealed class StepRegistration
         return new StepRegistration(
             name,
             typeof(LambdaStepRegistrationMarker),
-            (input, currentValue, cancellationToken) => Task.FromResult<object?>(body(input)),
+            (input, currentValue, cancellationToken) => Task.FromResult(StepExecutionResult.Succeeded(body(input))),
             []);
     }
 
@@ -1046,7 +1307,8 @@ internal sealed class StepRegistration
         return new StepRegistration(
             name,
             typeof(LambdaStepRegistrationMarker),
-            (input, currentValue, cancellationToken) => Task.FromResult<object?>(body((TCurrent)currentValue!, input)),
+            (input, currentValue, cancellationToken) =>
+                Task.FromResult(StepExecutionResult.Succeeded(body((TCurrent)currentValue!, input))),
             []);
     }
 
@@ -1067,7 +1329,8 @@ internal sealed class StepRegistration
         return new StepRegistration(
             name,
             typeof(LambdaStepRegistrationMarker),
-            async (input, currentValue, cancellationToken) => await body(input, cancellationToken).ConfigureAwait(false),
+            async (input, currentValue, cancellationToken) =>
+                StepExecutionResult.Succeeded(await body(input, cancellationToken).ConfigureAwait(false)),
             []);
     }
 
@@ -1090,7 +1353,133 @@ internal sealed class StepRegistration
             name,
             typeof(LambdaStepRegistrationMarker),
             async (input, currentValue, cancellationToken) =>
-                await body((TCurrent)currentValue!, input, cancellationToken).ConfigureAwait(false),
+                StepExecutionResult.Succeeded(await body((TCurrent)currentValue!, input, cancellationToken).ConfigureAwait(false)),
+            []);
+    }
+
+    /// <summary>
+    /// 条件付き同期 Step の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する同期 Step 型。</typeparam>
+    /// <typeparam name="TCurrent">条件判定に渡す現在値型。</typeparam>
+    /// <typeparam name="TNext">条件付き実行後の現在値型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <param name="otherwise">条件が false の場合に代替値を作る処理。</param>
+    /// <returns>作成した Step 登録情報。</returns>
+    public static StepRegistration CreateRunIf<TStep, TCurrent, TNext>(
+        Func<TCurrent, StepInput, bool> when,
+        Func<TCurrent, StepInput, TNext> otherwise)
+        where TStep : IStep<TNext>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+        ArgumentNullException.ThrowIfNull(otherwise);
+
+        return new StepRegistration(
+            typeof(TStep).Name,
+            typeof(TStep),
+            (input, currentValue, cancellationToken) =>
+            {
+                TCurrent current = (TCurrent)currentValue!;
+                if (!EvaluateCondition(() => when(current, input)))
+                {
+                    return Task.FromResult(StepExecutionResult.Skipped(otherwise(current, input)));
+                }
+
+                return Task.FromResult(StepExecutionResult.Succeeded(new TStep().Execute(input)));
+            },
+            []);
+    }
+
+    /// <summary>
+    /// 条件付き非同期 Step の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Step 型。</typeparam>
+    /// <typeparam name="TCurrent">条件判定に渡す現在値型。</typeparam>
+    /// <typeparam name="TNext">条件付き実行後の現在値型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <param name="otherwiseAsync">条件が false の場合に代替値を作る非同期処理。</param>
+    /// <returns>作成した Step 登録情報。</returns>
+    public static StepRegistration CreateRunIfAsync<TStep, TCurrent, TNext>(
+        Func<TCurrent, StepInput, bool> when,
+        Func<TCurrent, StepInput, CancellationToken, Task<TNext>> otherwiseAsync)
+        where TStep : IAsyncStep<TNext>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+        ArgumentNullException.ThrowIfNull(otherwiseAsync);
+
+        return new StepRegistration(
+            typeof(TStep).Name,
+            typeof(TStep),
+            async (input, currentValue, cancellationToken) =>
+            {
+                TCurrent current = (TCurrent)currentValue!;
+                if (!EvaluateCondition(() => when(current, input)))
+                {
+                    return StepExecutionResult.Skipped(await otherwiseAsync(current, input, cancellationToken).ConfigureAwait(false));
+                }
+
+                return StepExecutionResult.Succeeded(await new TStep().ExecuteAsync(input, cancellationToken).ConfigureAwait(false));
+            },
+            []);
+    }
+
+    /// <summary>
+    /// 条件付き同期 Unit Step の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する同期 Unit Step 型。</typeparam>
+    /// <typeparam name="TCurrent">条件判定に渡す現在値型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <returns>作成した Step 登録情報。</returns>
+    public static StepRegistration CreateTapIf<TStep, TCurrent>(Func<TCurrent, StepInput, bool> when)
+        where TStep : IStep<Unit>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+
+        return new StepRegistration(
+            typeof(TStep).Name,
+            typeof(TStep),
+            (input, currentValue, cancellationToken) =>
+            {
+                TCurrent current = (TCurrent)currentValue!;
+                if (!EvaluateCondition(() => when(current, input)))
+                {
+                    return Task.FromResult(StepExecutionResult.Skipped(current));
+                }
+
+                new TStep().Execute(input);
+
+                return Task.FromResult(StepExecutionResult.Succeeded(current));
+            },
+            []);
+    }
+
+    /// <summary>
+    /// 条件付き非同期 Unit Step の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TStep">条件が true の場合に実行する非同期 Unit Step 型。</typeparam>
+    /// <typeparam name="TCurrent">条件判定に渡す現在値型。</typeparam>
+    /// <param name="when">現在値と StepInput から実行可否を判定する処理。</param>
+    /// <returns>作成した Step 登録情報。</returns>
+    public static StepRegistration CreateTapIfAsync<TStep, TCurrent>(Func<TCurrent, StepInput, bool> when)
+        where TStep : IAsyncStep<Unit>, new()
+    {
+        ArgumentNullException.ThrowIfNull(when);
+
+        return new StepRegistration(
+            typeof(TStep).Name,
+            typeof(TStep),
+            async (input, currentValue, cancellationToken) =>
+            {
+                TCurrent current = (TCurrent)currentValue!;
+                if (!EvaluateCondition(() => when(current, input)))
+                {
+                    return StepExecutionResult.Skipped(current);
+                }
+
+                await new TStep().ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
+
+                return StepExecutionResult.Succeeded(current);
+            },
             []);
     }
 
@@ -1101,7 +1490,7 @@ internal sealed class StepRegistration
     /// <param name="currentValue">直前の Step が返した現在値。</param>
     /// <param name="cancellationToken">Step へ渡す cancellation token。</param>
     /// <returns>Step が返した出力値。</returns>
-    public Task<object?> ExecuteAsync(StepInput input, object? currentValue, CancellationToken cancellationToken)
+    public Task<StepExecutionResult> ExecuteAsync(StepInput input, object? currentValue, CancellationToken cancellationToken)
     {
         return executeAsync(input, currentValue, cancellationToken);
     }
@@ -1156,6 +1545,85 @@ internal sealed class StepRegistration
         }
 
         return producedValues;
+    }
+
+    /// <summary>
+    /// 条件判定を実行し、例外を条件判定失敗として包みます。
+    /// </summary>
+    /// <param name="condition">実行する条件判定。</param>
+    /// <returns>条件判定の戻り値。</returns>
+    private static bool EvaluateCondition(Func<bool> condition)
+    {
+        try
+        {
+            return condition();
+        }
+        catch (Exception exception)
+        {
+            throw new StepConditionEvaluationException(exception);
+        }
+    }
+}
+
+/// <summary>
+/// Step 実行後の現在値と trace 状態を保持します。
+/// </summary>
+internal sealed class StepExecutionResult
+{
+    /// <summary>
+    /// Step 実行結果を初期化します。
+    /// </summary>
+    /// <param name="value">次の Step へ渡す現在値。</param>
+    /// <param name="status">trace に記録する実行状態。</param>
+    private StepExecutionResult(object? value, ExecutionTraceStepStatus status)
+    {
+        Value = value;
+        Status = status;
+    }
+
+    /// <summary>
+    /// 次の Step へ渡す現在値を取得します。
+    /// </summary>
+    public object? Value { get; }
+
+    /// <summary>
+    /// trace に記録する実行状態を取得します。
+    /// </summary>
+    public ExecutionTraceStepStatus Status { get; }
+
+    /// <summary>
+    /// 成功した Step 実行結果を作成します。
+    /// </summary>
+    /// <param name="value">次の Step へ渡す現在値。</param>
+    /// <returns>成功状態の Step 実行結果。</returns>
+    public static StepExecutionResult Succeeded(object? value)
+    {
+        return new StepExecutionResult(value, ExecutionTraceStepStatus.Succeeded);
+    }
+
+    /// <summary>
+    /// skip した Step 実行結果を作成します。
+    /// </summary>
+    /// <param name="value">次の Step へ渡す現在値。</param>
+    /// <returns>skip 状態の Step 実行結果。</returns>
+    public static StepExecutionResult Skipped(object? value)
+    {
+        return new StepExecutionResult(value, ExecutionTraceStepStatus.Skipped);
+    }
+}
+
+/// <summary>
+/// 条件判定中の例外を engine の条件判定失敗へ変換するために保持します。
+/// </summary>
+internal sealed class StepConditionEvaluationException : Exception
+{
+    /// <summary>
+    /// 元の例外を保持して条件判定失敗例外を作成します。
+    /// </summary>
+    /// <param name="innerException">条件判定中に発生した元の例外。</param>
+    public StepConditionEvaluationException(Exception innerException)
+        : base("Step condition evaluation failed.", innerException)
+    {
     }
 }
 
