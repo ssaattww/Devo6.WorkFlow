@@ -95,6 +95,11 @@ public enum ExecutionTraceStepStatus
     /// Step が workflow 完了前に失敗したことを表します。
     /// </summary>
     Failed,
+
+    /// <summary>
+    /// 条件付き実行で Step 本体を実行しなかったことを表します。
+    /// </summary>
+    Skipped,
 }
 
 /// <summary>

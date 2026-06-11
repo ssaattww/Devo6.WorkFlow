@@ -96,6 +96,11 @@ public static class WorkflowErrorCodes
     public const string StepCanceled = "STEP_CANCELED";
 
     /// <summary>
+    /// 条件付き実行の条件判定が例外により失敗したことを示します。
+    /// </summary>
+    public const string ConditionEvaluationFailed = "CONDITION_EVALUATION_FAILED";
+
+    /// <summary>
     /// execution trace の serialize が失敗したことを示します。
     /// </summary>
     public const string TraceSerializationFailed = "TRACE_SERIALIZATION_FAILED";
