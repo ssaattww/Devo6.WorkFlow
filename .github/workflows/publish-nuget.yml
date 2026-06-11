@@ -58,23 +58,11 @@ jobs:
         shell: bash
         run: |
           project="${{ steps.projects.outputs.cli_path }}"
-          manual_version="${{ inputs.package_version || '' }}"
+          manual_version="${{ github.event.inputs.package_version }}"
           event_name="${{ github.event_name }}"
           ref_name="${{ github.ref_name }}"
           release_tag="${{ github.event.release.tag_name }}"
           release_is_prerelease="${{ github.event.release.prerelease }}"
-
-          read_project_version() {
-            local value
-            value=$(grep -oPm1 '(?<=<VersionPrefix>)[^<]+' "$project" || true)
-            if [[ -z "$value" ]]; then
-              value=$(grep -oPm1 '(?<=<Version>)[^<]+' "$project" || true)
-            fi
-            if [[ -z "$value" ]]; then
-              value="0.1.0"
-            fi
-            echo "${value%%-*}"
-          }
 
           if [[ -n "$manual_version" ]]; then
             package_version="$manual_version"
@@ -94,15 +82,42 @@ jobs:
               package_version="$base_version"
             fi
           elif [[ "$event_name" == "push" && "$ref_name" == "master" ]]; then
-            version_prefix=$(read_project_version)
-            package_version="${version_prefix}-ci.${GITHUB_RUN_NUMBER}"
+            version_prefix=$(grep -oPm1 '(?<=<VersionPrefix>)[^<]+' "$project" || true)
+            if [[ -z "$version_prefix" ]]; then
+              version_prefix="0.1.0"
+            fi
+
+            latest_stable_tag=$(git tag --sort=-v:refname | grep -E '^(v)?[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+            if [[ -n "$latest_stable_tag" ]]; then
+              base_version="${latest_stable_tag#v}"
+              commits_since_base=$(git rev-list --count "${latest_stable_tag}..HEAD")
+            else
+              base_version="$version_prefix"
+              commits_since_base=$(git rev-list --count HEAD)
+            fi
+
+            if [[ ! "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid base version format: $base_version"
+              exit 1
+            fi
+
+            IFS='.' read -r major minor patch <<< "$base_version"
+            if [[ "$commits_since_base" -lt 1 ]]; then
+              commits_since_base=1
+            fi
+
+            next_patch=$((patch + commits_since_base))
+            package_version="${major}.${minor}.${next_patch}-pre"
           else
-            version_prefix=$(read_project_version)
+            version_prefix=$(grep -oPm1 '(?<=<VersionPrefix>)[^<]+' "$project" || true)
+            if [[ -z "$version_prefix" ]]; then
+              version_prefix="0.1.0"
+            fi
             package_version="${version_prefix}-ci.${GITHUB_RUN_NUMBER}"
           fi
 
-          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-            echo "Invalid package version: $package_version"
+          if [[ -z "$package_version" ]]; then
+            echo "Failed to resolve package version."
             exit 1
           fi
 
