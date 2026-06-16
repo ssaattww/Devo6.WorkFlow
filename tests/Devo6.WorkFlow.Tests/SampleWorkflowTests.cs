@@ -222,6 +222,45 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
+    /// 複数フォルダのサンプルが条件付き実行 API を自然な処理に組み込んでいることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "複数フォルダのサンプルは条件付き実行 API を示す")]
+    public void MultiFolderCompositeSampleUsesConditionalExecutionApis()
+    {
+        string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
+        string entryPath = Path.Combine(sampleDirectory, "main.csx");
+        string sampleReadmePath = Path.Combine(sampleDirectory, "README.md");
+        string rootReadmePath = Path.Combine(RepositoryRoot, "README.md");
+        string source = File.ReadAllText(entryPath);
+        string sampleReadme = File.ReadAllText(sampleReadmePath);
+        string rootReadme = File.ReadAllText(rootReadmePath);
+
+        Assert.Contains("public sealed class AppendTagSummaryStep : IStep<AnalyzedDocument>", source);
+        Assert.Contains("public sealed class ValidateGuideMetadataStep : IStep<Unit>", source);
+        Assert.Contains(".RunIf<AppendTagSummaryStep>(x => x.Metadata.Tags.Contains(\"summary\"))", source);
+        Assert.Contains(".TapIf<ValidateGuideMetadataStep>(x => x.Metadata.Category == \"guide\")", source);
+        Assert.Contains(".If(", source);
+        Assert.Contains("\"DocumentLength\"", source);
+        Assert.Contains(".Switch<ReportRoute, AnalyzedDocument>(", source);
+        Assert.Contains(".Case(ReportRoute.Guide", source);
+        Assert.Contains(".Default(branch => branch.Run(\"UseDefaultReport\"", source);
+
+        Assert.Contains("`RunIf`", sampleReadme);
+        Assert.Contains("`TapIf`", sampleReadme);
+        Assert.Contains("`If`", sampleReadme);
+        Assert.Contains("`Switch`", sampleReadme);
+        Assert.Contains("入力の `tags:` に `summary` を追加すると", sampleReadme);
+        Assert.Contains("`category: summary` ではなく `tags:` 条件です", sampleReadme);
+        Assert.DoesNotContain("`summary` 分類", sampleReadme);
+
+        Assert.Contains("## 条件付き実行", rootReadme);
+        Assert.Contains("`RunIf`", rootReadme);
+        Assert.Contains("`TapIf`", rootReadme);
+        Assert.Contains("`If`", rootReadme);
+        Assert.Contains("`Switch`", rootReadme);
+    }
+
+    /// <summary>
     /// リポジトリルートを探索します。
     /// </summary>
     /// <returns>検出したリポジトリルート。</returns>

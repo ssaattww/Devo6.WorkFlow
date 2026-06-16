@@ -11,6 +11,8 @@
 
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using System;
+using System.Linq;
 
 /// <summary>
 /// 文書処理パイプラインの境界 Config です。
@@ -60,6 +62,68 @@ public sealed class MainConfig
 }
 
 /// <summary>
+/// レポート向けの処理経路です。
+/// </summary>
+public enum ReportRoute
+{
+    /// <summary>
+    /// guide 文書向けの経路です。
+    /// </summary>
+    Guide,
+
+    /// <summary>
+    /// reference 文書向けの経路です。
+    /// </summary>
+    Reference,
+
+    /// <summary>
+    /// 既定の経路です。
+    /// </summary>
+    Default,
+}
+
+/// <summary>
+/// tag 要約を本文末尾へ追加する Step です。
+/// </summary>
+public sealed class AppendTagSummaryStep : IStep<AnalyzedDocument>
+{
+    /// <summary>
+    /// tag 要約を本文末尾へ追加します。
+    /// </summary>
+    /// <param name="input">Step 入力。</param>
+    /// <returns>tag 要約を追加した文書。</returns>
+    public AnalyzedDocument Execute(StepInput input)
+    {
+        AnalyzedDocument document = input.Get<AnalyzedDocument>();
+        string body = document.Body + Environment.NewLine + "Tags: " + string.Join(", ", document.Metadata.Tags);
+
+        return document with { Body = body };
+    }
+}
+
+/// <summary>
+/// guide 文書の metadata が最低限そろっていることを確認する Step です。
+/// </summary>
+public sealed class ValidateGuideMetadataStep : IStep<Unit>
+{
+    /// <summary>
+    /// guide 文書に title と tag があることを確認します。
+    /// </summary>
+    /// <param name="input">Step 入力。</param>
+    /// <returns>値を返さないことを表す Unit。</returns>
+    public Unit Execute(StepInput input)
+    {
+        AnalyzedDocument document = input.Get<AnalyzedDocument>();
+        if (string.IsNullOrWhiteSpace(document.Metadata.Title) || document.Metadata.Tags.Count == 0)
+        {
+            throw new InvalidOperationException("guide 文書には title と tag が必要です。");
+        }
+
+        return Unit.Value;
+    }
+}
+
+/// <summary>
 /// 同じ StepInput を使って内側の文書処理 CompositeStep を実行する Step です。
 /// </summary>
 public sealed class RunTextPipelineStep : IStep<ReportTextResult>
@@ -80,6 +144,28 @@ public sealed class RunTextPipelineStep : IStep<ReportTextResult>
                 .Produce<NormalizedDocument>(x => x)
             .Run<AnalyzeTextStep, AnalyzedDocument>()
                 .Produce<AnalyzedDocument>(x => x)
+            .RunIf<AppendTagSummaryStep>(x => x.Metadata.Tags.Contains("summary"))
+            .TapIf<ValidateGuideMetadataStep>(x => x.Metadata.Category == "guide")
+            .If(
+                "DocumentLength",
+                x => x.Statistics.WordCount >= 10,
+                thenFlow => thenFlow.Run("KeepDetailedDocument", x => x),
+                elseFlow => elseFlow.Run("MarkShortDocument", x => x with
+                {
+                    Body = x.Body + Environment.NewLine + "SHORT DOCUMENT",
+                }))
+            .Switch<ReportRoute, AnalyzedDocument>(
+                "ReportRoute",
+                x => x.Metadata.Category switch
+                {
+                    "guide" => ReportRoute.Guide,
+                    "reference" => ReportRoute.Reference,
+                    _ => ReportRoute.Default,
+                },
+                cases => cases
+                    .Case(ReportRoute.Guide, branch => branch.Run("UseGuideReport", x => x))
+                    .Case(ReportRoute.Reference, branch => branch.Run("UseReferenceReport", x => x))
+                    .Default(branch => branch.Run("UseDefaultReport", x => x)))
             .Run<BuildReportStep, ReportTextResult>();
 
         return textPipeline.Execute(input);
