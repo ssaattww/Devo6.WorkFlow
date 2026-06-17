@@ -101,6 +101,11 @@ public static class WorkflowErrorCodes
     public const string ConditionEvaluationFailed = "CONDITION_EVALUATION_FAILED";
 
     /// <summary>
+    /// Switch の分岐 selector が例外により失敗したことを示します。
+    /// </summary>
+    public const string SwitchSelectorFailed = "SWITCH_SELECTOR_FAILED";
+
+    /// <summary>
     /// execution trace の serialize が失敗したことを示します。
     /// </summary>
     public const string TraceSerializationFailed = "TRACE_SERIALIZATION_FAILED";

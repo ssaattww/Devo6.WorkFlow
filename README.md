@@ -207,6 +207,32 @@ Save:
 
 実行時は、Step 側の既定 Config YAML、root Config の該当区画、CLI `--set` の順に値を重ねてから `MainConfig` へ変換します。その後、対象 Step の実行直前に `MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録します。`Convert` と `Save` も同じ規則です。
 
+## 条件付き実行
+
+`CompositeStep` では現在値を見て後続 Step を選べます。`RunIf` は条件が true の場合だけ値を返す Step を実行し、false の場合は現在値または指定した代替値を使います。`TapIf` は条件が true の場合だけ `Unit` Step を実行し、現在値は変えません。`If` は真側または偽側の分岐、`Switch` は選択値に一致する分岐または既定分岐を実行します。
+
+```csharp
+var Main = CompositeStep.Define("Main")
+    .Run<LoadStep, Document>()
+        .Produce<Document>(x => x)
+    .RunIf<NormalizeStep>(x => x.NeedsNormalize)
+    .TapIf<ValidateStep>(x => x.Category == "guide")
+    .If(
+        "DocumentLength",
+        x => x.WordCount >= 10,
+        thenFlow => thenFlow.Run("KeepDetailedDocument", x => x),
+        elseFlow => elseFlow.Run("MarkShortDocument", x => x with { IsShort = true }))
+    .Switch<DocumentKind, Document>(
+        "DocumentKind",
+        x => x.Kind,
+        cases => cases
+            .Case(DocumentKind.Guide, branch => branch.Run("UseGuideReport", x => x))
+            .Case(DocumentKind.Reference, branch => branch.Run("UseReferenceReport", x => x))
+            .Default(branch => branch.Run("UseDefaultReport", x => x)));
+```
+
+分岐の中でも `Run`、`RunIf`、`TapIf`、`If`、`Switch`、`Produce`、`StoreAs`、`Discard` を使えます。選ばれなかった分岐の Step は実行されず、実行記録にも分岐内 Step としては出ません。
+
 ## 実行と検証
 
 既定の Entry 名は `Main` です。

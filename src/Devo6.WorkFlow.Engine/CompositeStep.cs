@@ -559,6 +559,84 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     }
 
     /// <summary>
+    /// selector の値に一致する case branch、または default branch を実行します。
+    /// </summary>
+    /// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+    /// <typeparam name="TNext">分岐実行後の現在値型。</typeparam>
+    /// <param name="name">trace と log に記録する Switch 制御単位名。</param>
+    /// <param name="selector">現在値から case 値を選択する処理。</param>
+    /// <param name="cases">case と default branch を定義する処理。</param>
+    /// <returns>分岐後の現在値型を持つ composite step。</returns>
+    public CompositeStep<TNext> Switch<TCase, TNext>(
+        string name,
+        Func<TOut, TCase> selector,
+        Func<SwitchCaseBuilder<TOut, TCase, TNext>, SwitchCaseBuilder<TOut, TCase, TNext>> cases)
+    {
+        ArgumentNullException.ThrowIfNull(selector);
+
+        return Switch<TCase, TNext>(name, (current, input) => selector(current), cases);
+    }
+
+    /// <summary>
+    /// StepInput を参照する selector の値に一致する case branch、または default branch を実行します。
+    /// </summary>
+    /// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+    /// <typeparam name="TNext">分岐実行後の現在値型。</typeparam>
+    /// <param name="name">trace と log に記録する Switch 制御単位名。</param>
+    /// <param name="selector">現在値と StepInput から case 値を選択する処理。</param>
+    /// <param name="cases">case と default branch を定義する処理。</param>
+    /// <returns>分岐後の現在値型を持つ composite step。</returns>
+    public CompositeStep<TNext> Switch<TCase, TNext>(
+        string name,
+        Func<TOut, StepInput, TCase> selector,
+        Func<SwitchCaseBuilder<TOut, TCase, TNext>, SwitchCaseBuilder<TOut, TCase, TNext>> cases)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(selector);
+        ArgumentNullException.ThrowIfNull(cases);
+
+        SwitchCaseBuilder<TOut, TCase, TNext> built = cases(new SwitchCaseBuilder<TOut, TCase, TNext>());
+        SwitchCaseBuildResult<TCase> defaultCase = built.DefaultCase
+            ?? throw new InvalidOperationException($"Switch '{name}' requires Default branch.");
+
+        int switchStepIndex = GetFlattenedStepCount(steps);
+        int nextStartIndex = switchStepIndex + 1;
+        var caseRegistrations = new List<SwitchCaseBranchRegistration<TCase>>();
+        var nextConfigRegistrations = new List<StepConfigRegistration>(StepConfigRegistrations);
+
+        foreach (SwitchCaseBuildResult<TCase> switchCase in built.Cases)
+        {
+            caseRegistrations.Add(new SwitchCaseBranchRegistration<TCase>(
+                switchCase.Value,
+                switchCase.Steps,
+                nextStartIndex));
+            nextConfigRegistrations.AddRange(RemapBranchConfigRegistrations(
+                switchCase.StepConfigRegistrations,
+                nextStartIndex));
+            nextStartIndex += GetFlattenedStepCount(switchCase.Steps);
+        }
+
+        BranchExecutionPlan defaultPlan = new(defaultCase.Steps, nextStartIndex);
+        nextConfigRegistrations.AddRange(RemapBranchConfigRegistrations(
+            defaultCase.StepConfigRegistrations,
+            nextStartIndex));
+
+        StepRegistration registration = StepRegistration.CreateSwitch(
+            name,
+            selector,
+            caseRegistrations,
+            defaultPlan);
+
+        return new CompositeStep<TNext>(
+            Name,
+            NamespaceName,
+            QualifiedName,
+            Append(registration),
+            ConfigType,
+            nextConfigRegistrations);
+    }
+
+    /// <summary>
     /// Entry が要求する標準 Config 型をメタ情報として設定します。
     /// </summary>
     /// <typeparam name="TConfig">StepContext に登録する標準 Config 型。</typeparam>
@@ -848,6 +926,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             {
                 WorkflowSequenceExecutionResult branchResult = await ExecuteIfStepAsync(
                     step,
+                    startStepIndex,
                     stepIndex,
                     input,
                     currentValue,
@@ -1079,6 +1158,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     /// If 制御単位を評価し、選択された branch の Step 列を実行します。
     /// </summary>
     /// <param name="step">If 制御単位の Step 登録情報。</param>
+    /// <param name="containingStartStepIndex">現在の Step 列が entry 全体で始まる Step index。</param>
     /// <param name="stepIndex">If 制御単位の Step index。</param>
     /// <param name="input">Step へ渡す入力値。</param>
     /// <param name="currentValue">If 評価時点の現在値。</param>
@@ -1090,6 +1170,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     /// <returns>If と選択 branch の実行結果。</returns>
     private async Task<WorkflowSequenceExecutionResult> ExecuteIfStepAsync(
         StepRegistration step,
+        int containingStartStepIndex,
         int stepIndex,
         StepInput input,
         object? currentValue,
@@ -1114,6 +1195,33 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         {
             SetStepConfig(input.Context, options.StepConfigs, stepIndex);
             branchPlan = step.GetBranch(input, currentValue);
+        }
+        catch (StepSwitchSelectorException exception)
+        {
+            stopwatch.Stop();
+            traceSteps.Add(new ExecutionTraceStep(
+                step.Name,
+                ExecutionTraceStepStatus.Failed,
+                stopwatch.Elapsed,
+                step.BranchSelectionErrorCode,
+                1));
+            engineLogger.LogError(
+                exception.InnerException,
+                "Switch selector failed with error code {ErrorCode}",
+                step.BranchSelectionErrorCode);
+            engineLogger.LogError(
+                exception.InnerException,
+                "Entry failed with error code {ErrorCode}",
+                step.BranchSelectionErrorCode);
+
+            return WorkflowSequenceExecutionResult.Failed(new WorkflowResult
+            {
+                EntryName = QualifiedName,
+                Succeeded = false,
+                ErrorCode = step.BranchSelectionErrorCode,
+                ErrorMessage = exception.InnerException?.Message ?? exception.Message,
+                Trace = new ExecutionTrace(traceSteps),
+            });
         }
         catch (StepConditionEvaluationException exception)
         {
@@ -1146,7 +1254,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         var branchTraceSteps = new List<ExecutionTraceStep>();
         WorkflowSequenceExecutionResult branchResult = await ExecuteWorkflowStepSequenceAsync(
             branchPlan.Steps,
-            branchPlan.StartStepIndex,
+            containingStartStepIndex + branchPlan.StartStepIndex,
             input,
             currentValue,
             options,
@@ -1158,7 +1266,14 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         {
             traceSteps.AddRange(branchTraceSteps);
 
-            return branchResult;
+            return WorkflowSequenceExecutionResult.Failed(new WorkflowResult
+            {
+                EntryName = branchResult.Failure!.EntryName,
+                Succeeded = false,
+                ErrorCode = branchResult.Failure.ErrorCode,
+                ErrorMessage = branchResult.Failure.ErrorMessage,
+                Trace = new ExecutionTrace(traceSteps),
+            });
         }
 
         currentValue = branchResult.Value;
@@ -1831,6 +1946,78 @@ public sealed class BranchBuilder<TOut>
     }
 
     /// <summary>
+    /// branch 内で selector の値に一致する case branch、または default branch を実行する入れ子の Switch を追加します。
+    /// </summary>
+    /// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+    /// <typeparam name="TNext">分岐実行後の現在値型。</typeparam>
+    /// <param name="name">trace と log に記録する Switch 制御単位名。</param>
+    /// <param name="selector">現在値から case 値を選択する処理。</param>
+    /// <param name="cases">case と default branch を定義する処理。</param>
+    /// <returns>分岐後の現在値型を持つ branch builder。</returns>
+    public BranchBuilder<TNext> Switch<TCase, TNext>(
+        string name,
+        Func<TOut, TCase> selector,
+        Func<SwitchCaseBuilder<TOut, TCase, TNext>, SwitchCaseBuilder<TOut, TCase, TNext>> cases)
+    {
+        ArgumentNullException.ThrowIfNull(selector);
+
+        return Switch<TCase, TNext>(name, (current, input) => selector(current), cases);
+    }
+
+    /// <summary>
+    /// branch 内で StepInput を参照する selector の値に一致する case branch、または default branch を実行する入れ子の Switch を追加します。
+    /// </summary>
+    /// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+    /// <typeparam name="TNext">分岐実行後の現在値型。</typeparam>
+    /// <param name="name">trace と log に記録する Switch 制御単位名。</param>
+    /// <param name="selector">現在値と StepInput から case 値を選択する処理。</param>
+    /// <param name="cases">case と default branch を定義する処理。</param>
+    /// <returns>分岐後の現在値型を持つ branch builder。</returns>
+    public BranchBuilder<TNext> Switch<TCase, TNext>(
+        string name,
+        Func<TOut, StepInput, TCase> selector,
+        Func<SwitchCaseBuilder<TOut, TCase, TNext>, SwitchCaseBuilder<TOut, TCase, TNext>> cases)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(selector);
+        ArgumentNullException.ThrowIfNull(cases);
+
+        SwitchCaseBuilder<TOut, TCase, TNext> built = cases(new SwitchCaseBuilder<TOut, TCase, TNext>());
+        SwitchCaseBuildResult<TCase> defaultCase = built.DefaultCase
+            ?? throw new InvalidOperationException($"Switch '{name}' requires Default branch.");
+
+        int switchStepIndex = GetFlattenedStepCount(steps);
+        int nextStartIndex = switchStepIndex + 1;
+        var caseRegistrations = new List<SwitchCaseBranchRegistration<TCase>>();
+        var nextConfigRegistrations = new List<StepConfigRegistration>(stepConfigRegistrations);
+
+        foreach (SwitchCaseBuildResult<TCase> switchCase in built.Cases)
+        {
+            caseRegistrations.Add(new SwitchCaseBranchRegistration<TCase>(
+                switchCase.Value,
+                switchCase.Steps,
+                nextStartIndex));
+            nextConfigRegistrations.AddRange(RemapBranchConfigRegistrations(
+                switchCase.StepConfigRegistrations,
+                nextStartIndex));
+            nextStartIndex += GetFlattenedStepCount(switchCase.Steps);
+        }
+
+        BranchExecutionPlan defaultPlan = new(defaultCase.Steps, nextStartIndex);
+        nextConfigRegistrations.AddRange(RemapBranchConfigRegistrations(
+            defaultCase.StepConfigRegistrations,
+            nextStartIndex));
+
+        StepRegistration registration = StepRegistration.CreateSwitch(
+            name,
+            selector,
+            caseRegistrations,
+            defaultPlan);
+
+        return new BranchBuilder<TNext>(Append(registration), nextConfigRegistrations);
+    }
+
+    /// <summary>
     /// 直前に登録した Step に対応する Step 登録単位 Config 型と境界 Config 型上のプロパティ パスをメタ情報として設定します。
     /// </summary>
     /// <typeparam name="TConfig">StepContext に登録する Step Config 型。</typeparam>
@@ -2049,6 +2236,117 @@ public sealed class BranchBuilder<TOut>
 }
 
 /// <summary>
+/// Switch branch 内で case と default の部分的な Step 連鎖を構築します。
+/// </summary>
+/// <typeparam name="TIn">各 branch 開始時の現在値型。</typeparam>
+/// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+/// <typeparam name="TOut">各 branch の末尾 Step が返す出力型。</typeparam>
+public sealed class SwitchCaseBuilder<TIn, TCase, TOut>
+{
+    private readonly IReadOnlyList<SwitchCaseBuildResult<TCase>> cases;
+    private readonly SwitchCaseBuildResult<TCase>? defaultCase;
+
+    /// <summary>
+    /// 空の Switch case builder を初期化します。
+    /// </summary>
+    public SwitchCaseBuilder()
+        : this([], null)
+    {
+    }
+
+    /// <summary>
+    /// 登録済み case と default を持つ Switch case builder を初期化します。
+    /// </summary>
+    /// <param name="cases">登録済み case の一覧。</param>
+    /// <param name="defaultCase">登録済み default branch。</param>
+    private SwitchCaseBuilder(
+        IReadOnlyList<SwitchCaseBuildResult<TCase>> cases,
+        SwitchCaseBuildResult<TCase>? defaultCase)
+    {
+        this.cases = cases.ToArray();
+        this.defaultCase = defaultCase;
+    }
+
+    /// <summary>
+    /// 登録済み case の一覧を取得します。
+    /// </summary>
+    internal IReadOnlyList<SwitchCaseBuildResult<TCase>> Cases => cases;
+
+    /// <summary>
+    /// 登録済み default branch を取得します。
+    /// </summary>
+    internal SwitchCaseBuildResult<TCase>? DefaultCase => defaultCase;
+
+    /// <summary>
+    /// 指定した case 値に一致した場合に実行する branch を追加します。
+    /// </summary>
+    /// <param name="value">一致判定に使う case 値。</param>
+    /// <param name="branch">case branch を定義する処理。</param>
+    /// <returns>case branch を追加した Switch case builder。</returns>
+    public SwitchCaseBuilder<TIn, TCase, TOut> Case(
+        TCase value,
+        Func<BranchBuilder<TIn>, BranchBuilder<TOut>> branch)
+    {
+        ArgumentNullException.ThrowIfNull(branch);
+        if (cases.Any(switchCase => EqualityComparer<TCase>.Default.Equals(switchCase.Value, value)))
+        {
+            throw new InvalidOperationException($"Switch case '{value}' is already registered.");
+        }
+
+        BranchBuilder<TOut> built = branch(new BranchBuilder<TIn>());
+        EnsureCaseHasSteps(built, $"case '{value}'");
+        SwitchCaseBuildResult<TCase> result = new(value, built.Steps, built.StepConfigRegistrations);
+
+        return new SwitchCaseBuilder<TIn, TCase, TOut>(cases.Append(result).ToArray(), defaultCase);
+    }
+
+    /// <summary>
+    /// どの case にも一致しなかった場合に実行する default branch を追加します。
+    /// </summary>
+    /// <param name="branch">default branch を定義する処理。</param>
+    /// <returns>default branch を追加した Switch case builder。</returns>
+    public SwitchCaseBuilder<TIn, TCase, TOut> Default(Func<BranchBuilder<TIn>, BranchBuilder<TOut>> branch)
+    {
+        ArgumentNullException.ThrowIfNull(branch);
+        if (defaultCase is not null)
+        {
+            throw new InvalidOperationException("Switch Default branch is already registered.");
+        }
+
+        BranchBuilder<TOut> built = branch(new BranchBuilder<TIn>());
+        EnsureCaseHasSteps(built, "default");
+        SwitchCaseBuildResult<TCase> result = new(default!, built.Steps, built.StepConfigRegistrations);
+
+        return new SwitchCaseBuilder<TIn, TCase, TOut>(cases, result);
+    }
+
+    /// <summary>
+    /// case または default branch が少なくとも 1 つの実行単位を持つことを確認します。
+    /// </summary>
+    /// <param name="branch">確認する branch builder。</param>
+    /// <param name="branchName">例外 message に含める branch 名。</param>
+    private static void EnsureCaseHasSteps(BranchBuilder<TOut> branch, string branchName)
+    {
+        if (branch.Steps.Count == 0)
+        {
+            throw new InvalidOperationException($"Switch {branchName} branch must contain at least one step.");
+        }
+    }
+}
+
+/// <summary>
+/// Switch case builder が構築した branch 定義を保持します。
+/// </summary>
+/// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+/// <param name="Value">一致判定に使う case 値。</param>
+/// <param name="Steps">case または default branch の Step 登録列。</param>
+/// <param name="StepConfigRegistrations">branch 内の Config 宣言一覧。</param>
+internal sealed record SwitchCaseBuildResult<TCase>(
+    TCase Value,
+    IReadOnlyList<StepRegistration> Steps,
+    IReadOnlyList<StepConfigRegistration> StepConfigRegistrations);
+
+/// <summary>
 /// Step 登録単位 Config の宣言メタ情報を保持します。
 /// </summary>
 public sealed class StepConfigRegistration
@@ -2162,12 +2460,17 @@ internal sealed class StepRegistration
     public Type StepType => stepType;
 
     /// <summary>
-    /// If 制御単位かどうかを取得します。
+    /// If または Switch 制御単位かどうかを取得します。
     /// </summary>
     public bool IsConditionalBranch => conditionalBranch is not null;
 
     /// <summary>
-    /// If 配下の branch を含めて flatten した実行単位数を取得します。
+    /// branch 選択失敗時に返す error code を取得します。
+    /// </summary>
+    public string BranchSelectionErrorCode => conditionalBranch?.SelectionFailureErrorCode ?? WorkflowErrorCodes.ConditionEvaluationFailed;
+
+    /// <summary>
+    /// If または Switch 配下の branch を含めて flatten した実行単位数を取得します。
     /// </summary>
     public int FlattenedLength => conditionalBranch?.FlattenedLength ?? 1;
 
@@ -2458,6 +2761,49 @@ internal sealed class StepRegistration
     }
 
     /// <summary>
+    /// Switch 制御単位の登録情報を作成します。
+    /// </summary>
+    /// <typeparam name="TCurrent">selector に渡す現在値型。</typeparam>
+    /// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+    /// <param name="name">trace と log に記録する Switch 制御単位名。</param>
+    /// <param name="selector">現在値と StepInput から case 値を選択する処理。</param>
+    /// <param name="cases">case branch 登録情報の一覧。</param>
+    /// <param name="defaultPlan">default branch の実行計画。</param>
+    /// <returns>作成した Switch 制御単位の登録情報。</returns>
+    public static StepRegistration CreateSwitch<TCurrent, TCase>(
+        string name,
+        Func<TCurrent, StepInput, TCase> selector,
+        IReadOnlyList<SwitchCaseBranchRegistration<TCase>> cases,
+        BranchExecutionPlan defaultPlan)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(selector);
+        ArgumentNullException.ThrowIfNull(cases);
+        ArgumentNullException.ThrowIfNull(defaultPlan);
+
+        var conditionalBranch = new ConditionalBranchRegistration(
+            (input, currentValue) =>
+            {
+                TCase selectedValue = EvaluateSwitchSelector(() => selector((TCurrent)currentValue!, input));
+                SwitchCaseBranchRegistration<TCase>? selectedCase = cases.FirstOrDefault(
+                    switchCase => EqualityComparer<TCase>.Default.Equals(switchCase.Value, selectedValue));
+
+                return selectedCase is null
+                    ? defaultPlan
+                    : new BranchExecutionPlan(selectedCase.Steps, selectedCase.StartStepIndex);
+            },
+            1 + cases.Sum(switchCase => GetFlattenedStepCount(switchCase.Steps)) + GetFlattenedStepCount(defaultPlan.Steps),
+            WorkflowErrorCodes.SwitchSelectorFailed);
+
+        return new StepRegistration(
+            name,
+            typeof(SwitchStepRegistrationMarker),
+            (input, currentValue, cancellationToken) => Task.FromResult(StepExecutionResult.Succeeded(currentValue)),
+            [],
+            conditionalBranch);
+    }
+
+    /// <summary>
     /// If 条件を評価し、選択された branch 実行計画を取得します。
     /// </summary>
     /// <param name="input">条件判定へ渡す StepInput。</param>
@@ -2574,18 +2920,43 @@ internal sealed class StepRegistration
             throw new StepConditionEvaluationException(exception);
         }
     }
+
+    /// <summary>
+    /// Switch selector を実行し、例外を selector 失敗として包みます。
+    /// </summary>
+    /// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+    /// <param name="selector">実行する selector。</param>
+    /// <returns>selector が返した case 値。</returns>
+    private static TCase EvaluateSwitchSelector<TCase>(Func<TCase> selector)
+    {
+        try
+        {
+            return selector();
+        }
+        catch (Exception exception)
+        {
+            throw new StepSwitchSelectorException(exception);
+        }
+    }
+
+    /// <summary>
+    /// Step 列を flatten したときの実行単位数を取得します。
+    /// </summary>
+    /// <param name="stepSequence">数える Step 登録列。</param>
+    /// <returns>branch 配下の branch を含む実行単位数。</returns>
+    private static int GetFlattenedStepCount(IReadOnlyList<StepRegistration> stepSequence)
+    {
+        return stepSequence.Sum(step => step.FlattenedLength);
+    }
 }
 
 /// <summary>
-/// If branch の条件と分岐 Step 列を保持します。
+/// If または Switch branch の選択処理と分岐 Step 列を保持します。
 /// </summary>
 internal sealed class ConditionalBranchRegistration
 {
-    private readonly Func<StepInput, object?, bool> condition;
-    private readonly IReadOnlyList<StepRegistration> thenSteps;
-    private readonly IReadOnlyList<StepRegistration> elseSteps;
-    private readonly int thenStartStepIndex;
-    private readonly int elseStartStepIndex;
+    private readonly Func<StepInput, object?, BranchExecutionPlan> selectBranch;
+    private readonly int flattenedLength;
 
     /// <summary>
     /// If branch の条件と分岐 Step 列を初期化します。
@@ -2606,17 +2977,53 @@ internal sealed class ConditionalBranchRegistration
         ArgumentNullException.ThrowIfNull(thenSteps);
         ArgumentNullException.ThrowIfNull(elseSteps);
 
-        this.condition = condition;
-        this.thenSteps = thenSteps.ToArray();
-        this.elseSteps = elseSteps.ToArray();
-        this.thenStartStepIndex = thenStartStepIndex;
-        this.elseStartStepIndex = elseStartStepIndex;
+        StepRegistration[] thenStepArray = thenSteps.ToArray();
+        StepRegistration[] elseStepArray = elseSteps.ToArray();
+        selectBranch = (input, currentValue) =>
+        {
+            if (condition(input, currentValue))
+            {
+                return new BranchExecutionPlan(thenStepArray, thenStartStepIndex);
+            }
+
+            return new BranchExecutionPlan(elseStepArray, elseStartStepIndex);
+        };
+        flattenedLength = 1 + GetFlattenedStepCount(thenStepArray) + GetFlattenedStepCount(elseStepArray);
+        SelectionFailureErrorCode = WorkflowErrorCodes.ConditionEvaluationFailed;
     }
 
     /// <summary>
-    /// If と両 branch を flatten した実行単位数を取得します。
+    /// 任意の branch 選択処理と flatten 済み実行単位数で初期化します。
     /// </summary>
-    public int FlattenedLength => 1 + GetFlattenedStepCount(thenSteps) + GetFlattenedStepCount(elseSteps);
+    /// <param name="selectBranch">選択された branch の実行計画を返す処理。</param>
+    /// <param name="flattenedLength">制御単位と全 branch を flatten した実行単位数。</param>
+    /// <param name="selectionFailureErrorCode">branch 選択失敗時に返す error code。</param>
+    public ConditionalBranchRegistration(
+        Func<StepInput, object?, BranchExecutionPlan> selectBranch,
+        int flattenedLength,
+        string selectionFailureErrorCode)
+    {
+        ArgumentNullException.ThrowIfNull(selectBranch);
+        ArgumentException.ThrowIfNullOrWhiteSpace(selectionFailureErrorCode);
+        if (flattenedLength < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(flattenedLength), "Flattened length must be greater than zero.");
+        }
+
+        this.selectBranch = selectBranch;
+        this.flattenedLength = flattenedLength;
+        SelectionFailureErrorCode = selectionFailureErrorCode;
+    }
+
+    /// <summary>
+    /// branch 選択失敗時に返す error code を取得します。
+    /// </summary>
+    public string SelectionFailureErrorCode { get; }
+
+    /// <summary>
+    /// 制御単位と全 branch を flatten した実行単位数を取得します。
+    /// </summary>
+    public int FlattenedLength => flattenedLength;
 
     /// <summary>
     /// 条件を評価し、選択された branch の実行計画を取得します。
@@ -2626,12 +3033,7 @@ internal sealed class ConditionalBranchRegistration
     /// <returns>選択された branch の実行計画。</returns>
     public BranchExecutionPlan GetBranch(StepInput input, object? currentValue)
     {
-        if (condition(input, currentValue))
-        {
-            return new BranchExecutionPlan(thenSteps, thenStartStepIndex);
-        }
-
-        return new BranchExecutionPlan(elseSteps, elseStartStepIndex);
+        return selectBranch(input, currentValue);
     }
 
     /// <summary>
@@ -2651,6 +3053,18 @@ internal sealed class ConditionalBranchRegistration
 /// <param name="Steps">選択された branch の Step 登録列。</param>
 /// <param name="StartStepIndex">選択された branch の開始 Step index。</param>
 internal sealed record BranchExecutionPlan(IReadOnlyList<StepRegistration> Steps, int StartStepIndex);
+
+/// <summary>
+/// Switch の case 値、branch Step 列、開始 Step index を保持します。
+/// </summary>
+/// <typeparam name="TCase">分岐選択に使う case 値の型。</typeparam>
+/// <param name="Value">一致判定に使う case 値。</param>
+/// <param name="Steps">case branch の Step 登録列。</param>
+/// <param name="StartStepIndex">case branch の開始 Step index。</param>
+internal sealed record SwitchCaseBranchRegistration<TCase>(
+    TCase Value,
+    IReadOnlyList<StepRegistration> Steps,
+    int StartStepIndex);
 
 /// <summary>
 /// workflow Step 列の内部実行結果を保持します。
@@ -2771,6 +3185,21 @@ internal sealed class StepConditionEvaluationException : Exception
 }
 
 /// <summary>
+/// Switch selector 中の例外を engine の selector 失敗へ変換するために保持します。
+/// </summary>
+internal sealed class StepSwitchSelectorException : Exception
+{
+    /// <summary>
+    /// 元の例外を保持して Switch selector 失敗例外を作成します。
+    /// </summary>
+    /// <param name="innerException">selector 中に発生した元の例外。</param>
+    public StepSwitchSelectorException(Exception innerException)
+        : base("Switch selector failed.", innerException)
+    {
+    }
+}
+
+/// <summary>
 /// Lambda Step の登録単位 Config metadata で使う内部 Step 型を表します。
 /// </summary>
 internal sealed class LambdaStepRegistrationMarker
@@ -2792,6 +3221,19 @@ internal sealed class IfStepRegistrationMarker
     /// 外部から生成しない marker 型として初期化を隠します。
     /// </summary>
     private IfStepRegistrationMarker()
+    {
+    }
+}
+
+/// <summary>
+/// Switch 制御単位の登録情報で使う内部 Step 型を表します。
+/// </summary>
+internal sealed class SwitchStepRegistrationMarker
+{
+    /// <summary>
+    /// 外部から生成しない marker 型として初期化を隠します。
+    /// </summary>
+    private SwitchStepRegistrationMarker()
     {
     }
 }

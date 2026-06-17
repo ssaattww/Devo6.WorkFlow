@@ -10,6 +10,8 @@ engine run samples/multi-folder-composite/main.csx --workflow-config appsettings
 
 実行すると `output/result.txt` に結果文書を保存し、`logs/260609-120000_Main.log` のような実行記録を作成します。`engine.yaml` は `Logging.Console.Enabled: true` なので、同じ実行記録は標準出力にも出ます。実行記録名の形式は `engine.yaml` の `{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log` です。このサンプルの root `CompositeStep` 名は `Main` なので、`RootStepName` は `Main` になります。
 
+内側の `TextPipeline` は、本文分析後に `RunIf`、`TapIf`、`If`、`Switch` を使います。既定入力では `guide` 文書のメタデータを `TapIf` で検査し、長い文書の `If` 分岐と `guide` の `Switch` 分岐を通ってから結果文書を作ります。入力の `tags:` に `summary` を追加すると、`RunIf` が `tags:` 要約を本文末尾へ追加します。`category: summary` ではなく `tags:` 条件です。
+
 ## workflow 値の上書き
 
 ```bash
