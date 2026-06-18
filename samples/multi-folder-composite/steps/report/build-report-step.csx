@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text;
 using Devo6.WorkFlow.Abstractions;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// metadata、統計、本文をレポート文字列へまとめる Step です。
@@ -33,7 +34,9 @@ public sealed class BuildReportStep : IStep<ReportTextResult>
     {
         Config config = input.Context.Get<Config>();
         AnalyzedDocument document = input.Get<AnalyzedDocument>();
+        input.Context.Logger.LogInformation("Building report with heading {Heading}", config.Heading);
 
+        // 設定で差し替えられる見出しと、前段で作った metadata / 統計 / 本文を 1 つの出力にまとめます。
         return new ReportTextResult(BuildReport(config, document));
     }
 

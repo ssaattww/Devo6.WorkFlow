@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Devo6.WorkFlow.Abstractions;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// 整形済み本文の統計を算出する Step です。
@@ -33,6 +34,9 @@ public sealed class AnalyzeTextStep : IStep<AnalyzedDocument>
     {
         Config config = input.Context.Get<Config>();
         NormalizedDocument document = input.Get<NormalizedDocument>();
+        input.Context.Logger.LogInformation("Analyzing normalized body text");
+
+        // レポート本文に載せるため、行数、語数、文字数、tag 数をここでまとめて算出します。
         string[] lines = SplitLines(document.Body);
         int lineCount = config.CountEmptyLines ? lines.Length : lines.Count(line => line.Length > 0);
         int wordCount = Regex.Matches(document.Body, "\\S+").Count;

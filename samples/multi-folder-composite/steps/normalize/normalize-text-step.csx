@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Devo6.WorkFlow.Abstractions;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// 本文の空白と大小文字を整形する Step です。
@@ -38,6 +39,13 @@ public sealed class NormalizeTextStep : IStep<NormalizedDocument>
     {
         Config config = input.Context.Get<Config>();
         ParsedDocument document = input.Get<ParsedDocument>();
+        input.Context.Logger.LogInformation(
+            "Normalizing body text. TrimLines={TrimLines}, CollapseWhitespace={CollapseWhitespace}, Uppercase={Uppercase}",
+            config.TrimLines,
+            config.CollapseWhitespace,
+            config.Uppercase);
+
+        // 行ごとに空白をそろえ、空行を除いてレポート向けの本文に整えます。
         string[] lines = document.Body
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
@@ -61,6 +69,7 @@ public sealed class NormalizeTextStep : IStep<NormalizedDocument>
         string normalized = config.TrimLines ? line.Trim() : line;
         if (config.CollapseWhitespace)
         {
+            // 複数の空白や tab は、読みやすい 1 つの空白へまとめます。
             normalized = Regex.Replace(normalized, "\\s+", " ");
         }
 

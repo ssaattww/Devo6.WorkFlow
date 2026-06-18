@@ -1,3 +1,10 @@
 Pipeline:
+  Load:
+    Path: input/source.txt
+  Normalize:
+    Uppercase: true
   Report:
     Heading: "Composite sample report"
+    BodyHeading: "Normalized body"
+Save:
+  Path: output/result.txt

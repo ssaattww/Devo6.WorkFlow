@@ -87,6 +87,7 @@ public sealed class SampleWorkflowTests
         Assert.Contains("Word count: 16", report);
         Assert.Contains("Character count: 104", report);
         Assert.Contains("Tag count: 3", report);
+        Assert.Contains("## Normalized body", report);
         Assert.Contains("HELLO FROM MULTI FOLDER COMPOSITE", report);
         Assert.Contains("THIS SAMPLE KEEPS YAML METADATA SEPARATE.", report);
         Assert.Contains("NESTED STEPS BUILD A REPORT.", report);
@@ -128,19 +129,21 @@ public sealed class SampleWorkflowTests
     }
 
     /// <summary>
-    /// 実行用 root Config が Step 既定 Config への上書きだけを持つことを検査します。
+    /// 実行用 root Config が複数の Step 既定 Config を部分上書きすることを検査します。
     /// </summary>
-    [Fact(DisplayName = "実行用 root Config は Step 既定 Config への上書きだけを持つ")]
-    public void MultiFolderCompositeSampleRootConfigContainsOnlyOverrides()
+    [Fact(DisplayName = "実行用 root Config は複数 Step の既定 Config を部分上書きする")]
+    public void MultiFolderCompositeSampleRootConfigOverridesMultipleStepDefaults()
     {
         string sampleDirectory = Path.Combine(RepositoryRoot, "samples/multi-folder-composite");
         string rootConfigPath = Path.Combine(sampleDirectory, "appsettings.yaml");
 
-        Assert.False(YamlPathExists(rootConfigPath, "Pipeline", "Load"));
         Assert.False(YamlPathExists(rootConfigPath, "Pipeline", "Parse"));
         Assert.False(YamlPathExists(rootConfigPath, "Pipeline", "Analyze"));
-        Assert.False(YamlPathExists(rootConfigPath, "Save"));
+        Assert.Equal("input/source.txt", ReadYamlScalar(rootConfigPath, "Pipeline", "Load", "Path"));
+        Assert.Equal("true", ReadYamlScalar(rootConfigPath, "Pipeline", "Normalize", "Uppercase"));
         Assert.Equal("Composite sample report", ReadYamlScalar(rootConfigPath, "Pipeline", "Report", "Heading"));
+        Assert.Equal("Normalized body", ReadYamlScalar(rootConfigPath, "Pipeline", "Report", "BodyHeading"));
+        Assert.Equal("output/result.txt", ReadYamlScalar(rootConfigPath, "Save", "Path"));
     }
 
     /// <summary>
@@ -163,10 +166,15 @@ public sealed class SampleWorkflowTests
         string readme = File.ReadAllText(readmePath);
         Assert.Contains("--workflow-config", readme);
         Assert.Contains("--engine-config", readme);
+        Assert.Contains("ENTRY=$(pwd)/samples/multi-folder-composite/main.csx", readme);
         Assert.Contains("--wset", readme);
         Assert.Contains("--eset", readme);
         Assert.Contains("Logging.Console.Enabled: true", readme);
         Assert.Contains("標準出力", readme);
+        Assert.Contains("Entry started", readme);
+        Assert.Contains("Loading source text from input/source.txt", readme);
+        Assert.Contains("Building report with heading Composite sample report", readme);
+        Assert.Contains("Saving report text to output/result.txt", readme);
         Assert.Contains("260609-120000_Main.log", readme);
         Assert.Contains("{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log", readme);
         Assert.Contains("Main", readme);
@@ -219,6 +227,15 @@ public sealed class SampleWorkflowTests
         Assert.Contains(".WithConfig<AnalyzeTextStep.Config>(\"Pipeline.Analyze\"", source);
         Assert.Contains(".WithConfig<BuildReportStep.Config>(\"Pipeline.Report\"", source);
         Assert.Contains(".WithConfig<SaveTextStep.Config>(\"Save\")", source);
+        IEnumerable<string> processingScripts = Directory
+            .EnumerateFiles(Path.Combine(sampleDirectory, "steps"), "*.csx", SearchOption.AllDirectories)
+            .Append(entryPath);
+        foreach (string scriptPath in processingScripts)
+        {
+            string scriptSource = File.ReadAllText(scriptPath);
+            Assert.Contains("input.Context.Logger.LogInformation", scriptSource);
+            Assert.Contains("//", scriptSource);
+        }
     }
 
     /// <summary>

@@ -11,6 +11,7 @@
 
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Linq;
 
@@ -95,6 +96,9 @@ public sealed class AppendTagSummaryStep : IStep<AnalyzedDocument>
     public AnalyzedDocument Execute(StepInput input)
     {
         AnalyzedDocument document = input.Get<AnalyzedDocument>();
+        input.Context.Logger.LogInformation("Adding tag summary to document body");
+
+        // summary tag がある文書だけ、後続レポートで確認しやすいよう tag 一覧を本文へ追記します。
         string body = document.Body + Environment.NewLine + "Tags: " + string.Join(", ", document.Metadata.Tags);
 
         return document with { Body = body };
@@ -114,6 +118,9 @@ public sealed class ValidateGuideMetadataStep : IStep<Unit>
     public Unit Execute(StepInput input)
     {
         AnalyzedDocument document = input.Get<AnalyzedDocument>();
+        input.Context.Logger.LogInformation("Checking guide metadata before report output");
+
+        // guide として扱う文書は、最低限の見出しと tag がない場合に出力前で止めます。
         if (string.IsNullOrWhiteSpace(document.Metadata.Title) || document.Metadata.Tags.Count == 0)
         {
             throw new InvalidOperationException("guide 文書には title と tag が必要です。");
@@ -135,6 +142,9 @@ public sealed class RunTextPipelineStep : IStep<ReportTextResult>
     /// <returns>作成したレポート本文。</returns>
     public ReportTextResult Execute(StepInput input)
     {
+        input.Context.Logger.LogInformation("Starting inner text pipeline");
+
+        // 外側 Main は保存だけを担当し、文書処理の詳細は内側 TextPipeline に閉じ込めます。
         CompositeStep<ReportTextResult> textPipeline = CompositeStep.Define("TextPipeline")
             .Run<LoadTextStep, LoadTextResult>()
                 .Produce<LoadTextResult>(x => x)
@@ -168,10 +178,15 @@ public sealed class RunTextPipelineStep : IStep<ReportTextResult>
                     .Default(branch => branch.Run("UseDefaultReport", x => x)))
             .Run<BuildReportStep, ReportTextResult>();
 
-        return textPipeline.Execute(input);
+        // 同じ StepInput を渡すことで、外側 Main が読み込んだ Config を内側 Step でも使います。
+        ReportTextResult result = textPipeline.Execute(input);
+        input.Context.Logger.LogInformation("Finished inner text pipeline");
+
+        return result;
     }
 }
 
+// Main の境界 Config から、内側 TextPipeline の各 Step Config と保存先 Config をまとめて指定します。
 var Main = CompositeStep.Define("Main")
     .Run<RunTextPipelineStep, ReportTextResult>()
         .WithConfig<MainConfig>()

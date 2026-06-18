@@ -1,5 +1,6 @@
 using System.IO;
 using Devo6.WorkFlow.Abstractions;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// 変換結果を Entry ファイルからの相対パスへ保存する Step です。
@@ -30,6 +31,9 @@ public sealed class SaveTextStep : IStep<Unit>
         string entryDirectory = Path.GetDirectoryName(arguments.EntryPath)!;
         string outputPath = Path.Combine(entryDirectory, config.Path);
 
+        input.Context.Logger.LogInformation("Saving report text to {Path}", config.Path);
+
+        // 出力先ディレクトリがまだ無い初回実行でも、そのまま保存できるように作成します。
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         File.WriteAllText(outputPath, saveInput.Content);
 

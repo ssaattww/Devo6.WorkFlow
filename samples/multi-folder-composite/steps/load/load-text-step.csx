@@ -1,5 +1,6 @@
 using System.IO;
 using Devo6.WorkFlow.Abstractions;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Entry ファイルからの相対パスでテキストを読み込む Step です。
@@ -28,6 +29,9 @@ public sealed class LoadTextStep : IStep<LoadTextResult>
         EngineArguments arguments = input.Context.Get<EngineArguments>();
         string entryDirectory = Path.GetDirectoryName(arguments.EntryPath)!;
         string inputPath = Path.Combine(entryDirectory, config.Path);
+
+        // サンプルを別ディレクトリから実行してもよいよう、入力は Entry .csx の場所から解決します。
+        input.Context.Logger.LogInformation("Loading source text from {Path}", config.Path);
 
         return new LoadTextResult(File.ReadAllText(inputPath));
     }
