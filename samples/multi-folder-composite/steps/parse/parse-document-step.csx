@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Devo6.WorkFlow.Abstractions;
+using Microsoft.Extensions.Logging;
 using YamlDotNet.RepresentationModel;
 
 /// <summary>
@@ -34,6 +35,9 @@ public sealed class ParseDocumentStep : IStep<ParsedDocument>
     {
         Config config = input.Context.Get<Config>();
         LoadTextResult loadResult = input.Get<LoadTextResult>();
+        input.Context.Logger.LogInformation("Parsing YAML front matter with delimiter {Delimiter}", config.FrontMatterDelimiter);
+
+        // 入力を metadata と本文に分け、後続 Step が型付き値として扱える形にします。
         (string frontMatter, string body) = SplitFrontMatter(loadResult.Text, config.FrontMatterDelimiter, config.RequireFrontMatter);
         DocumentMetadata metadata = ParseMetadata(frontMatter);
 

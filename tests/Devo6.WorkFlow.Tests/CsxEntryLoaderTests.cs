@@ -595,6 +595,42 @@ public sealed class CsxEntryLoaderTests
     }
 
     /// <summary>
+    /// 絶対 path の local load が workflow root 配下であれば相対 load と同じように解決されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "workflow root 内への絶対 load は CompositeStep を読み込める")]
+    public void WorkflowRoot内への絶対LoadはCompositeStepを読み込める()
+    {
+        string scriptPath = CreateScript(
+            "",
+            ("steps/build.csx",
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class BuildStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "absolute";
+            }
+
+            var Build = CompositeStep.Define("Build")
+                .Run<BuildStep, string>()
+                    .StoreAs();
+            """));
+        string loadedPath = Path.Combine(Path.GetDirectoryName(scriptPath)!, "steps", "build.csx");
+        File.WriteAllText(
+            scriptPath,
+            $$"""
+            #load "{{loadedPath}}"
+            """);
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath, "Build");
+
+        Assert.True(result.Succeeded);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal("BuildStep", traceStep.StepName);
+    }
+
+    /// <summary>
     /// ワークフロー root 外の file を指す load が SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
     /// </summary>
     [Fact(DisplayName = "workflow root 外への load は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
@@ -609,6 +645,30 @@ public sealed class CsxEntryLoaderTests
             scriptPath,
             """
             #load "../outside.csx"
+            """);
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptReferenceNotAllowed, result.ErrorCode);
+    }
+
+    /// <summary>
+    /// 絶対 path の local load でも workflow root 外の file は SCRIPT_REFERENCE_NOT_ALLOWED で拒否されることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "workflow root 外への絶対 load は SCRIPT_REFERENCE_NOT_ALLOWED になる")]
+    public void WorkflowRoot外への絶対LoadはScriptReferenceNotAllowedになる()
+    {
+        string directory = CreateWorkflowDirectory();
+        string root = Path.Combine(directory, "root");
+        Directory.CreateDirectory(root);
+        string outsidePath = Path.Combine(directory, "outside.csx");
+        File.WriteAllText(outsidePath, "public sealed class Outside { }");
+        string scriptPath = Path.Combine(root, "main.csx");
+        File.WriteAllText(
+            scriptPath,
+            $$"""
+            #load "{{outsidePath}}"
             """);
 
         WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);

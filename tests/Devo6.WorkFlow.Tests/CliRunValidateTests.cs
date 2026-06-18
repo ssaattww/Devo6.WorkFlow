@@ -498,6 +498,63 @@ public sealed class CliRunValidateTests
     }
 
     /// <summary>
+    /// 絶対 path の Entry を指定した run と validate が Entry directory 基準で config と local load を解決することを検査します。
+    /// </summary>
+    [Fact(DisplayName = "絶対 Entry path の run と validate は Entry directory 基準で config と load を解決する")]
+    public async Task AbsoluteEntryPathRunAndValidateResolveConfigAndLocalLoadFromEntryDirectory()
+    {
+        string scriptPath = CreateScript("");
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        string loadedPath = Path.Combine(directory, "steps", "build.csx");
+        Directory.CreateDirectory(Path.GetDirectoryName(loadedPath)!);
+        File.WriteAllText(
+            loadedPath,
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.IO;
+
+            public sealed class ArgumentsStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    string text = $"{arguments.EntryPath}|{arguments.WorkflowConfigPath}|{arguments.EngineConfigPath}";
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "absolute-entry.txt"), text);
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<ArgumentsStep, string>()
+                    .StoreAs();
+            """);
+        File.WriteAllText(
+            scriptPath,
+            $$"""
+            #load "{{loadedPath}}"
+            """);
+        string workflowConfigPath = Path.Combine(directory, "appsettings.yaml");
+        string engineConfigPath = Path.Combine(directory, "engine.yaml");
+        File.WriteAllText(workflowConfigPath, "name: test");
+        File.WriteAllText(
+            engineConfigPath,
+            """
+            Logging:
+              Console:
+                Enabled: false
+            """);
+
+        CliResult validateResult = await RunCliAsync("validate", scriptPath, "--workflow-config", "appsettings.yaml", "--engine-config", "engine.yaml");
+        CliResult runResult = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml", "--engine-config", "engine.yaml");
+
+        AssertSuccess(validateResult);
+        AssertSuccess(runResult);
+        Assert.Equal($"{scriptPath}|{workflowConfigPath}|{engineConfigPath}", File.ReadAllText(Path.Combine(directory, "absolute-entry.txt")));
+    }
+
+    /// <summary>
     /// --engine-set と --eset は EngineSettings へ文字列として格納されることを検査します。
     /// </summary>
     [Fact(DisplayName = "--engine-set と --eset は EngineSettings に文字列として保存される")]

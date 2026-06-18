@@ -855,7 +855,9 @@ CompositeStep 定義は外部 `.csx` に分割できる必要がある。
 
 Entry `main.csx` は参照用パッケージを `#r "nuget: Devo6.WorkFlow.Engine, 0.1.0"` で参照し、YAML 前付け解析用に `#r "nuget: YamlDotNet, 16.3.0"` も入口だけで参照する。Step ファイル側には NuGet 参照を書かない。
 
-root `appsettings.yaml` は `Pipeline.Report.Heading` のような部分上書きだけを持ち、Step ごとの既定値は各 `steps/*/appsettings.yaml` に置く。通常利用ではロックファイルを置かず、NuGet 参照は通常の NuGet 設定で解決する。
+root `appsettings.yaml` は `Pipeline.Load.Path`、`Pipeline.Normalize.Uppercase`、`Pipeline.Report.*`、`Save.Path` のような部分上書きだけを持ち、Step ごとの既定値は各 `steps/*/appsettings.yaml` に置く。通常利用ではロックファイルを置かず、NuGet 参照は通常の NuGet 設定で解決する。
+
+利用手順には、相対 path Entry と絶対 path Entry の両方の実行例を書く。`engine.yaml` で標準出力ログを有効化し、各サンプル Step が `StepContext.Logger` に出す読み込み、解析、整形、分析、出力文書作成、保存の処理ログを進捗表示として確認できることを示す。
 
 ---
 
@@ -1702,9 +1704,9 @@ workflow-root/
 
 `main.csx` はワークフロー定義の入口であり、必要な外部 `.csx` を `#load` する。
 
-相対パスの基準は、原則として実行対象に指定した Entry `.csx` の存在するディレクトリとする。
+相対パスの基準は、原則として実行対象に指定した Entry `.csx` の存在するディレクトリとする。Entry `.csx` は相対 path でも絶対 path でも指定できる。絶対 path の Entry を指定した場合も、Entry ディレクトリ基準の workflow config、engine config、Step 側既定 Config YAML、`EngineArguments.EntryPath` の規則は相対 path 指定時と同じである。
 
-`#load` 内の相対パスは、`#load` を書いた `.csx` の存在するディレクトリを基準とする。
+`#load` 内の相対パスは、`#load` を書いた `.csx` の存在するディレクトリを基準とする。ローカル `#load` は絶対 path も指定できる。絶対 path のローカル `#load` も workflow root 配下だけを許可し、root 外の path は拒否する。
 
 `steps/` 配下の `appsettings.yaml` は、宣言済み Step Config の既定値として置ける。標準実行時に `--workflow-config` へ渡す Config は `config/appsettings.yaml` のような境界 Config 型に対応する root Config ファイルである。エンジンは宣言済み Step Config ごとに Step 側既定 Config YAML を読み込み、root Config の該当区画を部分上書きとして重ねてから境界 Config 型へ変換する。
 
@@ -1741,6 +1743,7 @@ Step 実行、`StepInput` 構築、Config 保持、検証、ログ、実行結�
 ```csharp
 #load "./build.csx"
 #load "./steps/load-step.csx"
+#load "/absolute/path/to/workflow/steps/load-step.csx"
 ```
 
 解決規則は以下とする。
@@ -1748,6 +1751,7 @@ Step 実行、`StepInput` 構築、Config 保持、検証、ログ、実行結�
 | 項目 | 規則 |
 | --- | --- |
 | 相対パス基準 | `#load` を書いた `.csx` のディレクトリ |
+| 絶対パス | workflow root 配下であれば許可 |
 | パス正規化 | `..` とシンボリックリンクを解決した正規パス |
 | root 制限 | `workflow-root` 配下のみ許可 |
 | 循環読み込み | 検出して検証エラー |

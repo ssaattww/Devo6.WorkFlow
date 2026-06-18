@@ -8,9 +8,20 @@
 engine run samples/multi-folder-composite/main.csx --workflow-config appsettings.yaml --engine-config engine.yaml
 ```
 
+絶対 path の Entry も同じ規則で実行できます。
+
+```bash
+ENTRY=$(pwd)/samples/multi-folder-composite/main.csx
+engine run "$ENTRY" --workflow-config appsettings.yaml --engine-config engine.yaml
+```
+
 実行すると `output/result.txt` に結果文書を保存し、`logs/260609-120000_Main.log` のような実行記録を作成します。`engine.yaml` は `Logging.Console.Enabled: true` なので、同じ実行記録は標準出力にも出ます。実行記録名の形式は `engine.yaml` の `{Timestamp:yyMMdd-HHmmss}_{RootStepName}.log` です。このサンプルの root `CompositeStep` 名は `Main` なので、`RootStepName` は `Main` になります。
 
+標準出力ログでは `Entry started`、`Step started for attempt 1`、`Loading source text from input/source.txt`、`Parsing YAML front matter with delimiter ---`、`Building report with heading Composite sample report`、`Saving report text to output/result.txt`、`Entry succeeded` の順に処理状況を追えます。これを進捗表示として見れば、Entry 開始、各 Step の処理内容、成功、Entry 完了を確認できます。
+
 内側の `TextPipeline` は、本文分析後に `RunIf`、`TapIf`、`If`、`Switch` を使います。既定入力では `guide` 文書のメタデータを `TapIf` で検査し、長い文書の `If` 分岐と `guide` の `Switch` 分岐を通ってから結果文書を作ります。入力の `tags:` に `summary` を追加すると、`RunIf` が `tags:` 要約を本文末尾へ追加します。`category: summary` ではなく `tags:` 条件です。
+
+root の `appsettings.yaml` は、Step 側の既定 YAML を全部置き換えるのではなく、境界 Config から必要な値だけを部分上書きします。このサンプルでは `Pipeline.Load.Path`、`Pipeline.Normalize.Uppercase`、`Pipeline.Report.Heading`、`Pipeline.Report.BodyHeading`、`Save.Path` を root 側で示し、`Pipeline.Parse` や `Pipeline.Analyze` は Step 側の既定 YAML をそのまま使います。
 
 ## workflow 値の上書き
 

@@ -287,7 +287,7 @@ public sealed class CsxEntryLoader
                         continue;
                     }
 
-                    string loadedPath = Path.GetFullPath(Path.Combine(directory, loadValue));
+                    string loadedPath = ResolveLocalLoadPath(directory, loadValue);
                     source.AppendLine(LoadScriptFile(loadedPath, context));
                     continue;
                 }
@@ -314,6 +314,17 @@ public sealed class CsxEntryLoader
         {
             context.LoadStack.Remove(fullPath);
         }
+    }
+
+    /// <summary>
+    /// ローカル #load の path を、directive を書いた .csx の directory 基準で絶対 path に解決します。
+    /// </summary>
+    /// <param name="scriptDirectory">#load directive を含む .csx file の directory。</param>
+    /// <param name="loadValue">#load directive に指定された path。</param>
+    /// <returns>解決済み absolute path。</returns>
+    private static string ResolveLocalLoadPath(string scriptDirectory, string loadValue)
+    {
+        return Path.GetFullPath(Path.IsPathRooted(loadValue) ? loadValue : Path.Combine(scriptDirectory, loadValue));
     }
 
     /// <summary>

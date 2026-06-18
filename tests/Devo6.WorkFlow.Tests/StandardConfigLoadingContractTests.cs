@@ -204,6 +204,39 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
+    /// 絶対 path の Entry でも Step 既定 Config と root Config の結合規則が同じであることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "絶対 Entry path でも Step 既定 Config は Entry directory 基準で読み込まれる")]
+    public void AbsoluteEntryPathLoadsStepDefaultConfigFromEntryDirectory()
+    {
+        string scriptPath = CreateDefaultStepConfigScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        WriteStepDefaultConfigFiles(directory, convertPrefix: "absolute: ", convertToUpper: true);
+        string configPath = Path.Combine(directory, "appsettings.yaml");
+        File.WriteAllText(
+            configPath,
+            """
+            Convert:
+              ToUpper: false
+            """);
+
+        WorkflowResult result = new CsxEntryLoader().Execute(
+            scriptPath,
+            options: new WorkflowExecutionOptions(engineArguments: new EngineArguments
+            {
+                EntryPath = scriptPath,
+                WorkflowConfigPath = configPath,
+            }));
+
+        Assert.True(
+            result.Succeeded,
+            $"エラーコード: {result.ErrorCode}{Environment.NewLine}エラー: {result.ErrorMessage}");
+        Assert.Equal("default-input", File.ReadAllText(Path.Combine(directory, "load-marker.txt")));
+        Assert.Equal("False|absolute: |default-input", File.ReadAllText(Path.Combine(directory, "convert-marker.txt")));
+        Assert.Equal("default-output|absolute: default-input", File.ReadAllText(Path.Combine(directory, "save-marker.txt")));
+    }
+
+    /// <summary>
     /// root Config に宣言済み区画がなくても Step 既定 Config だけで実行できることを検査します。
     /// </summary>
     [Fact(DisplayName = "root Config に区画がなくても Step 既定 Config だけで実行できる")]
