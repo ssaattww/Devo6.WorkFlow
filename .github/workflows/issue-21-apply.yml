@@ -29,7 +29,7 @@ jobs:
         run: dotnet restore Devo6.WorkFlow.sln
 
       - name: Apply implementation
-        run: python3 tools/issue21_apply.py
+        run: python3 -c "import tools.issue21_apply as patch; patch.patch_composite()"
 
       - name: Format
         run: dotnet format Devo6.WorkFlow.sln --no-restore
@@ -47,6 +47,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/Devo6.WorkFlow.Engine/CompositeStep.cs src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs
+          git add src/Devo6.WorkFlow.Engine/CompositeStep.cs
           git commit -m "feat: implement hierarchical step logging"
           git push origin HEAD:${GITHUB_REF_NAME}
