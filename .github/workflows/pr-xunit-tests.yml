@@ -25,4 +25,19 @@ jobs:
         run: dotnet restore Devo6.WorkFlow.sln
 
       - name: Test
-        run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal
+        run: >-
+          dotnet test Devo6.WorkFlow.sln
+          --configuration Release
+          --no-restore
+          --verbosity minimal
+          --logger "trx;LogFileName=test-results.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: TestResults/**/*.trx
+          if-no-files-found: warn
+          retention-days: 14
