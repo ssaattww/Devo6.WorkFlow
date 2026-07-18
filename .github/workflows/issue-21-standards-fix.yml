@@ -1,0 +1,103 @@
+name: Issue 21 coding standards fix
+
+on:
+  push:
+    branches:
+      - agent/issue-21-logging-hierarchy-design
+    paths:
+      - .github/workflows/issue-21-standards-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Devo6.WorkFlow.sln
+
+      - name: Apply standards fix
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          provider_path = Path("src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs")
+          provider = provider_path.read_text(encoding="utf-8")
+          old_provider = "internal sealed record EngineLoggingOptions"
+          new_provider = "internal sealed class EngineLoggingOptions"
+          if provider.count(old_provider) != 1:
+              raise RuntimeError("EngineLoggingOptions declaration was not found exactly once")
+          provider_path.write_text(provider.replace(old_provider, new_provider, 1), encoding="utf-8")
+
+          engine_path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
+          engine = engine_path.read_text(encoding="utf-8")
+          old_engine = '''            object? boxedValue = value;
+            displayValue = boxedValue switch
+            {
+                null => "null",
+                IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "null",
+                _ => boxedValue.ToString() ?? "null",
+            };
+'''
+          new_engine = '''            object? boxedValue = value;
+            if (boxedValue is null)
+            {
+                displayValue = "null";
+            }
+            else if (boxedValue is IFormattable)
+            {
+                displayValue = ((IFormattable)boxedValue).ToString(null, CultureInfo.InvariantCulture) ?? "null";
+            }
+            else
+            {
+                displayValue = boxedValue.ToString() ?? "null";
+            }
+'''
+          if engine.count(old_engine) != 1:
+              raise RuntimeError("Switch branch formatter block was not found exactly once")
+          engine_path.write_text(engine.replace(old_engine, new_engine, 1), encoding="utf-8")
+          PY
+
+      - name: Format
+        run: dotnet format Devo6.WorkFlow.sln --no-restore
+
+      - name: Verify standards and logging
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/test-results
+          dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj \
+            --no-restore \
+            --filter "FullyQualifiedName~CodingStandardsContractTests|FullyQualifiedName~HierarchicalLoggingContractTests|FullyQualifiedName~EngineLoggingHierarchyTests" \
+            --logger "trx;LogFileName=issue-21-standards.trx" \
+            --results-directory artifacts/test-results \
+            2>&1 | tee artifacts/test-results/issue-21-standards.log
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-21-standards-evidence-${{ github.run_attempt }}
+          path: artifacts/test-results
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs src/Devo6.WorkFlow.Engine/CompositeStep.cs
+          git commit -m "fix: align hierarchical logging with coding standards"
+          git push origin HEAD:${GITHUB_REF_NAME}
