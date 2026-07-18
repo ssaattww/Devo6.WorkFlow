@@ -25,7 +25,7 @@ root の `appsettings.yaml` は、Step 側の既定 YAML を全部置き換え�
 
 ## NuGet 参照の補完準備
 
-この directory の `omnisharp.json` は、`.csx` 内の NuGet 参照を C# 言語サービスが解決できるように `enableScriptNuGetReferences` を有効にし、対象 framework を `net8.0` に固定します。
+このディレクトリの `omnisharp.json` は、`.csx` 内の NuGet 参照を C# 言語サービスが解決できるように `enableScriptNuGetReferences` を有効にし、対象となる .NET の版を `net8.0` に固定します。
 
 補完用の依存関係を先に復元する場合は、Step を実行しない `validate` を使います。
 

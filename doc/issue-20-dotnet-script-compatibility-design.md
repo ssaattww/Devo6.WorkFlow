@@ -39,7 +39,7 @@
 - `engine run` または `engine validate` による既存 `omnisharp.json` の自動変更
 - C# 言語サービスごとの差を吸収する専用連携
 - NuGet パッケージの配置規則、`project.assets.json`、`contentFiles` の独自解析
-- `Dotnet.Script.Core` の非公開メンバーをリフレクションで変更する実装
+- `Dotnet.Script.Core` の非公開構成要素をリフレクションで変更する実装
 
 ## 5. コンパイル診断の契約
 
@@ -47,7 +47,7 @@
 
 `CS8600` から `CS8655` までの診断は、元の重大度が警告であってもコンパイルエラーとして扱う。
 
-`#nullable enable` が存在しないことだけでは失敗にしない。nullable annotation の使用などにより対象診断が実際に発生した場合に失敗する。たとえば nullable コンテキスト外で `string?` を使用して `CS8632` が発生した場合は、`SCRIPT_COMPILE_FAILED` とする。
+`#nullable enable` が存在しないことだけでは失敗にしない。nullable 注釈の使用などにより対象診断が実際に発生した場合に失敗する。たとえば nullable コンテキスト外で `string?` を使用して `CS8632` が発生した場合は、`SCRIPT_COMPILE_FAILED` とする。
 
 対象範囲外の通常警告は、従来どおりコンパイル失敗にしない。エンジン固有の全警告エラー化は行わない。
 
@@ -60,7 +60,7 @@
 処理順は次のとおりとする。
 
 1. `LoadScriptSource` でローカル `#load`、NuGet 参照、ロック検査を処理する
-2. `CreateScriptOptions` で Roslyn script 用の参照と import を作成する
+2. `CreateScriptOptions` で Roslyn script 用の参照と名前空間指定を作成する
 3. `CSharpScript.Create` で script を作成する
 4. `CSharpCompilationOptions.WithSpecificDiagnosticOptions` を使って nullable 関連診断をエラーへ昇格する
 5. 昇格後のコンパイルからエラー診断を取得する
@@ -112,7 +112,7 @@ public string? DotnetScriptCachePath { get; init; }
 
 初期対応では CLI オプションを追加しない。CLI 利用者は標準位置または `DOTNET_SCRIPT_CACHE_LOCATION` を使う。
 
-### 6.3 dependency graph provider への伝達
+### 6.3 依存関係の構造を扱う provider への伝達
 
 `CsxNuGetDependencyGraphRequest` に、互換性を壊さない追加プロパティとして次を追加する。
 
@@ -120,9 +120,9 @@ public string? DotnetScriptCachePath { get; init; }
 public string? DotnetScriptCachePath { get; init; }
 ```
 
-既存の 4 引数コンストラクタは維持する。`CsxEntryLoader` が request を生成するときに、`CsxEntryLoaderOptions.DotnetScriptCachePath` を object initializer で設定する。
+既存の 4 引数コンストラクタは維持する。`CsxEntryLoader` が要求を生成するときに、`CsxEntryLoaderOptions.DotnetScriptCachePath` をオブジェクト初期化子で設定する。
 
-既定の `DotnetScriptCsxNuGetDependencyGraphProvider` は request の値を `ScriptCompiler` のキャッシュパスへ渡す。独自 provider は追加プロパティを無視しても既存動作を維持できる。
+既定の `DotnetScriptCsxNuGetDependencyGraphProvider` は要求の値を `ScriptCompiler` のキャッシュパスへ渡す。独自 provider は追加プロパティを無視しても既存動作を維持できる。
 
 ### 6.4 復元とロック検査
 
@@ -141,7 +141,7 @@ public string? DotnetScriptCachePath { get; init; }
 
 ### 7.1 責務境界
 
-エンジンは NuGet 復元を実行し、標準のパッケージキャッシュと `dotnet-script` 互換キャッシュを準備する。
+エンジンは NuGet 復元を実行し、標準のパッケージのキャッシュと `dotnet-script` 互換キャッシュを準備する。
 
 C# 言語サービスは別プロセスであり、補完用プロジェクトと assembly 参照を独自に構成する。エンジンは稼働中の言語サービスへ assembly 参照を直接注入しない。
 
@@ -165,7 +165,7 @@ C# 言語サービスは別プロセスであり、補完用プロジェクト�
 }
 ```
 
-`defaultTargetFramework` はワークフローが対象とする .NET の版に合わせる。現在のリポジトリサンプルでは `net8.0` を使う。
+`defaultTargetFramework` はワークフローが対象とする .NET の版に合わせる。現在のリポジトリのサンプルでは `net8.0` を使う。
 
 `engine run` と `engine validate` は、このファイルを自動作成または自動更新しない。既存のエディタ設定を暗黙に変更しないためである。
 
@@ -183,7 +183,7 @@ engine validate main.csx --workflow-config appsettings.yaml
 
 エンジン実行直後、言語サービスの再読み込みなしに補完が即時更新されることは保証しない。
 
-## 8. 処理フロー
+## 8. 処理の流れ
 
 ### 8.1 `engine validate`
 
@@ -244,7 +244,7 @@ omnisharp.json を配置
 
 少なくとも次を自動検査する。
 
-- `#nullable enable` なしで nullable annotation を使うと `Execute` が `SCRIPT_COMPILE_FAILED` になる
+- `#nullable enable` なしで nullable 注釈を使うと `Execute` が `SCRIPT_COMPILE_FAILED` になる
 - 同じ script を `Validate` しても `SCRIPT_COMPILE_FAILED` になる
 - エラーメッセージに `CS8632` が含まれる
 - `#nullable enable` を追加した同等 script は成功する
@@ -264,7 +264,7 @@ omnisharp.json を配置
 - `Execute` と `Validate` が同じキャッシュ設定を使うことを確認する
 - NuGet ロック、許可一覧、`#load "nuget: ..."` の既存検査を回帰確認する
 
-環境変数を変更する検査は並列実行による干渉を避ける。必要であれば同一 collection にまとめるか、検査単位の直列化を行う。
+環境変数を変更する検査は並列実行による干渉を避ける。必要であれば同一コレクションにまとめるか、検査単位の直列化を行う。
 
 ### 10.3 エディタ補完
 
@@ -281,8 +281,8 @@ nullable 関連診断がある `.csx` は、従来のエンジンでは成功し
 
 既存 script の移行方法は次のいずれかとする。
 
-- `#nullable enable` を追加し、nullable annotation と実装を整合させる
-- nullable annotation を使わない
+- `#nullable enable` を追加し、nullable 注釈と実装を整合させる
+- nullable 注釈を使わない
 - Roslyn の標準機構で対象診断を明示的に扱う
 
 ワークフロー配下に旧版の `dotnet-script/` が残っている場合、対応後の実行では既定利用しない。不要であれば利用者が削除できる。
@@ -305,7 +305,7 @@ nullable 関連診断がある `.csx` は、従来のエンジンでは成功し
 
 ### T70 キャッシュ位置の整合
 
-- `DotnetScriptCachePath` を公開オプションと request に追加する
+- `DotnetScriptCachePath` を公開オプションと要求に追加する
 - 既定 provider へ伝達する
 - 標準キャッシュ位置と環境変数を検査する
 - workflow root 配下の生成物が既定では作られないことを確認する
@@ -313,12 +313,12 @@ nullable 関連診断がある `.csx` は、従来のエンジンでは成功し
 ### T71 エディタ補完手順
 
 - サンプルへ `omnisharp.json` を追加する
-- README へ `engine validate` と再読み込み手順を追加する
+- `README.md` へ `engine validate` と再読み込み手順を追加する
 - 自動検査と手動検証記録を追加する
 
 ### T72 統合検証
 
-- solution 全体、format、Markdown、差分検査を実行する
+- solution 全体、フォーマット、Markdown、差分検査を実行する
 - 既存失敗がある場合は今回起因か分類する
 - 課題 #20 の追跡を同期し、実装用の取り込み依頼を作成する
 
@@ -331,7 +331,7 @@ nullable 関連診断がある `.csx` は、従来のエンジンでは成功し
 - 通常警告の扱いを変更しない
 - 既定 NuGet 復元で workflow root 配下に `dotnet-script/` を作らない
 - `DOTNET_SCRIPT_CACHE_LOCATION` と明示 `DotnetScriptCachePath` を利用できる
-- NuGet 許可、固定 version、ロック、NuGet script package の契約を維持する
+- NuGet 許可、固定 version、ロック、NuGet script パッケージの契約を維持する
 - サンプルと文書に `omnisharp.json`、`engine validate`、言語サービス再読み込み手順がある
 - エディタ補完は設定と再読み込みを含む条件付き保証であり、エンジン単独の即時保証ではないことが明記される
 - 通常検査は外部ネットワークを必須にしない
