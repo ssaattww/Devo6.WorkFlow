@@ -2970,12 +2970,18 @@ internal sealed class StepRegistration
         try
         {
             object? boxedValue = value;
-            displayValue = boxedValue switch
+            if (boxedValue is null)
             {
-                null => "null",
-                IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "null",
-                _ => boxedValue.ToString() ?? "null",
-            };
+                displayValue = "null";
+            }
+            else if (boxedValue is IFormattable)
+            {
+                displayValue = ((IFormattable)boxedValue).ToString(null, CultureInfo.InvariantCulture) ?? "null";
+            }
+            else
+            {
+                displayValue = boxedValue.ToString() ?? "null";
+            }
         }
         catch
         {

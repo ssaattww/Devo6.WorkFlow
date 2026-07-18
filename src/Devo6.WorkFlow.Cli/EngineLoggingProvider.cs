@@ -10,7 +10,7 @@ namespace Devo6.WorkFlow.Cli;
 /// <summary>
 /// CLI の engine/step ログを標準出力と任意のファイルへ出力する設定。
 /// </summary>
-internal sealed record EngineLoggingOptions
+internal sealed class EngineLoggingOptions
 {
     /// <summary>コンソール出力を有効化するかどうか。</summary>
     public bool ConsoleEnabled { get; set; } = true;
