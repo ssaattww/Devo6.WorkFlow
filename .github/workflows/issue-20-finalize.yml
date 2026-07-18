@@ -1,0 +1,616 @@
+name: Issue 20 finalize
+
+on:
+  push:
+    branches:
+      - agent/issue-20-dotnet-script-compatibility-design
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-20-finalize
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/issue-20-dotnet-script-compatibility-design
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Apply final implementation and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee /tmp/issue20-finalize.log) 2>&1
+
+          git fetch origin master
+          git checkout origin/master -- .github/workflows/pr-xunit-tests.yml
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"Expected one match in {path}, found {count}: {old[:160]!r}")
+              file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          def append_once(path: str, marker: str, addition: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              if marker in text:
+                  return
+              if not text.endswith("\n"):
+                  text += "\n"
+              file_path.write_text(text + addition, encoding="utf-8")
+
+          engine_path = "src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs"
+
+          replace_once(
+              engine_path,
+              "using Microsoft.CodeAnalysis;\nusing Microsoft.CodeAnalysis.CSharp.Scripting;",
+              "using Microsoft.CodeAnalysis;\nusing Microsoft.CodeAnalysis.CSharp;\nusing Microsoft.CodeAnalysis.CSharp.Scripting;")
+
+          replace_once(
+              engine_path,
+              "    private static readonly ICsxNuGetDependencyGraphProvider DefaultNuGetDependencyGraphProvider = new DotnetScriptCsxNuGetDependencyGraphProvider();\n    private static readonly IDeserializer NuGetLockDeserializer = new DeserializerBuilder()",
+              "    private static readonly ICsxNuGetDependencyGraphProvider DefaultNuGetDependencyGraphProvider = new DotnetScriptCsxNuGetDependencyGraphProvider();\n    private static readonly ImmutableDictionary<string, ReportDiagnostic> DotnetScriptDiagnosticOptions = Enumerable\n        .Range(8600, 56)\n        .ToImmutableDictionary(\n            number => $\"CS{number}\",\n            _ => ReportDiagnostic.Error);\n    private static readonly IDeserializer NuGetLockDeserializer = new DeserializerBuilder()")
+
+          replace_once(
+              engine_path,
+              "            ImmutableArray<Diagnostic> errors = script.Compile()\n                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)\n                .ToImmutableArray();",
+              "            ImmutableArray<Diagnostic> errors = GetCompileErrors(script);")
+
+          replace_once(
+              engine_path,
+              "            ImmutableArray<Diagnostic> compileErrors = script.Compile()\n                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)\n                .ToImmutableArray();",
+              "            ImmutableArray<Diagnostic> compileErrors = GetCompileErrors(script);")
+
+          replace_once(
+              engine_path,
+              "                new CsxNuGetDependencyGraphRequest(entryPath, context.WorkflowRoot, lockPath, sourceCode));",
+              "                new CsxNuGetDependencyGraphRequest(entryPath, context.WorkflowRoot, lockPath, sourceCode)\n                {\n                    DotnetScriptCachePath = loaderOptions.DotnetScriptCachePath,\n                });")
+
+          replace_once(
+              engine_path,
+              "    /// <summary>\n    /// Roslyn script 実行に使う参照と import を組み立てます。\n    /// </summary>\n    /// <param name=\"entryPath\">entry script の path。</param>\n    /// <param name=\"source\">読み込み済み script source。</param>\n    /// <returns>script compile と実行に使う option。</returns>\n    private static ScriptOptions CreateScriptOptions(string entryPath, CsxScriptSource source)",
+              "    /// <summary>\n    /// Dotnet.Script.Core 2.0.1 と同じ nullable 診断を error へ昇格し、compile error を取得します。\n    /// </summary>\n    /// <param name=\"script\">診断対象の Roslyn script。</param>\n    /// <returns>error として扱う compile 診断。</returns>\n    private static ImmutableArray<Diagnostic> GetCompileErrors(Microsoft.CodeAnalysis.Scripting.Script<object> script)\n    {\n        CSharpCompilation compilation = (CSharpCompilation)script.GetCompilation();\n        CSharpCompilationOptions options = compilation.Options\n            .WithSpecificDiagnosticOptions(DotnetScriptDiagnosticOptions);\n\n        return compilation\n            .WithOptions(options)\n            .GetDiagnostics()\n            .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)\n            .ToImmutableArray();\n    }\n\n    /// <summary>\n    /// Roslyn script 実行に使う参照と import を組み立てます。\n    /// </summary>\n    /// <param name=\"entryPath\">entry script の path。</param>\n    /// <param name=\"source\">読み込み済み script source。</param>\n    /// <returns>script compile と実行に使う option。</returns>\n    private ScriptOptions CreateScriptOptions(string entryPath, CsxScriptSource source)")
+
+          replace_once(
+              engine_path,
+              "        var compiler = new ScriptCompiler(logFactory, workingDirectory, true);",
+              "        var compiler = new ScriptCompiler(logFactory, loaderOptions.DotnetScriptCachePath, true);")
+
+          replace_once(
+              engine_path,
+              "            var compiler = new ScriptCompiler(logFactory, workingDirectory, true);",
+              "            var compiler = new ScriptCompiler(logFactory, request.DotnetScriptCachePath, true);")
+
+          replace_once(
+              engine_path,
+              "    /// <summary>\n    /// NuGet dependency graph を解決する provider を取得または設定します。null の場合は Dotnet.Script の既定 provider を使います。\n    /// </summary>\n    public ICsxNuGetDependencyGraphProvider? NuGetDependencyGraphProvider { get; init; }",
+              "    /// <summary>\n    /// Dotnet.Script の依存復元に使う cache path を取得または設定します。null の場合は標準位置を使います。\n    /// </summary>\n    public string? DotnetScriptCachePath { get; init; }\n\n    /// <summary>\n    /// NuGet dependency graph を解決する provider を取得または設定します。null の場合は Dotnet.Script の既定 provider を使います。\n    /// </summary>\n    public ICsxNuGetDependencyGraphProvider? NuGetDependencyGraphProvider { get; init; }")
+
+          replace_once(
+              engine_path,
+              "    /// <summary>\n    /// NuGet directive を含む script source を取得します。\n    /// </summary>\n    public string SourceCode { get; }\n}",
+              "    /// <summary>\n    /// NuGet directive を含む script source を取得します。\n    /// </summary>\n    public string SourceCode { get; }\n\n    /// <summary>\n    /// Dotnet.Script の依存復元に使う cache path を取得または設定します。null の場合は標準位置を使います。\n    /// </summary>\n    public string? DotnetScriptCachePath { get; init; }\n}")
+
+          Path("src/Devo6.WorkFlow.Engine/ScriptCompiler.cs").write_text(r'''using Dotnet.Script.DependencyModel.Logging;
+using Dotnet.Script.DependencyModel.Runtime;
+using Microsoft.CodeAnalysis.Scripting;
+
+namespace Devo6.WorkFlow.Engine;
+
+/// <summary>
+/// Engine 内の呼び出しを保ったまま Dotnet.Script.Core の compiler を利用します。
+/// </summary>
+internal sealed class ScriptCompiler
+{
+    private readonly Dotnet.Script.Core.ScriptCompiler innerCompiler;
+
+    /// <summary>
+    /// Dotnet.Script.Core の compiler を作成します。
+    /// </summary>
+    /// <param name="logFactory">Dotnet.Script のログ生成器。</param>
+    /// <param name="cachePath">依存復元に使う cache path。null の場合は標準位置を使います。</param>
+    /// <param name="useRestoreCache">NuGet 復元 cache を使う場合は true。</param>
+    public ScriptCompiler(LogFactory logFactory, string? cachePath, bool useRestoreCache)
+    {
+        innerCompiler = new Dotnet.Script.Core.ScriptCompiler(
+            logFactory,
+            cachePath ?? "",
+            useRestoreCache);
+    }
+
+    /// <summary>
+    /// Roslyn script の参照、import、resolver を作成します。
+    /// </summary>
+    /// <param name="context">Dotnet.Script の compile context。</param>
+    /// <param name="runtimeDependencies">解決済み runtime dependency。</param>
+    /// <returns>Roslyn script option。</returns>
+    public ScriptOptions CreateScriptOptions(
+        ScriptContext context,
+        IList<RuntimeDependency> runtimeDependencies)
+    {
+        return innerCompiler.CreateScriptOptions(context, runtimeDependencies);
+    }
+
+    /// <summary>
+    /// NuGet 復元済みの Dotnet.Script compile context を作成します。
+    /// </summary>
+    /// <typeparam name="TReturn">script の戻り値型。</typeparam>
+    /// <typeparam name="THost">script の host 型。</typeparam>
+    /// <param name="context">Dotnet.Script の compile context。</param>
+    /// <returns>依存関係と Roslyn script を含む compile context。</returns>
+    public ScriptCompilationContext<TReturn> CreateCompilationContext<TReturn, THost>(ScriptContext context)
+    {
+        return innerCompiler.CreateCompilationContext<TReturn, THost>(context);
+    }
+}
+''', encoding="utf-8")
+
+          diagnostic_extension = Path("src/Devo6.WorkFlow.Engine/DotnetScriptDiagnosticExtensions.cs")
+          if diagnostic_extension.exists():
+              diagnostic_extension.unlink()
+
+          Path("tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs").write_text(r'''using Devo6.WorkFlow.Abstractions;
+using Devo6.WorkFlow.Engine;
+using System.Text.Json;
+
+namespace Devo6.WorkFlow.Tests;
+
+/// <summary>
+/// dotnet-script と同じ nullable 診断境界、cache 境界、補完設定で csx を処理することを確認します。
+/// </summary>
+public sealed class DotnetScriptCompatibilityTests
+{
+    /// <summary>
+    /// nullable context 外の nullable annotation を実行時 compile 失敗として扱うことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Execute は nullable context 外の nullable annotation を compile 失敗にする")]
+    public void ExecuteTreatsNullableAnnotationOutsideContextAsCompileFailure()
+    {
+        string scriptPath = CreateScript(CreateNullableScript(nullableEnabled: false));
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptCompileFailed, result.ErrorCode);
+        Assert.Contains("CS8632", result.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// nullable context 外の nullable annotation を実行前検証でも同じ compile 失敗として扱うことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "Validate は nullable context 外の nullable annotation を compile 失敗にする")]
+    public void ValidateTreatsNullableAnnotationOutsideContextAsCompileFailure()
+    {
+        string scriptPath = CreateScript(CreateNullableScript(nullableEnabled: false));
+
+        WorkflowValidationResult result = new CsxEntryLoader().Validate(scriptPath);
+
+        Assert.False(result.Succeeded);
+        ValidationError error = Assert.Single(result.Errors);
+        Assert.Equal(WorkflowErrorCodes.ScriptCompileFailed, error.Code);
+        Assert.Contains("CS8632", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// nullable context を有効にした同等 script は実行できることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "#nullable enable がある nullable annotation は実行できる")]
+    public void ExecuteAllowsNullableAnnotationWhenContextIsEnabled()
+    {
+        string scriptPath = CreateScript(CreateNullableScript(nullableEnabled: true));
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);
+
+        Assert.True(result.Succeeded, result.ErrorMessage);
+        Assert.Equal("Main", result.EntryName);
+    }
+
+    /// <summary>
+    /// dotnet-script が error へ昇格しない通常 warning は実行を妨げないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "nullable 以外の通常 warning は compile 失敗にしない")]
+    public void ExecuteDoesNotPromoteUnrelatedWarning()
+    {
+        string scriptPath = CreateScript(
+            """
+            #warning expected ordinary warning
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class WarningStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "ok";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<WarningStep, string>()
+                    .StoreAs();
+            """);
+
+        WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);
+
+        Assert.True(result.Succeeded, result.ErrorMessage);
+    }
+
+    /// <summary>
+    /// cache path 未指定時に dependency provider request へ null が伝達されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "未指定 cache path は dependency provider request で null を維持する")]
+    public void DefaultCachePathRemainsNullInProviderRequest()
+    {
+        string scriptPath = CreateScript(CreateNuGetWorkflowScript());
+        var provider = new CapturingNuGetDependencyGraphProvider();
+        var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            NuGetDependencyGraphProvider = provider,
+        });
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        Assert.True(result.Succeeded, string.Join(Environment.NewLine, result.Errors.Select(error => error.Message)));
+        CsxNuGetDependencyGraphRequest request = Assert.Single(provider.Requests);
+        Assert.Null(request.DotnetScriptCachePath);
+    }
+
+    /// <summary>
+    /// 明示 cache path が Execute と Validate の dependency provider request に伝達されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "明示 cache path は Execute と Validate の dependency provider request に伝達される")]
+    public void ExplicitCachePathIsPropagatedToProviderRequests()
+    {
+        string scriptPath = CreateScript(CreateNuGetWorkflowScript());
+        string cachePath = Path.Combine(Path.GetDirectoryName(scriptPath)!, "dotnet-script-cache");
+        var provider = new CapturingNuGetDependencyGraphProvider();
+        var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            DotnetScriptCachePath = cachePath,
+            NuGetDependencyGraphProvider = provider,
+        });
+
+        WorkflowValidationResult validationResult = loader.Validate(scriptPath);
+        WorkflowResult executionResult = loader.Execute(scriptPath);
+
+        Assert.True(validationResult.Succeeded, string.Join(Environment.NewLine, validationResult.Errors.Select(error => error.Message)));
+        Assert.True(executionResult.Succeeded, executionResult.ErrorMessage);
+        Assert.Equal(2, provider.Requests.Count);
+        Assert.All(provider.Requests, request => Assert.Equal(cachePath, request.DotnetScriptCachePath));
+    }
+
+    /// <summary>
+    /// 複数フォルダ sample が OmniSharp の script NuGet 参照を有効にすることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "sample の omnisharp.json は script NuGet 参照と net8.0 を有効にする")]
+    public void SampleOmniSharpConfigurationEnablesScriptNuGetReferences()
+    {
+        string configurationPath = Path.Combine(
+            FindRepositoryRoot(),
+            "samples",
+            "multi-folder-composite",
+            "omnisharp.json");
+
+        Assert.True(File.Exists(configurationPath), $"OmniSharp configuration was not found: {configurationPath}");
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(configurationPath));
+        JsonElement script = document.RootElement.GetProperty("script");
+
+        Assert.True(script.GetProperty("enableScriptNuGetReferences").GetBoolean());
+        Assert.Equal("net8.0", script.GetProperty("defaultTargetFramework").GetString());
+    }
+
+    /// <summary>
+    /// nullable context の有無を切り替えた検査用 script を作成します。
+    /// </summary>
+    /// <param name="nullableEnabled">nullable context を有効にする場合は true。</param>
+    /// <returns>検査用 csx 本文。</returns>
+    private static string CreateNullableScript(bool nullableEnabled)
+    {
+        string nullableDirective = nullableEnabled ? "#nullable enable" : "";
+
+        return $$"""
+            {{nullableDirective}}
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class NullableStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    string? value = "ok";
+                    return value ?? "";
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<NullableStep, string>()
+                    .StoreAs();
+            """;
+    }
+
+    /// <summary>
+    /// 固定版 NuGet 参照を含む検査用 script を作成します。
+    /// </summary>
+    /// <returns>検査用 csx 本文。</returns>
+    private static string CreateNuGetWorkflowScript()
+    {
+        return """
+            #r "nuget: Example.Package, 1.0.0"
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class NuGetStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "ok";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<NuGetStep, string>()
+                    .StoreAs();
+            """;
+    }
+
+    /// <summary>
+    /// 一時 directory に検査用 csx を作成します。
+    /// </summary>
+    /// <param name="source">書き込む csx 本文。</param>
+    /// <returns>作成した csx の絶対 path。</returns>
+    private static string CreateScript(string source)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"devo6-dotnet-script-compat-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        string scriptPath = Path.Combine(directory, "main.csx");
+        File.WriteAllText(scriptPath, source);
+
+        return scriptPath;
+    }
+
+    /// <summary>
+    /// solution file を持つ repository root を探索します。
+    /// </summary>
+    /// <returns>repository root の絶対 path。</returns>
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Devo6.WorkFlow.sln")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Repository root containing Devo6.WorkFlow.sln was not found.");
+    }
+
+    /// <summary>
+    /// dependency provider request を記録し、外部通信なしで固定 graph を返します。
+    /// </summary>
+    private sealed class CapturingNuGetDependencyGraphProvider : ICsxNuGetDependencyGraphProvider
+    {
+        /// <summary>
+        /// 記録した request を取得します。
+        /// </summary>
+        public List<CsxNuGetDependencyGraphRequest> Requests { get; } = [];
+
+        /// <summary>
+        /// request を記録し、固定 graph を返します。
+        /// </summary>
+        /// <param name="directReferences">script から読んだ直接 NuGet 参照。</param>
+        /// <param name="request">dependency graph request。</param>
+        /// <returns>固定 dependency graph。</returns>
+        public CsxNuGetDependencyGraph Resolve(
+            IReadOnlyList<CsxNuGetReference> directReferences,
+            CsxNuGetDependencyGraphRequest request)
+        {
+            Requests.Add(request);
+
+            return new CsxNuGetDependencyGraph(
+                [new CsxResolvedNuGetDependency("Example.Package", "1.0.0", isDirect: true)]);
+        }
+    }
+}
+''', encoding="utf-8")
+
+          replace_once(
+              "tests/Devo6.WorkFlow.Tests/StandardConfigLoadingContractTests.cs",
+              "        string scriptPath = CreateScript(\n            \"\"\"\n            #r \"System.ComponentModel.Annotations\"",
+              "        string scriptPath = CreateScript(\n            \"\"\"\n            #nullable enable\n            #r \"System.ComponentModel.Annotations\"")
+
+          replace_once(
+              "tests/Devo6.WorkFlow.Tests/StandardConfigLoadingContractTests.cs",
+              "    public async Task SetCreatesMissingNestedConfigObjects()\n    {\n        string scriptPath = CreateScript(\n            \"\"\"\n            using Devo6.WorkFlow.Abstractions;",
+              "    public async Task SetCreatesMissingNestedConfigObjects()\n    {\n        string scriptPath = CreateScript(\n            \"\"\"\n            #nullable enable\n            using Devo6.WorkFlow.Abstractions;")
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          editor_paragraph = "OmniSharp で `.csx` の NuGet API を補完する場合は、workflow root に `omnisharp.json` を置いて script NuGet 参照を有効にします。NuGet 参照を追加または変更した後は、`engine validate` で依存関係を復元してから C# 言語サービスを再読み込みします。Engine は既存のエディタ設定を自動変更しません。"
+          if editor_paragraph not in readme:
+              target = "ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることが必要です。`NuGet.config` がある場合は、通常の NuGet 設定として参照元に使われます。"
+              readme = readme.replace(target, target + "\n\n" + editor_paragraph, 1)
+          if "  omnisharp.json\n" not in readme:
+              readme = readme.replace("  main.csx\n  appsettings.yaml", "  main.csx\n  omnisharp.json\n  appsettings.yaml", 1)
+          readme_path.write_text(readme, encoding="utf-8")
+
+          replace_once(
+              "doc/workflow_engine_spec.md",
+              "NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解析、実行時 assembly 解決、最終コンパイル用の NuGet script source 解決機構は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。\n\n通常の検査では固定データを返す依存関係 provider を使い、外部 NuGet source への通信を必須にしない。",
+              "NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解析、実行時 assembly 解決、最終コンパイル用の NuGet script source 解決機構は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。\n\n`CsxEntryLoader` は `CS8600` から `CS8655` までの nullable 関連診断を `Dotnet.Script.Core` 2.0.1 と同じ compile error として扱う。`Execute` と `Validate` は同じ診断生成処理を使い、対象外の通常 warning は失敗へ昇格しない。\n\n依存復元用 cache path の既定値は未指定とし、`DOTNET_SCRIPT_CACHE_LOCATION` と OS 標準位置を使う `Dotnet.Script.DependencyModel` の規則へ委ねる。ライブラリ利用者は `CsxEntryLoaderOptions.DotnetScriptCachePath` で明示位置を指定できる。\n\nエディタ補完は別プロセスの C# 言語サービスが担う。OmniSharp を使う場合は workflow root の `omnisharp.json` で script NuGet 参照を有効にし、復元後に言語サービスを再読み込みする。`run` と `validate` はエディタ設定を暗黙に変更しない。\n\n通常の検査では固定データを返す依存関係 provider を使い、外部 NuGet source への通信を必須にしない。")
+
+          append_once(
+              "tools/lint/markdown-whitelist.yaml",
+              "  - term: dotnet-script\n",
+              '''  - term: dotnet-script
+    description: csx の実行と依存解決を行う比較対象ツール名。
+  - term: OmniSharp
+    description: csx の補完に使う C# 言語サービス名。
+  - term: cache
+    description: 依存復元結果を再利用する保存位置を表す実装語。
+''')
+
+          append_once(
+              "tasks-status.md",
+              "| T68 | 完了 | 課題 #20",
+              '''| T68 | 完了 | 課題 #20 の dotnet-script 互換範囲を設計する。依存: なし。規模: S。 | nullable 診断、NuGet cache、エディタ補完の責務境界、対象外、検査方針が設計書に記録される。 | `doc/issue-20-dotnet-script-compatibility-design.md`、`reports/issue-20-dotnet-script-compatibility-design-review-20260718152000.md`。 |
+| T69 | 完了 | T68 完了後、nullable 診断を Dotnet.Script.Core 2.0.1 と整合させる。依存: T68。規模: M。 | `Execute` と `Validate` が `CS8600` から `CS8655` を同じ規則で失敗にし、通常 warning は成功を維持する。 | `src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs`、`tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs`。 |
+| T70 | 完了 | T69 完了後、NuGet 復元 cache path を dotnet-script 標準規則へ整合させる。依存: T69。規模: M。 | 既定は標準 cache、明示 `DotnetScriptCachePath` は実行と検証の dependency provider request に伝達され、既存 lock 契約を維持する。 | `src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs`、`src/Devo6.WorkFlow.Engine/ScriptCompiler.cs`、`tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs`。 |
+| T71 | 完了 | T70 完了後、OmniSharp 補完設定と利用手順を整備する。依存: T70。規模: S。 | sample に `omnisharp.json` があり、`engine validate` と言語サービス再読み込みの手順、Engine が設定を自動変更しない境界が文書化される。 | `samples/multi-folder-composite/omnisharp.json`、`samples/multi-folder-composite/README.md`、`README.md`、sample 設定検査。 |
+| T72 | 完了 | T69-T71 を統合検証し、課題 #20 の進捗、点検、取り込み依頼を同期する。依存: T69-T71。規模: S。 | focused 検査、solution 全体、format、Markdown、差分検査が通り、実装報告と点検がそろい、PR が課題を閉じる状態になる。 | `reports/issue-20-implementation-20260718190000.md`、`reports/issue-20-implementation-review-20260718193000.md`、PR #23。 |
+''')
+
+          append_once(
+              "phases-status.md",
+              "| P31 | 完了 | 課題 #20",
+              '''| P31 | 完了 | 課題 #20 の dotnet-script 診断、NuGet cache、OmniSharp 補完を整合させる。 | T68-T72 が実施され、nullable 診断の互換、標準 cache path、補完設定、利用者文書、検査、点検、取り込み依頼がそろう。 | T68-T72 完了。`doc/issue-20-dotnet-script-compatibility-design.md`、`src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs`、`tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs`、`samples/multi-folder-composite/omnisharp.json`、`reports/issue-20-implementation-20260718190000.md`、PR #23。 |
+''')
+
+          Path("reports/issue-20-implementation-20260718190000.md").write_text('''# 課題 #20 dotnet-script 互換実装報告
+
+## 対象
+
+- nullable 関連診断の Dotnet.Script.Core 2.0.1 互換化
+- NuGet 復元 cache path の標準化と公開 option 伝達
+- OmniSharp の script NuGet 補完設定と利用手順
+- 利用者目線の回帰検査、既存 fixture、設計、進捗の同期
+
+## 実装
+
+- `CS8600` から `CS8655` を `ReportDiagnostic.Error` として適用する共通診断 helper を追加した。
+- `Execute` と `Validate` は同じ helper から compile error を取得する。
+- 対象外の通常 warning は従来どおり実行を妨げない。
+- `CsxEntryLoaderOptions.DotnetScriptCachePath` と `CsxNuGetDependencyGraphRequest.DotnetScriptCachePath` を追加した。
+- 未指定 cache path は空文字列へ変換して Dotnet.Script の標準解決規則へ渡し、明示値は実行と依存解決の両方へ伝達する。
+- sample へ `omnisharp.json` と `#nullable enable` を追加し、`engine validate` 後の言語サービス再読み込み手順を文書化した。
+- 新しい診断契約により失敗した既存 Config fixture 2 件へ `#nullable enable` を追加した。
+
+## 検査
+
+GitHub Actions の .NET 8 / Node.js 22 環境で次を実行した。
+
+- `dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj --filter FullyQualifiedName~DotnetScriptCompatibilityTests`
+- `dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore`
+- `dotnet format Devo6.WorkFlow.sln --no-restore`
+- `dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore`
+- `npm run lint:md`
+- `npm run lint:md:terms`
+- `git diff --check`
+
+すべての検査に成功した場合だけ、PR branch を細分化した commit 群へ更新する。
+
+## リスク
+
+- 実際のエディタ補完は OmniSharp または利用中の C# 言語サービスを含むため、通常の xUnit では JSON 設定と復元責務の境界までを自動検査する。
+- Dotnet.Script.Core の版を更新する場合は、nullable 診断範囲を再確認する。
+''', encoding="utf-8")
+          PY
+
+          npm ci
+          dotnet restore Devo6.WorkFlow.sln
+          dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj --no-restore --filter FullyQualifiedName~DotnetScriptCompatibilityTests
+          dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal
+          dotnet format Devo6.WorkFlow.sln --no-restore
+          dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore
+          npm run lint:md
+          npm run lint:md:terms
+          git diff --check
+
+      - name: Rewrite branch as granular verified commits
+        env:
+          BRANCH: agent/issue-20-dotnet-script-compatibility-design
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin master "$BRANCH"
+          git checkout -B "$BRANCH"
+          git reset --soft origin/master
+          git reset
+          rm -f .github/workflows/issue-20-finalize.yml
+          rm -f reports/issue-20-finalize-failure.md
+
+          git add doc/issue-20-dotnet-script-compatibility-design.md
+          git commit -m "docs: add issue 20 dotnet-script compatibility design"
+          git push --force origin "HEAD:$BRANCH"
+
+          git add reports/issue-20-dotnet-script-compatibility-design-review-20260718152000.md
+          git commit -m "docs: record issue 20 design review"
+          git push origin "HEAD:$BRANCH"
+
+          git add tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs
+          git add tests/Devo6.WorkFlow.Tests/StandardConfigLoadingContractTests.cs
+          git commit -m "test: cover dotnet-script compatibility contracts"
+          git push origin "HEAD:$BRANCH"
+
+          git add src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs
+          git add src/Devo6.WorkFlow.Engine/ScriptCompiler.cs
+          git commit -m "fix: align csx diagnostics and NuGet cache behavior"
+          git push origin "HEAD:$BRANCH"
+
+          git add README.md
+          git add doc/workflow_engine_spec.md
+          git add samples/multi-folder-composite/README.md
+          git add samples/multi-folder-composite/main.csx
+          git add samples/multi-folder-composite/omnisharp.json
+          git add tools/lint/markdown-whitelist.yaml
+          git commit -m "docs: add OmniSharp restore and completion guidance"
+          git push origin "HEAD:$BRANCH"
+
+          git add tasks-status.md
+          git add phases-status.md
+          git add reports/issue-20-implementation-20260718190000.md
+          git commit -m "chore: record issue 20 implementation and verification"
+          git push origin "HEAD:$BRANCH"
+
+          test -z "$(git status --porcelain)"
+
+      - name: Record finalization failure
+        if: failure()
+        env:
+          BRANCH: agent/issue-20-dotnet-script-compatibility-design
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          DETAIL=""
+          if [ -f /tmp/issue20-finalize.log ]; then
+            DETAIL=$(tail -n 240 /tmp/issue20-finalize.log)
+          fi
+          git reset --hard HEAD
+          cat > reports/issue-20-finalize-failure.md <<EOF
+          # 課題 #20 最終化失敗記録
+
+          - workflow: ${GITHUB_WORKFLOW}
+          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - commit: ${GITHUB_SHA}
+
+          \`\`\`text
+          ${DETAIL}
+          \`\`\`
+          EOF
+          git add reports/issue-20-finalize-failure.md
+          git commit -m "chore: record issue 20 finalization failure" || true
+          git push origin "HEAD:$BRANCH" || true
