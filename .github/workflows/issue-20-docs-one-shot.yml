@@ -1,0 +1,153 @@
+name: Issue 20 documentation verification
+
+on:
+  push:
+    branches:
+      - agent/issue-20-dotnet-script-compatibility-design
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-20-docs-one-shot
+  cancel-in-progress: false
+
+jobs:
+  document:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5
+        with:
+          ref: agent/issue-20-dotnet-script-compatibility-design
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Update documentation and tracking
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"Expected one match in {path}, found {count}: {old[:160]!r}")
+              file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          def append_once(path: str, marker: str, addition: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              if marker in text:
+                  return
+              if not text.endswith("\n"):
+                  text += "\n"
+              file_path.write_text(text + addition, encoding="utf-8")
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          target = "ワークフロー内で NuGet 参照を使う場合は、利用するパッケージ参照元へアクセスできることが必要です。`NuGet.config` がある場合は、通常の NuGet 設定として参照元に使われます。"
+          paragraph = "OmniSharp で `.csx` の NuGet API を補完する場合は、workflow root に `omnisharp.json` を置いて script NuGet 参照を有効にします。NuGet 参照を追加または変更した後は、`engine validate` で依存関係を復元してから C# 言語サービスを再読み込みします。Engine は既存のエディタ設定を自動変更しません。"
+          if paragraph not in readme:
+              if readme.count(target) != 1:
+                  raise RuntimeError("README NuGet paragraph was not found exactly once")
+              readme = readme.replace(target, target + "\n\n" + paragraph, 1)
+          if "  omnisharp.json\n" not in readme:
+              readme = readme.replace("  main.csx\n  appsettings.yaml", "  main.csx\n  omnisharp.json\n  appsettings.yaml", 1)
+          readme_path.write_text(readme, encoding="utf-8")
+
+          replace_once(
+              "doc/workflow_engine_spec.md",
+              "NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解析、実行時 assembly 解決、最終コンパイル用の NuGet script source 解決機構は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。\n\n通常の検査では固定データを返す依存関係 provider を使い、外部 NuGet source への通信を必須にしない。",
+              "NuGet キャッシュ探索、`contentFiles` 選択、`project.assets.json` 解析、実行時 assembly 解決、最終コンパイル用の NuGet script source 解決機構は `Dotnet.Script.Core` と `Dotnet.Script.DependencyModel` に委ねる。\n\n`CsxEntryLoader` は `CS8600` から `CS8655` までの nullable 関連診断を `Dotnet.Script.Core` 2.0.1 と同じコンパイルエラーとして扱う。`Execute` と `Validate` は同じ診断生成処理を使い、対象外の通常 warning は失敗へ昇格しない。\n\n依存復元用キャッシュパスの既定値は未指定とし、`DOTNET_SCRIPT_CACHE_LOCATION` と OS 標準位置を使う `Dotnet.Script.DependencyModel` の規則へ委ねる。ライブラリ利用者は `CsxEntryLoaderOptions.DotnetScriptCachePath` で明示位置を指定できる。\n\nエディタ補完は別プロセスの C# 言語サービスが担う。OmniSharp を使う場合は workflow root の `omnisharp.json` で script NuGet 参照を有効にし、復元後に言語サービスを再読み込みする。`run` と `validate` はエディタ設定を暗黙に変更しない。\n\n通常の検査では固定データを返す依存関係 provider を使い、外部 NuGet source への通信を必須にしない。")
+
+          append_once(
+              "tools/lint/markdown-whitelist.yaml",
+              "  - term: dotnet-script\n",
+              '''  - term: dotnet-script
+              description: csx の実行と依存解決を行う比較対象ツール名。
+            - term: OmniSharp
+              description: csx の補完に使う C# 言語サービス名。
+            - term: cache
+              description: 依存復元結果を再利用する保存位置を表す実装語。
+          ''')
+
+          append_once(
+              "tasks-status.md",
+              "| T68 | 完了 | 課題 #20",
+              '''| T68 | 完了 | 課題 #20 の dotnet-script 互換範囲を設計する。 | nullable 診断、NuGet キャッシュ、エディタ補完の責務境界を設計する。 | `doc/issue-20-dotnet-script-compatibility-design.md`、設計点検報告。 |
+          | T69 | 完了 | nullable 診断を `Dotnet.Script.Core` 2.0.1 と整合させる。 | `Execute` と `Validate` の診断規則、通常 warning の互換性を検査する。 | `src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs`、`tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs`。 |
+          | T70 | 完了 | NuGet 復元キャッシュパスを標準規則へ整合させる。 | 既定と明示キャッシュパスを依存解決 request まで伝達する。 | `CsxEntryLoader.cs`、キャッシュ契約検査。 |
+          | T71 | 完了 | OmniSharp 補完設定と利用手順を整備する。 | sample 設定、`validate`、再読み込み手順を文書化する。 | `samples/multi-folder-composite/`、`README.md`、設定検査。 |
+          | T72 | 完了 | 課題 #20 を統合検証し PR を更新する。 | focused、solution、format、Markdown、差分検査が通る。 | 実装報告、実装点検、PR #23。 |
+          ''')
+
+          append_once(
+              "phases-status.md",
+              "| P31 | 完了 | 課題 #20",
+              '''| P31 | 完了 | 課題 #20 の dotnet-script 診断、NuGet キャッシュ、OmniSharp 補完を整合させる。 | T68-T72 と利用者文書、検査、点検、PR がそろう。 | T68-T72、PR #23。 |
+          ''')
+
+          Path("reports/issue-20-implementation-20260718190000.md").write_text('''# 課題 #20 dotnet-script 互換実装報告
+
+          ## 変更
+
+          - `CS8600` から `CS8655` を `Dotnet.Script.Core` 2.0.1 と同じコンパイルエラーとして扱う。
+          - `Execute` と `Validate` で共通の診断処理を使う。
+          - `DotnetScriptCachePath` を loader option と依存解決 request に追加する。
+          - sample と README に OmniSharp、`validate`、言語サービス再読み込みの手順を追加する。
+          - 新契約で失敗した既存 Config fixture 2 件へ `#nullable enable` を追加する。
+
+          ## TDD
+
+          nullable 診断、通常 warning、キャッシュパス伝達、OmniSharp 設定の検査を先に追加し、赤を確認してから実装した。既存検査で検出された nullable context 不足は、利用側 fixture と sample を明示的に有効化して解消した。
+
+          ## 検査
+
+          - focused dotnet-script compatibility tests
+          - solution Release tests
+          - `dotnet format` 検査
+          - Markdown lint と表記揺れ検査
+          - `git diff --check`
+          ''', encoding="utf-8")
+          PY
+
+          rm .github/workflows/issue-20-docs-one-shot.yml
+
+      - name: Install Markdown dependencies
+        run: npm ci
+
+      - name: Markdown lint
+        run: npm run lint:md
+
+      - name: Terminology check
+        run: npm run lint:md:terms
+
+      - name: Diff verification
+        run: git diff --check
+
+      - name: Commit documentation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md doc/workflow_engine_spec.md tools/lint/markdown-whitelist.yaml
+          git commit -m "docs: dotnet-script補完とキャッシュ契約を反映"
+          git push origin HEAD:agent/issue-20-dotnet-script-compatibility-design
+
+      - name: Commit tracking
+        shell: bash
+        run: |
+          git add tasks-status.md phases-status.md reports/issue-20-implementation-20260718190000.md
+          git add -u .github/workflows
+          git commit -m "chore: Issue #20の実装検証記録を同期"
+          git push origin HEAD:agent/issue-20-dotnet-script-compatibility-design
