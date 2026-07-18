@@ -25,4 +25,16 @@ jobs:
         run: dotnet restore Devo6.WorkFlow.sln
 
       - name: Test
-        run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal
+        shell: bash
+        run: |
+          mkdir -p TestResults
+          set -o pipefail
+          dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal 2>&1 | tee TestResults/test.log
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-xunit-test-log-${{ github.run_id }}
+          path: TestResults/test.log
+          if-no-files-found: error
