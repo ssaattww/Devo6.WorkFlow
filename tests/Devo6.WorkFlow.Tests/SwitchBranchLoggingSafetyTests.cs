@@ -52,13 +52,13 @@ public sealed class SwitchBranchLoggingSafetyTests
     }
 
     /// <summary>
-    /// case 値の文字列化に失敗しても workflow を失敗させず fallback 名を使うことを検証します。
+    /// 実行時に case 値の文字列化へ失敗しても workflow を失敗させず fallback 名を使うことを検証します。
     /// </summary>
     [Fact(DisplayName = "Switch case の ToString 失敗は unavailable 表示へ fallback する")]
     public void SwitchCaseLogNameFallsBackWhenToStringFails()
     {
         string directory = CreateTemporaryDirectory();
-        var selectedCase = new ThrowingCaseToken();
+        var selectedCase = new ThrowingCaseToken("selected");
         try
         {
             using EngineLoggerFactory loggerFactory = CreateLoggerFactory(directory);
@@ -75,6 +75,9 @@ public sealed class SwitchBranchLoggingSafetyTests
                             return current;
                         }))
                         .Default(branch => branch.Run("DefaultStep", current => current)));
+
+            // workflow 定義時の既存 case 検証とは分離し、実行時のログ表示だけを失敗させます。
+            selectedCase.ThrowOnToString = true;
 
             WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
 
@@ -164,17 +167,38 @@ public sealed class SwitchBranchLoggingSafetyTests
     }
 
     /// <summary>
-    /// 文字列化に失敗する case 値です。
+    /// 実行時だけ文字列化に失敗できる case 値です。
     /// </summary>
     private sealed class ThrowingCaseToken
     {
+        private readonly string displayName;
+
         /// <summary>
-        /// fallback 契約を検証するため例外を送出します。
+        /// 通常時の表示名を指定して case 値を作成します。
         /// </summary>
-        /// <returns>戻りません。</returns>
+        /// <param name="displayName">文字列化に成功するときの表示名。</param>
+        public ThrowingCaseToken(string displayName)
+        {
+            this.displayName = displayName;
+        }
+
+        /// <summary>
+        /// 文字列化時に例外を送出するかどうかを取得または設定します。
+        /// </summary>
+        public bool ThrowOnToString { get; set; }
+
+        /// <summary>
+        /// 設定に応じて表示名を返すか、fallback 契約を検証する例外を送出します。
+        /// </summary>
+        /// <returns>通常時の表示名。</returns>
         public override string ToString()
         {
-            throw new InvalidOperationException("case value cannot be formatted");
+            if (ThrowOnToString)
+            {
+                throw new InvalidOperationException("case value cannot be formatted");
+            }
+
+            return displayName;
         }
     }
 
