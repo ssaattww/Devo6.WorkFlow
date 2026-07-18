@@ -1,0 +1,264 @@
+name: Issue 20 one-shot implementation
+
+on:
+  push:
+    branches:
+      - agent/issue-20-dotnet-script-compatibility-design
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-20-one-shot
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@v5
+        with:
+          ref: agent/issue-20-dotnet-script-compatibility-design
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Apply direct implementation
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"Expected one match in {path}, found {count}: {old[:160]!r}")
+              file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          engine_path = "src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs"
+
+          replace_once(
+              engine_path,
+              "using Microsoft.CodeAnalysis;\nusing Microsoft.CodeAnalysis.CSharp.Scripting;",
+              "using Microsoft.CodeAnalysis;\nusing Microsoft.CodeAnalysis.CSharp;\nusing Microsoft.CodeAnalysis.CSharp.Scripting;")
+
+          replace_once(
+              engine_path,
+              "    private static readonly ICsxNuGetDependencyGraphProvider DefaultNuGetDependencyGraphProvider = new DotnetScriptCsxNuGetDependencyGraphProvider();\n    private static readonly IDeserializer NuGetLockDeserializer = new DeserializerBuilder()",
+              "    private static readonly ICsxNuGetDependencyGraphProvider DefaultNuGetDependencyGraphProvider = new DotnetScriptCsxNuGetDependencyGraphProvider();\n    private static readonly ImmutableDictionary<string, ReportDiagnostic> DotnetScriptDiagnosticOptions = Enumerable\n        .Range(8600, 56)\n        .ToImmutableDictionary(\n            number => $\"CS{number}\",\n            _ => ReportDiagnostic.Error);\n    private static readonly IDeserializer NuGetLockDeserializer = new DeserializerBuilder()")
+
+          replace_once(
+              engine_path,
+              "            ImmutableArray<Diagnostic> errors = script.Compile()\n                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)\n                .ToImmutableArray();",
+              "            ImmutableArray<Diagnostic> errors = GetCompileErrors(script);")
+
+          replace_once(
+              engine_path,
+              "            ImmutableArray<Diagnostic> compileErrors = script.Compile()\n                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)\n                .ToImmutableArray();",
+              "            ImmutableArray<Diagnostic> compileErrors = GetCompileErrors(script);")
+
+          replace_once(
+              engine_path,
+              "                new CsxNuGetDependencyGraphRequest(entryPath, context.WorkflowRoot, lockPath, sourceCode));",
+              "                new CsxNuGetDependencyGraphRequest(entryPath, context.WorkflowRoot, lockPath, sourceCode)\n                {\n                    DotnetScriptCachePath = loaderOptions.DotnetScriptCachePath,\n                });")
+
+          replace_once(
+              engine_path,
+              '''    /// <summary>
+              /// Roslyn script 実行に使う参照と import を組み立てます。
+              /// </summary>
+              /// <param name="entryPath">entry script の path。</param>
+              /// <param name="source">読み込み済み script source。</param>
+              /// <returns>script compile と実行に使う option。</returns>
+              private static ScriptOptions CreateScriptOptions(string entryPath, CsxScriptSource source)
+          ''',
+              '''    /// <summary>
+              /// Dotnet.Script.Core 2.0.1 と同じ nullable 診断を error へ昇格し、compile error を取得します。
+              /// </summary>
+              /// <param name="script">診断対象の Roslyn script。</param>
+              /// <returns>error として扱う compile 診断。</returns>
+              private static ImmutableArray<Diagnostic> GetCompileErrors(Microsoft.CodeAnalysis.Scripting.Script<object> script)
+              {
+                  CSharpCompilation compilation = (CSharpCompilation)script.GetCompilation();
+                  CSharpCompilationOptions options = compilation.Options
+                      .WithSpecificDiagnosticOptions(DotnetScriptDiagnosticOptions);
+
+                  return compilation
+                      .WithOptions(options)
+                      .GetDiagnostics()
+                      .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                      .ToImmutableArray();
+              }
+
+              /// <summary>
+              /// Roslyn script 実行に使う参照と import を組み立てます。
+              /// </summary>
+              /// <param name="entryPath">entry script の path。</param>
+              /// <param name="source">読み込み済み script source。</param>
+              /// <returns>script compile と実行に使う option。</returns>
+              private ScriptOptions CreateScriptOptions(string entryPath, CsxScriptSource source)
+          ''')
+
+          replace_once(
+              engine_path,
+              '''        LogFactory logFactory = _ => (_, _, _) => { };
+                  string workingDirectory = Path.GetDirectoryName(Path.GetFullPath(entryPath)) ?? Directory.GetCurrentDirectory();
+                  var compiler = new ScriptCompiler(logFactory, workingDirectory, true);
+                  var context = new ScriptContext(
+          ''',
+              '''        LogFactory logFactory = _ => (_, _, _) => { };
+                  string workingDirectory = Path.GetDirectoryName(Path.GetFullPath(entryPath)) ?? Directory.GetCurrentDirectory();
+                  var compiler = new ScriptCompiler(logFactory, loaderOptions.DotnetScriptCachePath ?? "", true);
+                  var context = new ScriptContext(
+          ''')
+
+          replace_once(
+              engine_path,
+              '''            LogFactory logFactory = _ => (_, _, _) => { };
+                      string workingDirectory = Path.GetDirectoryName(Path.GetFullPath(request.EntryPath)) ?? request.WorkflowRoot;
+                      var compiler = new ScriptCompiler(logFactory, workingDirectory, true);
+                      var context = new ScriptContext(
+          ''',
+              '''            LogFactory logFactory = _ => (_, _, _) => { };
+                      string workingDirectory = Path.GetDirectoryName(Path.GetFullPath(request.EntryPath)) ?? request.WorkflowRoot;
+                      var compiler = new ScriptCompiler(logFactory, request.DotnetScriptCachePath ?? "", true);
+                      var context = new ScriptContext(
+          ''')
+
+          replace_once(
+              engine_path,
+              '''    /// <summary>
+              /// NuGet dependency graph を解決する provider を取得または設定します。null の場合は Dotnet.Script の既定 provider を使います。
+              /// </summary>
+              public ICsxNuGetDependencyGraphProvider? NuGetDependencyGraphProvider { get; init; }
+          ''',
+              '''    /// <summary>
+              /// Dotnet.Script の依存復元に使う cache path を取得または設定します。null の場合は Dotnet.Script の標準位置を使います。
+              /// </summary>
+              public string? DotnetScriptCachePath { get; init; }
+
+              /// <summary>
+              /// NuGet dependency graph を解決する provider を取得または設定します。null の場合は Dotnet.Script の既定 provider を使います。
+              /// </summary>
+              public ICsxNuGetDependencyGraphProvider? NuGetDependencyGraphProvider { get; init; }
+          ''')
+
+          replace_once(
+              engine_path,
+              '''    /// <summary>
+              /// NuGet directive を含む script source を取得します。
+              /// </summary>
+              public string SourceCode { get; }
+          }
+          ''',
+              '''    /// <summary>
+              /// NuGet directive を含む script source を取得します。
+              /// </summary>
+              public string SourceCode { get; }
+
+              /// <summary>
+              /// Dotnet.Script の依存復元に使う cache path を取得または設定します。null の場合は標準位置を使います。
+              /// </summary>
+              public string? DotnetScriptCachePath { get; init; }
+          }
+          ''')
+
+          config_path = "tests/Devo6.WorkFlow.Tests/StandardConfigLoadingContractTests.cs"
+          replace_once(
+              config_path,
+              '''        string scriptPath = CreateScript(
+                      """
+                      #r "System.ComponentModel.Annotations"
+          ''',
+              '''        string scriptPath = CreateScript(
+                      """
+                      #nullable enable
+
+                      #r "System.ComponentModel.Annotations"
+          ''')
+
+          replace_once(
+              config_path,
+              '''    public async Task SetCreatesMissingNestedConfigObjects()
+              {
+                  string scriptPath = CreateScript(
+                      """
+                      using Devo6.WorkFlow.Abstractions;
+          ''',
+              '''    public async Task SetCreatesMissingNestedConfigObjects()
+              {
+                  string scriptPath = CreateScript(
+                      """
+                      #nullable enable
+
+                      using Devo6.WorkFlow.Abstractions;
+          ''')
+          PY
+
+          rm src/Devo6.WorkFlow.Engine/DotnetScriptDiagnosticExtensions.cs
+          rm src/Devo6.WorkFlow.Engine/ScriptCompiler.cs
+
+          cat > .github/workflows/pr-xunit-tests.yml <<'YAML'
+          name: PR xUnit Tests
+
+          on:
+            pull_request:
+              branches:
+                - master
+            workflow_dispatch:
+
+          jobs:
+            test:
+              runs-on: ubuntu-latest
+              permissions:
+                contents: read
+
+              steps:
+                - name: Checkout
+                  uses: actions/checkout@v5
+
+                - name: Setup .NET
+                  uses: actions/setup-dotnet@v5
+                  with:
+                    dotnet-version: "8.0.x"
+
+                - name: Restore
+                  run: dotnet restore Devo6.WorkFlow.sln
+
+                - name: Test
+                  run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal
+          YAML
+
+          rm .github/workflows/issue-20-one-shot.yml
+
+      - name: Restore
+        run: dotnet restore Devo6.WorkFlow.sln
+
+      - name: Test
+        run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal
+
+      - name: Format verification
+        run: dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore
+
+      - name: Diff verification
+        run: git diff --check
+
+      - name: Commit verified implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs
+          git add tests/Devo6.WorkFlow.Tests/StandardConfigLoadingContractTests.cs
+          git add .github/workflows/pr-xunit-tests.yml
+          git add -u src/Devo6.WorkFlow.Engine .github/workflows
+          git commit -m "fix: dotnet-script互換の診断とキャッシュを直接実装"
+          git push origin HEAD:agent/issue-20-dotnet-script-compatibility-design
