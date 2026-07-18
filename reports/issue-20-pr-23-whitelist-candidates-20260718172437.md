@@ -73,9 +73,9 @@
 ## 結果
 
 - 結果: PR #23、parent tracking、full configured baseline の 3 scope を分離した。全 scope の whitelist command は未知語があるため exit 1 であり、Markdown aggregate は `needs user review` である。本文修正候補と exact YAML entry 候補を提示したが、whitelist、`prh`、target exclusion、本文、tracking は変更していない。
-  - 利用者承認後、提示した `.NET` alias `dotnet` と新規 term 8 件をそのまま適用し、本文修正候補のうち課題 #20 の PR Markdown と T68-T72/P31 を最小修正した。`nullable コンテキスト` の指定 description に含まれる `annotation` は checker の whitelist description 検査で未許可となるため、focused scope に 1 件残る。
+  - 利用者承認後、提示した `.NET` alias `dotnet` と新規 term 8 件をそのまま適用し、本文修正候補のうち課題 #20 の PR Markdown と T68-T72/P34 を最小修正した。`nullable コンテキスト` の指定 description に含まれる `annotation` は checker の whitelist description 検査で未許可となるため、focused scope に 1 件残る。
   - 利用者承認後に description を `C# コンパイラによる nullable 注釈と警告の扱いを定める設定。` へ更新したが、whitelist checker は `コンパイラ` を未許可として PR focused scope に 1 件検出した。追加 whitelist や本文修正は行わず、aggregate は `failed gate` のままとする。
-  - 利用者承認後、`コンパイラ` を `C# のコードをコンパイルするツール。` として追加した。entry 全体、PR focused、T68-T72/P31 の新規行の whitelist はすべて pass となり、課題 #20 の自己起因未知語は解消した。full configured の残存語は課題 #19 と既存 baseline に分離して hold する。
+  - 利用者承認後、`コンパイラ` を `C# のコードをコンパイルするツール。` として追加した。entry 全体、PR focused、T68-T72/P34 の新規行の whitelist はすべて pass となり、課題 #20 の自己起因未知語は解消した。full configured の残存語は課題 #19 と既存 baseline に分離して hold する。
 
 ## リスク
 

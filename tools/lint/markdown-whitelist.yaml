@@ -481,3 +481,23 @@ entries:
     description: script を読み込み Entry を解決する部品。
   - term: ログスコープ
     description: 記録出力に共通の属性を付ける範囲。
+  - term: JSON
+    description: 階層ログを構造化して出力する標準データ形式名。
+  - term: Text
+    description: 階層ログの文字列出力形式名。
+  - term: Windows
+    description: ファイルハンドル解放後の読み取りを検査する対象 OS 名。
+  - term: Lambda Step
+    description: API に渡した名前を持つ匿名関数形式の Step 分類を表す設計語。
+  - term: logger category
+    description: ログ出力元を Engine と Step に区分する Microsoft.Extensions.Logging の概念名。
+  - term: snapshot
+    description: 特定時点の状態を固定して残した記録。
+  - term: span
+    description: OpenTelemetry で一つの処理区間を表す標準的な追跡概念名。
+  - term: scope chain
+    description: Entryから親Step、そこで実行されるCompositeStep、その子Stepへと、実行位置を示すログスコープを親から子の順に連ねたもの。
+  - term: Microsoft.Extensions.Logging
+    description: .NET の標準的なログ抽象を提供するライブラリ名。
+  - term: リリースノート
+    description: 新しい版で追加、変更、修正した内容を利用者へ知らせる文書。

@@ -290,9 +290,9 @@ engine run main.csx --workflow-config appsettings.yaml --workflow-set Convert.To
 
 Step 登録単位 Config では、`--workflow-set` または `--wset` の key は CompositeStep 境界 Config 型上のプロパティ path です。`Convert.ToUpper=false` は `MainConfig.Convert.ToUpper` への上書きとして扱われます。
 
-`ConvertStep.Config` の `Tags` と `Targets` は YAML inline array で collection 全体を置換できます。空白を含む断片や object 配列は、`Key=value` 全体を引用します。
+`ConvertStep.Config` の `Tags` と `Targets` は YAML のインライン配列でコレクション全体を置換できます。空白を含む断片やオブジェクト配列は、`Key=value` 全体を引用します。
 
-PowerShell:
+`PowerShell`:
 
 ```powershell
 engine run main.csx --workflow-config appsettings.yaml --workflow-set 'Convert.Tags=[release, urgent]'
@@ -300,7 +300,7 @@ engine run main.csx --workflow-config appsettings.yaml --wset 'Convert.Targets=[
 engine run main.csx --workflow-config appsettings.yaml --wset 'Convert.Tags=[]'
 ```
 
-bash:
+`Bash`:
 
 ```bash
 engine run main.csx --workflow-config appsettings.yaml --workflow-set 'Convert.Tags=[release, urgent]'
