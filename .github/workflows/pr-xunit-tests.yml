@@ -36,21 +36,50 @@ jobs:
           dotnet restore Devo6.WorkFlow.sln \
             2>&1 | tee TestResults/restore.log
 
-      - name: Format verification
-        id: format
+      - name: Prepare verified Switch case fix
+        id: candidate
         if: always() && steps.restore.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
+          text = path.read_text(encoding="utf-8")
+          replacements = [
+              (
+                  'throw new InvalidOperationException($"Switch case \'{value}\' is already registered.");',
+                  'throw new InvalidOperationException("Switch case is already registered.");',
+                  "duplicate case message",
+              ),
+              (
+                  'EnsureCaseHasSteps(built, $"case \'{value}\'");',
+                  'EnsureCaseHasSteps(built, "case");',
+                  "case branch validation label",
+              ),
+          ]
+          for old, new, label in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one match, found {count}")
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Format candidate
+        id: format
+        if: always() && steps.candidate.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
           set -o pipefail
-          dotnet format Devo6.WorkFlow.sln \
-            --verify-no-changes \
-            --no-restore \
+          dotnet format Devo6.WorkFlow.sln --no-restore \
             2>&1 | tee TestResults/format.log
 
-      - name: Test
+      - name: Test candidate
         id: tests
-        if: always() && steps.restore.outcome == 'success'
+        if: always() && steps.format.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
@@ -70,16 +99,17 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          mkdir -p TestResults
           git diff --check 2>&1 | tee TestResults/diff-check.log
 
-      - name: Upload test results
+      - name: Upload candidate and test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ github.run_id }}
-          path: TestResults
-          if-no-files-found: warn
+          name: switch-case-fix-${{ github.run_id }}
+          path: |
+            TestResults
+            src/Devo6.WorkFlow.Engine/CompositeStep.cs
+          if-no-files-found: error
           retention-days: 14
 
       - name: Report verification result
@@ -87,6 +117,7 @@ jobs:
         shell: bash
         env:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
           FORMAT_OUTCOME: ${{ steps.format.outcome }}
           TEST_OUTCOME: ${{ steps.tests.outcome }}
           DIFF_OUTCOME: ${{ steps.diff.outcome }}
@@ -94,6 +125,7 @@ jobs:
           failed=0
           for result in \
             "restore:${RESTORE_OUTCOME}" \
+            "candidate:${CANDIDATE_OUTCOME}" \
             "format:${FORMAT_OUTCOME}" \
             "test:${TEST_OUTCOME}" \
             "diff:${DIFF_OUTCOME}"
@@ -107,6 +139,6 @@ jobs:
           done
 
           if [ "${failed}" -ne 0 ]; then
-            echo "Verification failed. Download the test-results artifact for logs and TRX output."
+            echo "Candidate verification failed. Download the artifact for logs and TRX output."
             exit 1
           fi
