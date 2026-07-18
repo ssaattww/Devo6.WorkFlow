@@ -1,6 +1,5 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
-using System.Reflection;
 using System.Text.Json;
 
 namespace Devo6.WorkFlow.Tests;
@@ -51,7 +50,7 @@ public sealed class DotnetScriptCompatibilityTests
 
         WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Succeeded, result.ErrorMessage);
         Assert.Equal("Main", result.EntryName);
     }
 
@@ -79,27 +78,55 @@ public sealed class DotnetScriptCompatibilityTests
 
         WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);
 
-        Assert.True(result.Succeeded);
+        Assert.True(result.Succeeded, result.ErrorMessage);
     }
 
     /// <summary>
-    /// 旧実装が渡していた workflow directory を既定キャッシュとして使わないことを確認します。
+    /// 明示した cache path が Execute と Validate の依存解決 request に伝達されることを確認します。
     /// </summary>
-    [Fact(DisplayName = "既定キャッシュは workflow directory ではなく dotnet-script 標準位置へ委譲する")]
-    public void DefaultCachePolicyDoesNotUseWorkflowDirectory()
+    [Fact(DisplayName = "明示 DotnetScriptCachePath は Execute と Validate の provider request に伝達される")]
+    public void ExplicitCachePathIsPropagatedToExecuteAndValidateProviderRequests()
     {
-        Type? policyType = typeof(CsxEntryLoader).Assembly.GetType(
-            "Devo6.WorkFlow.Engine.DotnetScriptCachePathPolicy");
-        Assert.NotNull(policyType);
-        MethodInfo? resolveMethod = policyType!.GetMethod(
-            "Resolve",
-            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-        Assert.NotNull(resolveMethod);
-        string workflowDirectory = Path.Combine(Path.GetTempPath(), $"devo6-workflow-{Guid.NewGuid():N}");
+        string scriptPath = CreateScript(CreateNuGetWorkflowScript());
+        string cachePath = Path.Combine(Path.GetDirectoryName(scriptPath)!, "custom-cache");
+        var provider = new CapturingNuGetDependencyGraphProvider();
+        var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            DotnetScriptCachePath = cachePath,
+            NuGetDependencyGraphProvider = provider,
+        });
 
-        object? effectiveCachePath = resolveMethod!.Invoke(null, [workflowDirectory]);
+        WorkflowValidationResult validationResult = loader.Validate(scriptPath);
+        WorkflowResult executionResult = loader.Execute(scriptPath);
 
-        Assert.Null(effectiveCachePath);
+        Assert.True(
+            validationResult.Succeeded,
+            string.Join(Environment.NewLine, validationResult.Errors.Select(error => error.Message)));
+        Assert.True(executionResult.Succeeded, executionResult.ErrorMessage);
+        Assert.Equal(2, provider.ResolveCallCount);
+        Assert.All(provider.Requests, request => Assert.Equal(cachePath, request.DotnetScriptCachePath));
+    }
+
+    /// <summary>
+    /// cache path 未指定時は provider request へ null が伝達されることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "未指定 DotnetScriptCachePath は provider request で null を維持する")]
+    public void DefaultCachePathRemainsNullInProviderRequest()
+    {
+        string scriptPath = CreateScript(CreateNuGetWorkflowScript());
+        var provider = new CapturingNuGetDependencyGraphProvider();
+        var loader = new CsxEntryLoader(new CsxEntryLoaderOptions
+        {
+            NuGetDependencyGraphProvider = provider,
+        });
+
+        WorkflowValidationResult result = loader.Validate(scriptPath);
+
+        Assert.True(
+            result.Succeeded,
+            string.Join(Environment.NewLine, result.Errors.Select(error => error.Message)));
+        CsxNuGetDependencyGraphRequest request = Assert.Single(provider.Requests);
+        Assert.Null(request.DotnetScriptCachePath);
     }
 
     /// <summary>
@@ -154,6 +181,28 @@ public sealed class DotnetScriptCompatibilityTests
     }
 
     /// <summary>
+    /// 固定版 NuGet 参照を含む検査用 script を作成します。
+    /// </summary>
+    /// <returns>NuGet 参照付き csx 本文。</returns>
+    private static string CreateNuGetWorkflowScript()
+    {
+        return """
+            #r "nuget: Example.Package, 1.0.0"
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "ok";
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs();
+            """;
+    }
+
+    /// <summary>
     /// 一時 directory に検査用 csx を作成します。
     /// </summary>
     /// <param name="source">書き込む csx 本文。</param>
@@ -186,5 +235,37 @@ public sealed class DotnetScriptCompatibilityTests
         }
 
         throw new DirectoryNotFoundException("Repository root containing Devo6.WorkFlow.sln was not found.");
+    }
+
+    /// <summary>
+    /// provider request を記録し、外部通信なしで固定 dependency graph を返します。
+    /// </summary>
+    private sealed class CapturingNuGetDependencyGraphProvider : ICsxNuGetDependencyGraphProvider
+    {
+        /// <summary>
+        /// 記録した provider request を取得します。
+        /// </summary>
+        public List<CsxNuGetDependencyGraphRequest> Requests { get; } = [];
+
+        /// <summary>
+        /// Resolve 呼び出し回数を取得します。
+        /// </summary>
+        public int ResolveCallCount => Requests.Count;
+
+        /// <summary>
+        /// request を記録し、固定 dependency graph を返します。
+        /// </summary>
+        /// <param name="directReferences">script から読んだ直接参照。</param>
+        /// <param name="request">dependency graph request。</param>
+        /// <returns>固定 dependency graph。</returns>
+        public CsxNuGetDependencyGraph Resolve(
+            IReadOnlyList<CsxNuGetReference> directReferences,
+            CsxNuGetDependencyGraphRequest request)
+        {
+            Requests.Add(request);
+
+            return new CsxNuGetDependencyGraph(
+                [new CsxResolvedNuGetDependency("Example.Package", "1.0.0", isDirect: true)]);
+        }
     }
 }
