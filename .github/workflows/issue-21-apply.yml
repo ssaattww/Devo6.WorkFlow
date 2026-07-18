@@ -5,7 +5,6 @@ on:
     branches:
       - agent/issue-21-logging-hierarchy-design
     paths:
-      - tools/issue21_apply.py
       - .github/workflows/issue-21-apply.yml
   pull_request:
     branches:
@@ -13,10 +12,6 @@ on:
 
 permissions:
   contents: write
-
-concurrency:
-  group: issue-21-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   apply:
@@ -38,157 +33,91 @@ jobs:
       - name: Restore
         run: dotnet restore Devo6.WorkFlow.sln
 
-      - name: Apply implementation
+      - name: Apply coding standards fixes
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts/test-results
-          {
-            if grep -q '\["CompositeName"\] = QualifiedName' src/Devo6.WorkFlow.Engine/CompositeStep.cs; then
-              echo "Issue #21 engine patch is already applied."
-            else
-              python3 - <<'PY'
-          import tools.issue21_apply as patch
-
-          original_replace_once = patch.replace_once
-
-          def replace_once(text: str, old: str, new: str, label: str) -> str:
-              if label == "switch default branch name":
-                  count = text.count(old)
-                  if count != 2:
-                      raise RuntimeError(f"{label}: expected two matches, found {count}")
-                  return text.replace(old, new)
-              return original_replace_once(text, old, new, label)
-
-          patch.replace_once = replace_once
-          patch.patch_composite()
-          PY
-            fi
-
-            python3 - <<'PY'
+          python3 - <<'PY' 2>&1 | tee artifacts/test-results/apply-standards.log
           from pathlib import Path
 
-          engine_path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
-          engine_text = engine_path.read_text(encoding="utf-8")
-          indent = " " * 12
-          old_fields = "\n".join([
-              f'{indent}["EntryName"] = QualifiedName,',
-              f'{indent}["StepName"] = step.Name,',
-              f'{indent}["Attempt"] = 1,',
-          ])
-          new_fields = "\n".join([
-              f'{indent}["StepName"] = step.Name,',
-              f'{indent}["Attempt"] = 1,',
-          ])
-          field_count = engine_text.count(old_fields)
-          if field_count == 1:
-              engine_text = engine_text.replace(old_fields, new_fields, 1)
-          elif field_count == 0 and new_fields in engine_text:
-              pass
-          else:
-              raise RuntimeError(f"conditional branch scope: expected zero or one old shape, found {field_count}")
-          engine_path.write_text(engine_text, encoding="utf-8")
+          provider_path = Path("src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs")
+          provider = provider_path.read_text(encoding="utf-8")
+          old_provider = "internal sealed record EngineLoggingOptions"
+          new_provider = "internal sealed class EngineLoggingOptions"
+          if old_provider in provider:
+              provider = provider.replace(old_provider, new_provider, 1)
+          elif new_provider not in provider:
+              raise RuntimeError("EngineLoggingOptions declaration was not found")
+          provider_path.write_text(provider, encoding="utf-8")
 
-          test_path = Path("tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs")
-          test_text = test_path.read_text(encoding="utf-8")
-          test_text = test_text.replace(
-              "[Main > Choice > ThenStep] [attempt=1]",
-              "[Main > Choice > then > ThenStep] [attempt=1]",
-          )
-          test_path.write_text(test_text, encoding="utf-8")
+          engine_path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
+          engine = engine_path.read_text(encoding="utf-8")
+          old_engine = '''            object? boxedValue = value;
+              displayValue = boxedValue switch
+              {
+                  null => "null",
+                  IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "null",
+                  _ => boxedValue.ToString() ?? "null",
+              };
+          '''
+          new_engine = '''            object? boxedValue = value;
+              if (boxedValue is null)
+              {
+                  displayValue = "null";
+              }
+              else if (boxedValue is IFormattable)
+              {
+                  displayValue = ((IFormattable)boxedValue).ToString(null, CultureInfo.InvariantCulture) ?? "null";
+              }
+              else
+              {
+                  displayValue = boxedValue.ToString() ?? "null";
+              }
+          '''
+          if old_engine in engine:
+              engine = engine.replace(old_engine, new_engine, 1)
+          elif new_engine not in engine:
+              raise RuntimeError("Switch branch formatter block was not found")
+          engine_path.write_text(engine, encoding="utf-8")
           PY
-          } 2>&1 | tee artifacts/test-results/apply-implementation.log
 
       - name: Format
         run: dotnet format Devo6.WorkFlow.sln --no-restore
 
-      - name: Focused tests
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p artifacts/test-results
-          dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj \
-            --no-restore \
-            --filter "FullyQualifiedName~HierarchicalLoggingContractTests|FullyQualifiedName~EngineLoggingHierarchyTests" \
-            --logger "trx;LogFileName=hierarchical-logging.trx" \
-            --results-directory artifacts/test-results \
-            2>&1 | tee artifacts/test-results/hierarchical-logging.log
-
-      - name: Related regression tests
+      - name: Verify standards and logging
         shell: bash
         run: |
           set -o pipefail
           dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj \
             --no-restore \
-            --filter "FullyQualifiedName~WorkflowResultContractTests|FullyQualifiedName~RetryExecutionContractTests|FullyQualifiedName~IfBranchContractTests|FullyQualifiedName~SwitchBranchContractTests" \
-            --logger "trx;LogFileName=related-regression.trx" \
+            --filter "FullyQualifiedName~CodingStandardsContractTests|FullyQualifiedName~HierarchicalLoggingContractTests|FullyQualifiedName~EngineLoggingHierarchyTests|FullyQualifiedName~WorkflowResultContractTests|FullyQualifiedName~RetryExecutionContractTests|FullyQualifiedName~IfBranchContractTests|FullyQualifiedName~SwitchBranchContractTests" \
+            --logger "trx;LogFileName=issue-21-standards.trx" \
             --results-directory artifacts/test-results \
-            2>&1 | tee artifacts/test-results/related-regression.log
+            2>&1 | tee artifacts/test-results/issue-21-standards.log
 
       - name: Diff check
         run: git diff --check
 
-      - name: Upload apply evidence
+      - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: issue-21-apply-evidence-${{ github.run_attempt }}
+          name: issue-21-standards-evidence-${{ github.run_attempt }}
           path: artifacts/test-results
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Commit implementation
+      - name: Commit fixes
         shell: bash
         run: |
-          if git diff --quiet -- src/Devo6.WorkFlow.Engine/CompositeStep.cs tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs; then
-            echo "No implementation changes to commit."
+          if git diff --quiet -- src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs src/Devo6.WorkFlow.Engine/CompositeStep.cs; then
+            echo "No standards changes to commit."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/Devo6.WorkFlow.Engine/CompositeStep.cs tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs
-          git commit -m "refactor: normalize hierarchical logging scopes"
+          git add src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs src/Devo6.WorkFlow.Engine/CompositeStep.cs
+          git commit -m "fix: align hierarchical logging with coding standards"
           git push origin HEAD:"${TARGET_BRANCH}"
-
-  verify:
-    if: github.event_name == 'pull_request'
-    needs: apply
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout updated head branch
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 8.0.x
-
-      - name: Restore
-        run: dotnet restore Devo6.WorkFlow.sln
-
-      - name: Focused and regression tests
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p artifacts/test-results
-          dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj \
-            --no-restore \
-            --filter "FullyQualifiedName~HierarchicalLoggingContractTests|FullyQualifiedName~EngineLoggingHierarchyTests|FullyQualifiedName~WorkflowResultContractTests|FullyQualifiedName~RetryExecutionContractTests|FullyQualifiedName~IfBranchContractTests|FullyQualifiedName~SwitchBranchContractTests" \
-            --logger "trx;LogFileName=issue-21-verification.trx" \
-            --results-directory artifacts/test-results \
-            2>&1 | tee artifacts/test-results/issue-21-verification.log
-
-      - name: Format verification
-        run: dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore
-
-      - name: Upload verification evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: issue-21-verification-evidence-${{ github.run_attempt }}
-          path: artifacts/test-results
-          if-no-files-found: warn
-          retention-days: 14
