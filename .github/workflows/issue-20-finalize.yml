@@ -1,0 +1,107 @@
+name: Issue 20 final verification and tracking
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-20-finalize
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout working branch
+        uses: actions/checkout@v5
+        with:
+          ref: agent/issue-20-dotnet-script-compatibility-design
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Restore
+        run: dotnet restore Devo6.WorkFlow.sln
+
+      - name: Focused compatibility tests
+        run: dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj --configuration Release --no-restore --filter "FullyQualifiedName~DotnetScriptCompatibilityTests" --verbosity minimal
+
+      - name: Solution tests
+        run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal
+
+      - name: Format verification
+        run: dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore
+
+      - name: Install Markdown dependencies
+        run: npm ci
+
+      - name: Synchronize task and phase tracking
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def append_once(path: str, marker: str, rows: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              if marker in text:
+                  return
+              if not text.endswith("\n"):
+                  text += "\n"
+              file_path.write_text(text + rows, encoding="utf-8")
+
+          append_once(
+              "tasks-status.md",
+              "| T68 | 完了 | 課題 #20",
+              """| T68 | 完了 | 課題 #20 の `dotnet-script` 互換範囲を設計する。依存: なし。規模: S。 | nullable 診断、NuGet 復元キャッシュ、エディタ補完の責務境界、対象外、検査方針、後続 task が設計書へ明記され、設計点検が完了する。 | `doc/issue-20-dotnet-script-compatibility-design.md`、`reports/issue-20-dotnet-script-compatibility-design-review-20260718152000.md`。 |
+| T69 | 完了 | T68 完了後、nullable 関連診断を `Dotnet.Script.Core` 2.0.1 と整合させる。依存: T68。規模: M。 | 検査先行で、`Execute` と `Validate` の `CS8600` から `CS8655`、`#nullable enable` 成功、対象外 warning の非ブロッキングを確認し、共通診断処理が実装される。 | `src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs`、`tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs`、PR xUnit Tests。 |
+| T70 | 完了 | T69 完了後、NuGet 復元キャッシュを `dotnet-script` の標準規則へ整合させる。依存: T69。規模: M。 | `DotnetScriptCachePath` の未指定と明示指定が loader、dependency graph request、既定 provider へ一貫して伝達され、既存 NuGet 契約の回帰検査が通る。 | `src/Devo6.WorkFlow.Engine/CsxEntryLoader.cs`、`tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs`、PR xUnit Tests。 |
+| T71 | 完了 | T70 完了後、OmniSharp の NuGet 補完設定と利用手順を整備する。依存: T70。規模: S。 | sample に `omnisharp.json` があり、`engine validate` による復元、C# 言語サービス再読み込み、Engine との責務境界が説明され、設定検査が通る。 | `samples/multi-folder-composite/omnisharp.json`、`samples/multi-folder-composite/README.md`、`samples/multi-folder-composite/main.csx`、`tests/Devo6.WorkFlow.Tests/DotnetScriptCompatibilityTests.cs`。 |
+| T72 | 完了 | T68-T71 の成果を統合検証し、進捗同期、履歴登録、送信、取り込み依頼更新を行う。依存: T71。規模: S。 | focused 検査、solution 全体検査、format、Markdown lint、表記揺れ検査、差分検査が通り、実装報告と点検報告、課題追跡、PR #23 が実結果へ同期される。 | `reports/issue-20-implementation-20260718194000.md`、`reports/issue-20-implementation-review-20260718194500.md`、PR #23、最終検証。 |
+""")
+
+          append_once(
+              "phases-status.md",
+              "| P31 | 完了 | 課題 #20",
+              """| P31 | 完了 | 課題 #20 の `dotnet-script` 診断、NuGet 復元キャッシュ、OmniSharp 補完を整合させる。 | T68-T72 が検査先行で実施され、設計、実装、回帰検査、利用者文書、統合検証、取り込み依頼がそろう。 | T68-T72、`reports/issue-20-implementation-20260718194000.md`、`reports/issue-20-implementation-review-20260718194500.md`、取り込み依頼 #23。 |
+""")
+          PY
+
+          rm .github/workflows/issue-20-finalize.yml
+
+      - name: Markdown lint
+        run: npm run lint:md
+
+      - name: Terminology check
+        run: npm run lint:md:terms
+
+      - name: Diff verification
+        shell: bash
+        run: |
+          git diff --check
+          git diff --check origin/master...HEAD
+
+      - name: Commit tracking and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tasks-status.md phases-status.md
+          git add -u .github/workflows/issue-20-finalize.yml
+          git commit -m "chore: Issue #20の追跡と最終検証を同期"
+          git push origin HEAD:agent/issue-20-dotnet-script-compatibility-design
