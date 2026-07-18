@@ -27,8 +27,6 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Restore
-        id: restore
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
@@ -37,9 +35,6 @@ jobs:
             2>&1 | tee TestResults/restore.log
 
       - name: Format verification
-        id: format
-        if: always() && steps.restore.outcome == 'success'
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
@@ -49,9 +44,6 @@ jobs:
             2>&1 | tee TestResults/format.log
 
       - name: Test
-        id: tests
-        if: always() && steps.restore.outcome == 'success'
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
@@ -64,9 +56,7 @@ jobs:
             2>&1 | tee TestResults/test-results.log
 
       - name: Diff check
-        id: diff
         if: always()
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
@@ -81,32 +71,3 @@ jobs:
           path: TestResults
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Report verification result
-        if: always()
-        shell: bash
-        env:
-          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
-          FORMAT_OUTCOME: ${{ steps.format.outcome }}
-          TEST_OUTCOME: ${{ steps.tests.outcome }}
-          DIFF_OUTCOME: ${{ steps.diff.outcome }}
-        run: |
-          failed=0
-          for result in \
-            "restore:${RESTORE_OUTCOME}" \
-            "format:${FORMAT_OUTCOME}" \
-            "test:${TEST_OUTCOME}" \
-            "diff:${DIFF_OUTCOME}"
-          do
-            name="${result%%:*}"
-            outcome="${result#*:}"
-            echo "${name}: ${outcome}"
-            if [ "${outcome}" != "success" ]; then
-              failed=1
-            fi
-          done
-
-          if [ "${failed}" -ne 0 ]; then
-            echo "Verification failed. Download the test-results artifact for logs and TRX output."
-            exit 1
-          fi
