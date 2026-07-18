@@ -1,5 +1,5 @@
-using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Cli;
+using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
@@ -155,6 +155,206 @@ public sealed class HierarchicalLoggingContractTests
     }
 
     /// <summary>
+    /// JSON ログの内側 Step が外側の試行番号を継承し、明示値を優先することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "JSON ログは outer Attempt を継承し inner Attempt を優先する")]
+    public void JsonLogInheritsOuterAttemptAndPrefersInnerAttempt()
+    {
+        string output = CaptureConsole(() =>
+        {
+            using var provider = CreateProvider(EngineLoggingFormat.Json);
+            ILogger logger = provider.CreateLogger("Test.Category");
+            using IDisposable? outerScope = logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["StepName"] = "Outer",
+                ["Attempt"] = 2,
+            });
+            using (logger.BeginScope(new Dictionary<string, object?> { ["StepName"] = "Inherited" }))
+            {
+                logger.LogInformation("json-inherited-attempt");
+            }
+
+            using (logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["StepName"] = "Preferred",
+                ["Attempt"] = 1,
+            }))
+            {
+                logger.LogInformation("json-preferred-attempt");
+            }
+        });
+
+        using JsonDocument inherited = JsonDocument.Parse(FindLine(output, "json-inherited-attempt"));
+        using JsonDocument preferred = JsonDocument.Parse(FindLine(output, "json-preferred-attempt"));
+        Assert.Equal(2, inherited.RootElement.GetProperty("Attempt").GetInt32());
+        Assert.Equal(1, preferred.RootElement.GetProperty("Attempt").GetInt32());
+    }
+
+    /// <summary>
+    /// 内側 Step scope が試行番号を持たない場合でも、外側 Step の試行番号を継承することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "nested Step のログは外側 retry の Attempt を継承する")]
+    public void NestedStepLogInheritsOuterAttempt()
+    {
+        string output = CaptureConsole(() =>
+        {
+            using var provider = CreateProvider(EngineLoggingFormat.Text);
+            ILogger logger = provider.CreateLogger("Test.Category");
+            using IDisposable? entryScope = logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["EntryName"] = "Main",
+            });
+            using IDisposable? outerStepScope = logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["StepName"] = "OuterStep",
+                ["Attempt"] = 2,
+            });
+            using IDisposable? compositeScope = logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["CompositeName"] = "Inner",
+            });
+            using IDisposable? innerStepScope = logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["StepName"] = "InnerStep",
+            });
+
+            logger.LogInformation("nested-attempt-log");
+        });
+
+        string line = FindLine(output, "nested-attempt-log");
+        Assert.Contains("[Main > OuterStep > Inner > InnerStep]", line, StringComparison.Ordinal);
+        Assert.Contains("[attempt=2]", line, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// cancellation を観測しない nested Step の完了後に成功 lifecycle を出さないことを検証します。
+    /// </summary>
+    [Fact(DisplayName = "nested Step の cancellation 後は成功 lifecycle を出力しない")]
+    public void NestedStepCancellationDoesNotLogSuccessLifecycle()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        string output = CaptureConsole(() =>
+        {
+            using var provider = CreateProvider(EngineLoggingFormat.Text);
+            ILogger logger = provider.CreateLogger("Test.Category");
+            var input = new StepInput(new StepContext(logger));
+            CompositeStep<string> composite = CompositeStep
+                .Define("Inner")
+                .RunAsync("NonCooperativeStep", async (_, _) =>
+                {
+                    await Task.Yield();
+                    cancellationSource.Cancel();
+                    return "completed";
+                });
+
+            Assert.Throws<OperationCanceledException>(
+                () => composite.ExecuteAsync(input, cancellationSource.Token).GetAwaiter().GetResult());
+        });
+
+        Assert.DoesNotContain("Step succeeded", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("Composite succeeded", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 値生成処理中のキャンセル後に成功記録を出力しないことを検証します。
+    /// </summary>
+    [Fact(DisplayName = "producer の cancellation 後は成功 lifecycle を出力しない")]
+    public void ProducerCancellationDoesNotLogSuccessLifecycle()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        string output = CaptureConsole(() =>
+        {
+            using var provider = CreateProvider(EngineLoggingFormat.Text);
+            ILogger logger = provider.CreateLogger("Test.Category");
+            var input = new StepInput(new StepContext(logger));
+            CompositeStep<string> composite = CompositeStep
+                .Define("Inner")
+                .Run("ProducerStep", _ => "completed")
+                .Produce(value =>
+                {
+                    cancellationSource.Cancel();
+                    return value;
+                });
+
+            Assert.Throws<OperationCanceledException>(
+                () => composite.ExecuteAsync(input, cancellationSource.Token).GetAwaiter().GetResult());
+        });
+
+        Assert.DoesNotContain("Step succeeded", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("Composite succeeded", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 分岐制御 Step の値生成処理中のキャンセル後に成功記録を出力しないことを検証します。
+    /// </summary>
+    [Fact(DisplayName = "branch producer の cancellation 後は成功 lifecycle を出力しない")]
+    public void BranchProducerCancellationDoesNotLogSuccessLifecycle()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        string output = CaptureConsole(() =>
+        {
+            using var provider = CreateProvider(EngineLoggingFormat.Text);
+            ILogger logger = provider.CreateLogger("Test.Category");
+            var input = new StepInput(new StepContext(logger));
+            CompositeStep<string> composite = CompositeStep
+                .Define("Inner")
+                .Run("Seed", _ => "value")
+                .If(
+                    "Decision",
+                    _ => true,
+                    branch => branch.Run("Selected", value => value),
+                    branch => branch.Run("Unselected", value => value))
+                .Produce(value =>
+                {
+                    cancellationSource.Cancel();
+                    return value;
+                });
+
+            Assert.Throws<OperationCanceledException>(
+                () => composite.ExecuteAsync(input, cancellationSource.Token).GetAwaiter().GetResult());
+        });
+
+        Assert.DoesNotContain("[Inner > Decision > then] Step succeeded", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("Composite succeeded", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 非協調 nested Step の時間上限が workflow 結果と成功記録へ矛盾なく反映されることを検証します。
+    /// </summary>
+    [Fact(DisplayName = "nested Step の timeout は WorkflowResult を失敗にし成功 lifecycle を出力しない")]
+    public void NestedStepTimeoutFailsWorkflowWithoutSuccessLifecycle()
+    {
+        string output = CaptureConsole(() =>
+        {
+            using var loggerFactory = CreateLoggerFactory(EngineLoggingFormat.Text);
+            CompositeStep<string> workflow = CompositeStep
+                .Define("Main")
+                .RunAsync("RunInner", async (input, cancellationToken) =>
+                {
+                    CompositeStep<string> inner = CompositeStep
+                        .Define("Inner")
+                        .RunAsync("NonCooperative", async (_, _) =>
+                        {
+                            await Task.Delay(TimeSpan.FromMilliseconds(100), CancellationToken.None);
+                            return "completed";
+                        });
+                    return await inner.ExecuteAsync(input, cancellationToken);
+                });
+
+            WorkflowResult result = workflow.ExecuteWorkflowAsync(
+                new WorkflowExecutionOptions(loggerFactory) { StepTimeout = TimeSpan.FromMilliseconds(10) })
+                .GetAwaiter()
+                .GetResult();
+
+            Assert.False(result.Succeeded);
+            Assert.Equal(WorkflowErrorCodes.StepTimeout, result.ErrorCode);
+        });
+
+        Assert.DoesNotContain("Step succeeded", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("Composite succeeded", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// If と Switch が選択された branch だけを実行パスへ追加することを検証します。
     /// </summary>
     [Fact(DisplayName = "If と Switch は選択 branch 名だけを実行パスへ表示する")]
@@ -240,6 +440,60 @@ public sealed class HierarchicalLoggingContractTests
         Assert.Contains("[attempt=1]", firstAttempt, StringComparison.Ordinal);
         Assert.Contains("[Main > RetryBodyLoggingStep]", secondAttempt, StringComparison.Ordinal);
         Assert.Contains("[attempt=2]", secondAttempt, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 実際の外側再試行で内側 Step の試行番号を継承することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "outer retry の内側 leaf ログは試行番号 1 と 2 を表示する")]
+    public void OuterRetryLogsIncludeAttemptForNestedLeaf()
+    {
+        RetryNestedStep.Reset();
+        string output = CaptureConsole(() =>
+        {
+            using var loggerFactory = CreateLoggerFactory(EngineLoggingFormat.Text);
+            CompositeStep<string> workflow = CompositeStep.Define("Main").Run<RetryNestedStep, string>();
+            WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory)
+            {
+                Retry = new RetryOptions { MaxAttempts = 2 },
+            });
+            Assert.True(result.Succeeded);
+        });
+
+        string[] lines = output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.Contains("nested-retry-leaf", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, lines.Length);
+        Assert.Contains("[attempt=1]", lines[0], StringComparison.Ordinal);
+        Assert.Contains("[attempt=2]", lines[1], StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 実際の外側再試行で内側 Step の JSON 試行番号を継承することを検証します。
+    /// </summary>
+    [Fact(DisplayName = "outer retry の内側 leaf JSON ログは Attempt 1 と 2 を表示する")]
+    public void OuterRetryJsonLogsIncludeAttemptForNestedLeaf()
+    {
+        RetryNestedStep.Reset();
+        string output = CaptureConsole(() =>
+        {
+            using var loggerFactory = CreateLoggerFactory(EngineLoggingFormat.Json);
+            CompositeStep<string> workflow = CompositeStep.Define("Main").Run<RetryNestedStep, string>();
+            WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory)
+            {
+                Retry = new RetryOptions { MaxAttempts = 2 },
+            });
+            Assert.True(result.Succeeded);
+        });
+
+        string[] lines = output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.Contains("nested-retry-leaf", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, lines.Length);
+        using JsonDocument first = JsonDocument.Parse(lines[0]);
+        using JsonDocument second = JsonDocument.Parse(lines[1]);
+        Assert.Equal(1, first.RootElement.GetProperty("Attempt").GetInt32());
+        Assert.Equal(2, second.RootElement.GetProperty("Attempt").GetInt32());
     }
 
     /// <summary>
@@ -399,6 +653,40 @@ public sealed class HierarchicalLoggingContractTests
         public static void Reset()
         {
             Interlocked.Exchange(ref attempts, 0);
+        }
+    }
+
+    /// <summary>
+    /// 内側 Composite のログを出力し、外側の最初の試行だけ失敗する検査用 Step です。
+    /// </summary>
+    private sealed class RetryNestedStep : IStep<string>
+    {
+        private static int attempts;
+
+        /// <summary>
+        /// 試行回数を初期化します。
+        /// </summary>
+        public static void Reset() => Interlocked.Exchange(ref attempts, 0);
+
+        /// <summary>
+        /// 内側 Composite を実行し、最初の試行だけ失敗します。
+        /// </summary>
+        /// <param name="input">内側 Composite へ渡す入力。</param>
+        /// <returns>内側 Step の戻り値。</returns>
+        public string Execute(StepInput input)
+        {
+            CompositeStep<string> inner = CompositeStep.Define("Inner").Run("Leaf", nestedInput =>
+            {
+                nestedInput.Context.Logger.LogInformation("nested-retry-leaf");
+                return "ok";
+            });
+            string value = inner.Execute(input);
+            if (Interlocked.Increment(ref attempts) == 1)
+            {
+                throw new InvalidOperationException("retry");
+            }
+
+            return value;
         }
     }
 

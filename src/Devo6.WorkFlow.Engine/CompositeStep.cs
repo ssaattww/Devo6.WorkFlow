@@ -794,6 +794,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                 input,
                 currentValue,
                 cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             logger.LogInformation("Composite succeeded");
 
             return (TOut)currentValue!;
@@ -915,7 +916,9 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                         input,
                         currentValue,
                         cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
                     step.Produce(input, currentValue);
+                    cancellationToken.ThrowIfCancellationRequested();
                     logger.LogInformation("Step succeeded");
                     continue;
                 }
@@ -924,8 +927,10 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                     input,
                     currentValue,
                     cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 currentValue = result.Value;
                 step.Produce(input, currentValue);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (result.Status == ExecutionTraceStepStatus.Skipped)
                 {
                     logger.LogInformation("Step skipped");

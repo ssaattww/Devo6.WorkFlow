@@ -20,25 +20,29 @@ public sealed class SwitchBranchLoggingSafetyTests
         string caseValue = new string('A', 130) + "\nsecret";
         try
         {
-            using EngineLoggerFactory loggerFactory = CreateLoggerFactory(directory);
-            CompositeStep<string> workflow = CompositeStep
-                .Define("Main")
-                .Run("Seed", input => "seed")
-                .Switch<string, string>(
-                    "Route",
-                    current => caseValue,
-                    cases => cases
-                        .Case(caseValue, branch => branch.Run("Selected", (current, input) =>
-                        {
-                            input.Context.Logger.LogInformation("sanitized-case-log");
-                            return current;
-                        }))
-                        .Default(branch => branch.Run("DefaultStep", current => current)));
+            string content;
+            {
+                using EngineLoggerFactory loggerFactory = CreateLoggerFactory(directory);
+                CompositeStep<string> workflow = CompositeStep
+                    .Define("Main")
+                    .Run("Seed", input => "seed")
+                    .Switch<string, string>(
+                        "Route",
+                        current => caseValue,
+                        cases => cases
+                            .Case(caseValue, branch => branch.Run("Selected", (current, input) =>
+                            {
+                                input.Context.Logger.LogInformation("sanitized-case-log");
+                                return current;
+                            }))
+                            .Default(branch => branch.Run("DefaultStep", current => current)));
 
-            WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
+                WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
 
-            Assert.True(result.Succeeded);
-            string content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
+                Assert.True(result.Succeeded);
+            }
+
+            content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
             Assert.Contains(
                 $"[Main > Route > case={new string('A', 128)} > Selected]",
                 content,
@@ -61,25 +65,29 @@ public sealed class SwitchBranchLoggingSafetyTests
         var selectedCase = new ThrowingCaseToken();
         try
         {
-            using EngineLoggerFactory loggerFactory = CreateLoggerFactory(directory);
-            CompositeStep<string> workflow = CompositeStep
-                .Define("Main")
-                .Run("Seed", input => "seed")
-                .Switch<ThrowingCaseToken, string>(
-                    "Route",
-                    current => selectedCase,
-                    cases => cases
-                        .Case(selectedCase, branch => branch.Run("Selected", (current, input) =>
-                        {
-                            input.Context.Logger.LogInformation("unavailable-case-log");
-                            return current;
-                        }))
-                        .Default(branch => branch.Run("DefaultStep", current => current)));
+            string content;
+            {
+                using EngineLoggerFactory loggerFactory = CreateLoggerFactory(directory);
+                CompositeStep<string> workflow = CompositeStep
+                    .Define("Main")
+                    .Run("Seed", input => "seed")
+                    .Switch<ThrowingCaseToken, string>(
+                        "Route",
+                        current => selectedCase,
+                        cases => cases
+                            .Case(selectedCase, branch => branch.Run("Selected", (current, input) =>
+                            {
+                                input.Context.Logger.LogInformation("unavailable-case-log");
+                                return current;
+                            }))
+                            .Default(branch => branch.Run("DefaultStep", current => current)));
 
-            WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
+                WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
 
-            Assert.True(result.Succeeded);
-            string content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
+                Assert.True(result.Succeeded);
+            }
+
+            content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
             Assert.Contains(
                 "[Main > Route > case=<unavailable> > Selected]",
                 content,
@@ -102,25 +110,29 @@ public sealed class SwitchBranchLoggingSafetyTests
         var selectedCase = new CaseToken("selected");
         try
         {
-            using EngineLoggerFactory loggerFactory = CreateLoggerFactory(directory);
-            CompositeStep<string> workflow = CompositeStep
-                .Define("Main")
-                .Run("Seed", input => "seed")
-                .Switch<CaseToken, string>(
-                    "Route",
-                    current => selectedCase,
-                    cases => cases
-                        .Case(registeredCase, branch => branch.Run("RegisteredStep", current => current))
-                        .Default(branch => branch.Run("DefaultStep", (current, input) =>
-                        {
-                            input.Context.Logger.LogInformation("default-branch-log");
-                            return current;
-                        })));
+            string content;
+            {
+                using EngineLoggerFactory loggerFactory = CreateLoggerFactory(directory);
+                CompositeStep<string> workflow = CompositeStep
+                    .Define("Main")
+                    .Run("Seed", input => "seed")
+                    .Switch<CaseToken, string>(
+                        "Route",
+                        current => selectedCase,
+                        cases => cases
+                            .Case(registeredCase, branch => branch.Run("RegisteredStep", current => current))
+                            .Default(branch => branch.Run("DefaultStep", (current, input) =>
+                            {
+                                input.Context.Logger.LogInformation("default-branch-log");
+                                return current;
+                            })));
 
-            WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
+                WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
 
-            Assert.True(result.Succeeded);
-            string content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
+                Assert.True(result.Succeeded);
+            }
+
+            content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
             Assert.Contains(
                 "[Main > Route > default > DefaultStep]",
                 content,

@@ -19,19 +19,19 @@ engine run "$ENTRY" --workflow-config appsettings.yaml --engine-config engine.ya
 
 標準出力ログでは `Entry started`、`Step started for attempt 1`、`Loading source text from input/source.txt`、`Parsing YAML front matter with delimiter ---`、`Building report with heading Composite sample report`、`Saving report text to output/result.txt`、`Entry succeeded` の順に処理状況を追えます。これを進捗表示として見れば、Entry 開始、各 Step の処理内容、成功、Entry 完了を確認できます。
 
-各ログ行には、現在の実行位置が外側から内側の順で表示されます。root workflow の通常 Step は次のように Entry 名、Step 名、試行番号を持ちます。
+各ログ行には、現在の実行位置が外側から内側の順で表示されます。最上位の workflow にある通常の Step は次のように Entry 名、Step 名、試行番号を持ちます。
 
 ```text
 [12:00:00] [Information] Devo6.WorkFlow.Engine [Main > RunTextPipelineStep] [attempt=1] Step started for attempt 1
 ```
 
-内側の `TextPipeline` が実行する Step のログには、外側 Step、nested `CompositeStep`、内側 Step の順で実行 path が表示されます。
+内側の `TextPipeline` が実行する Step のログには、外側 Step、ネストした `CompositeStep`、内側 Step の順で実行パスが表示されます。
 
 ```text
 [12:00:00] [Information] Devo6.WorkFlow.Step [Main > RunTextPipelineStep > TextPipeline > LoadTextStep] Loading source text from input/source.txt
 ```
 
-`If` と `Switch` では、選択された branch だけが実行 path に含まれます。
+`If` と `Switch` では、選択された分岐だけが実行パスに含まれます。
 
 ```text
 [Main > RunTextPipelineStep > TextPipeline > DocumentLength > then > KeepDetailedDocument]
