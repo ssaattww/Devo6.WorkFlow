@@ -10,11 +10,12 @@ concurrency:
   group: pr-xunit-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout
@@ -26,16 +27,34 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Restore
-        run: dotnet restore Devo6.WorkFlow.sln
-
-      - name: Format verification
-        run: dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore
-
-      - name: Test
+        id: restore
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           mkdir -p TestResults
+          dotnet restore Devo6.WorkFlow.sln \
+            2>&1 | tee TestResults/restore.log
+
+      - name: Format verification
+        id: format
+        if: always() && steps.restore.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet format Devo6.WorkFlow.sln \
+            --verify-no-changes \
+            --no-restore \
+            2>&1 | tee TestResults/format.log
+
+      - name: Test
+        id: tests
+        if: always() && steps.restore.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
           dotnet test Devo6.WorkFlow.sln \
             --configuration Release \
             --no-restore \
@@ -43,6 +62,16 @@ jobs:
             --logger "trx;LogFileName=test-results.trx" \
             --results-directory TestResults \
             2>&1 | tee TestResults/test-results.log
+
+      - name: Diff check
+        id: diff
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p TestResults
+          git diff --check 2>&1 | tee TestResults/diff-check.log
 
       - name: Upload test results
         if: always()
@@ -52,3 +81,32 @@ jobs:
           path: TestResults
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Report verification result
+        if: always()
+        shell: bash
+        env:
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+          DIFF_OUTCOME: ${{ steps.diff.outcome }}
+        run: |
+          failed=0
+          for result in \
+            "restore:${RESTORE_OUTCOME}" \
+            "format:${FORMAT_OUTCOME}" \
+            "test:${TEST_OUTCOME}" \
+            "diff:${DIFF_OUTCOME}"
+          do
+            name="${result%%:*}"
+            outcome="${result#*:}"
+            echo "${name}: ${outcome}"
+            if [ "${outcome}" != "success" ]; then
+              failed=1
+            fi
+          done
+
+          if [ "${failed}" -ne 0 ]; then
+            echo "Verification failed. Download the test-results artifact for logs and TRX output."
+            exit 1
+          fi
