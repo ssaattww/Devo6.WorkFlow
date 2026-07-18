@@ -2341,11 +2341,11 @@ public sealed class SwitchCaseBuilder<TIn, TCase, TOut>
         ArgumentNullException.ThrowIfNull(branch);
         if (cases.Any(switchCase => EqualityComparer<TCase>.Default.Equals(switchCase.Value, value)))
         {
-            throw new InvalidOperationException($"Switch case '{value}' is already registered.");
+            throw new InvalidOperationException("Switch case is already registered.");
         }
 
         BranchBuilder<TOut> built = branch(new BranchBuilder<TIn>());
-        EnsureCaseHasSteps(built, $"case '{value}'");
+        EnsureCaseHasSteps(built, "case");
         SwitchCaseBuildResult<TCase> result = new(value, built.Steps, built.StepConfigRegistrations);
 
         return new SwitchCaseBuilder<TIn, TCase, TOut>(cases.Append(result).ToArray(), defaultCase);
