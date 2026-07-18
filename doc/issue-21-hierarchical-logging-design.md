@@ -472,8 +472,8 @@ category は現行の区分を維持する。
 | `Devo6.WorkFlow.Engine` | Entry、Step lifecycle、retry、timeout、branch 制御 |
 | `Devo6.WorkFlow.Step` | Step 本体が `StepContext.Logger` へ出力するログ |
 
-nested Composite の lifecycle は、ルート workflow の内部 logging context を取得できる場合は `Devo6.WorkFlow.Engine` を使用する。
-standalone `Execute` / `ExecuteAsync` では `StepContext.Logger` を使用する。
+nested Composite と simple execution の lifecycle は `StepContext.Logger` を使用し、`Devo6.WorkFlow.Step` category で出力する。
+root workflow の Entry、retry、timeout、branch 制御は引き続き `Devo6.WorkFlow.Engine` category を使用する。
 
 ## 13. ログファイル名
 
@@ -498,7 +498,7 @@ Main > RunTextPipelineStep > TextPipeline > LoadTextStep
 - simple execution 経路へ Step lifecycle と `StepName` scope を追加する。
 - `If` / `Switch` の branch scope を追加する。
 - `BranchExecutionPlan` へ `BranchName` を追加する。
-- root workflow 用の内部 logging context を `StepContext` へ登録する。
+- simple execution の lifecycle は `StepContext.Logger` へ出力する。
 
 ### `src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs`
 
@@ -643,8 +643,8 @@ scope leak 専用テストを追加する。
 
 ### nested Composite の lifecycle category
 
-root workflow から内部 logging context を渡し、可能な限り engine category を使用する。
-standalone 実行だけは `StepContext.Logger` へ fallback する。
+nested Composite は `StepContext.Logger` を使い、外側 Step 本体ログと同じ `Devo6.WorkFlow.Step` category に統一する。
+root workflow の lifecycle category とは分け、公開 API や内部 context 型を増やさない。
 
 ## 19. 将来拡張
 
