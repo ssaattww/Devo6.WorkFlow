@@ -47,6 +47,49 @@ internal enum EngineLoggingFormat
 }
 
 /// <summary>
+/// 1 件のログ出力時点における実行階層を保持します。
+/// </summary>
+internal sealed class EngineLogScopeSnapshot
+{
+    /// <summary>
+    /// 実行階層の snapshot を初期化します。
+    /// </summary>
+    /// <param name="entryName">root Entry 名。</param>
+    /// <param name="stepName">最も内側の Step 名。</param>
+    /// <param name="branchName">最も内側の branch 名。</param>
+    /// <param name="attempt">現在 Step の試行番号。</param>
+    /// <param name="executionPath">外側から内側へ並べた実行 path。</param>
+    public EngineLogScopeSnapshot(
+        string? entryName,
+        string? stepName,
+        string? branchName,
+        int? attempt,
+        IReadOnlyList<string> executionPath)
+    {
+        EntryName = entryName;
+        StepName = stepName;
+        BranchName = branchName;
+        Attempt = attempt;
+        ExecutionPath = executionPath.ToArray();
+    }
+
+    /// <summary>root Entry 名を取得します。</summary>
+    public string? EntryName { get; }
+
+    /// <summary>最も内側の Step 名を取得します。</summary>
+    public string? StepName { get; }
+
+    /// <summary>最も内側の branch 名を取得します。</summary>
+    public string? BranchName { get; }
+
+    /// <summary>現在 Step の試行番号を取得します。</summary>
+    public int? Attempt { get; }
+
+    /// <summary>外側から内側へ並べた実行 path を取得します。</summary>
+    public IReadOnlyList<string> ExecutionPath { get; }
+}
+
+/// <summary>
 /// CLI run 向けの logger provider。
 /// </summary>
 internal sealed class EngineLoggingProvider : ILoggerProvider
@@ -93,30 +136,28 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
     /// 設定されたログメッセージを出力します。
     /// </summary>
     /// <param name="category">category 名。</param>
-    /// <param name="entryName">scope から解決した EntryName。</param>
+    /// <param name="scope">scope chain から作成した実行階層。</param>
     /// <param name="level">ログレベル。</param>
     /// <param name="message">出力本文。</param>
     /// <param name="exception">例外情報。</param>
     public void Write(
         string category,
-        string? entryName,
+        EngineLogScopeSnapshot scope,
         LogLevel level,
         string? message,
         Exception? exception)
     {
-        if (disposed)
+        if (disposed || string.IsNullOrEmpty(message))
         {
             return;
         }
 
-        if (!string.IsNullOrEmpty(message))
-        {
-            WriteConsole(category, level, message, exception);
-        }
+        DateTimeOffset timestamp = nowProvider();
+        WriteConsole(category, scope, level, message, exception, timestamp);
 
         if (loggingOptions.FileEnabled)
         {
-            WriteFile(category, entryName, level, message, exception);
+            WriteFile(category, scope, level, message, exception, timestamp);
         }
     }
 
@@ -131,13 +172,12 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
     }
 
     /// <summary>
-    /// 現在の scope から EntryName を取得します。
-    /// 見つからない場合は fallback 名を返します。
+    /// 現在の scope chain から実行階層の snapshot を作成します。
     /// </summary>
-    /// <returns>現在の EntryName または fallback 名。</returns>
-    public string GetCurrentEntryName()
+    /// <returns>現在の実行階層。</returns>
+    public EngineLogScopeSnapshot GetCurrentScopeSnapshot()
     {
-        return scopeState.CurrentEntryName ?? fallbackEntryName;
+        return scopeState.CreateSnapshot();
     }
 
     /// <summary>
@@ -162,17 +202,25 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
     /// コンソール出力が有効な場合にログを標準出力へ書き込みます。
     /// </summary>
     /// <param name="category">category 名。</param>
+    /// <param name="scope">現在の実行階層。</param>
     /// <param name="level">ログレベル。</param>
     /// <param name="message">出力する本文。</param>
     /// <param name="exception">ログに含める例外情報。</param>
-    private void WriteConsole(string category, LogLevel level, string message, Exception? exception)
+    /// <param name="timestamp">ログ時刻。</param>
+    private void WriteConsole(
+        string category,
+        EngineLogScopeSnapshot scope,
+        LogLevel level,
+        string message,
+        Exception? exception,
+        DateTimeOffset timestamp)
     {
         if (!loggingOptions.ConsoleEnabled)
         {
             return;
         }
 
-        string output = FormatLog(loggingOptions.ConsoleFormat, category, level, message, exception);
+        string output = FormatLog(loggingOptions.ConsoleFormat, timestamp, category, scope, level, message, exception);
         Console.WriteLine(output);
     }
 
@@ -180,19 +228,21 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
     /// ファイル出力が有効な場合にログをファイルへ書き込みます。
     /// </summary>
     /// <param name="category">category 名。</param>
-    /// <param name="entryName">ログファイル名に使う EntryName。</param>
+    /// <param name="scope">現在の実行階層。</param>
     /// <param name="level">ログレベル。</param>
     /// <param name="message">出力する本文。</param>
     /// <param name="exception">ログに含める例外情報。</param>
-    private void WriteFile(string category, string? entryName, LogLevel level, string? message, Exception? exception)
+    /// <param name="timestamp">ログ時刻。</param>
+    private void WriteFile(
+        string category,
+        EngineLogScopeSnapshot scope,
+        LogLevel level,
+        string message,
+        Exception? exception,
+        DateTimeOffset timestamp)
     {
-        if (!loggingOptions.FileEnabled || string.IsNullOrEmpty(message))
-        {
-            return;
-        }
-
-        StreamWriter targetWriter = EnsureFileWriter(entryName);
-        string output = FormatLog(loggingOptions.FileFormat, category, level, message, exception);
+        StreamWriter targetWriter = EnsureFileWriter(scope.EntryName);
+        string output = FormatLog(loggingOptions.FileFormat, timestamp, category, scope, level, message, exception);
         lock (sync)
         {
             targetWriter.WriteLine(output);
@@ -310,14 +360,18 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
     /// 指定されたログ形式で 1 行分のログ文字列を作成します。
     /// </summary>
     /// <param name="format">出力形式。</param>
+    /// <param name="timestamp">ログ時刻。</param>
     /// <param name="category">category 名。</param>
+    /// <param name="scope">現在の実行階層。</param>
     /// <param name="level">ログレベル。</param>
     /// <param name="message">ログ本文。</param>
     /// <param name="exception">ログに含める例外情報。</param>
     /// <returns>出力先へ書き込むログ文字列。</returns>
     private static string FormatLog(
         EngineLoggingFormat format,
+        DateTimeOffset timestamp,
         string category,
+        EngineLogScopeSnapshot scope,
         LogLevel level,
         string message,
         Exception? exception)
@@ -330,15 +384,58 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
             return JsonSerializer.Serialize(
                 new
                 {
-                    Timestamp = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+                    Timestamp = timestamp.UtcDateTime.ToString("o", CultureInfo.InvariantCulture),
                     Level = level.ToString(),
                     Category = category,
+                    EntryName = scope.EntryName,
+                    StepName = scope.StepName,
+                    BranchName = scope.BranchName,
+                    Attempt = scope.Attempt,
+                    ExecutionPath = scope.ExecutionPath,
                     Message = body,
                     Exception = exception?.ToString(),
                 });
         }
 
-        return $"[{DateTime.UtcNow:HH:mm:ss}] [{level}] {category} {logMessage}";
+        var builder = new StringBuilder();
+        builder.Append($"[{timestamp.UtcDateTime:HH:mm:ss}] [{level}] {category}");
+        if (scope.ExecutionPath.Count > 0)
+        {
+            builder.Append(" [");
+            builder.Append(string.Join(" > ", scope.ExecutionPath.Select(NormalizeTextPathSegment)));
+            builder.Append(']');
+        }
+
+        if (scope.Attempt is int attempt)
+        {
+            builder.Append(" [attempt=");
+            builder.Append(attempt.ToString(CultureInfo.InvariantCulture));
+            builder.Append(']');
+        }
+
+        if (!string.IsNullOrEmpty(logMessage))
+        {
+            builder.Append(' ');
+            builder.Append(logMessage);
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Text 表示用の path 要素から改行と制御文字を除去します。
+    /// </summary>
+    /// <param name="value">正規化する path 要素。</param>
+    /// <returns>1 行へ正規化した path 要素。</returns>
+    private static string NormalizeTextPathSegment(string value)
+    {
+        var builder = new StringBuilder(value.Length);
+        foreach (char character in value)
+        {
+            builder.Append(char.IsControl(character) ? ' ' : character);
+        }
+
+        return builder.ToString().Trim();
     }
 
     /// <summary>
@@ -403,19 +500,16 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
             }
 
             string? message = formatter(state, exception);
-            provider.Write(categoryName, provider.GetCurrentEntryName(), logLevel, message, exception);
+            provider.Write(categoryName, provider.GetCurrentScopeSnapshot(), logLevel, message, exception);
         }
     }
 
     /// <summary>
-    /// AsyncLocal で logger scope の EntryName を保持します。
+    /// AsyncLocal で logger scope の実行階層を保持します。
     /// </summary>
     private sealed class EngineLoggingScopeState
     {
         private readonly AsyncLocal<ScopeNode?> current = new();
-
-        /// <summary>現在の scope chain から見つかった EntryName。</summary>
-        public string? CurrentEntryName => FindEntryName(current.Value);
 
         /// <summary>
         /// 新しい scope node を現在の scope chain に追加します。
@@ -429,32 +523,86 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
         }
 
         /// <summary>
-        /// scope chain から EntryName key を持つ文字列値を探します。
+        /// 現在の scope chain を外側から内側へ走査して snapshot を作成します。
         /// </summary>
-        /// <param name="node">検索開始 node。</param>
-        /// <returns>見つかった EntryName。存在しない場合は null。</returns>
-        private static string? FindEntryName(ScopeNode? node)
+        /// <returns>現在の実行階層。</returns>
+        public EngineLogScopeSnapshot CreateSnapshot()
         {
-            for (ScopeNode? current = node; current is not null; current = current.Parent)
+            var nodes = new List<ScopeNode>();
+            for (ScopeNode? node = current.Value; node is not null; node = node.Parent)
             {
-                if (current.State is IEnumerable<KeyValuePair<string, object?>> statePairs)
-                {
-                    foreach (KeyValuePair<string, object?> pair in statePairs)
-                    {
-                        if (!string.Equals(pair.Key, "EntryName", StringComparison.Ordinal))
-                        {
-                            continue;
-                        }
+                nodes.Add(node);
+            }
 
-                        if (pair.Value is string entryName && !string.IsNullOrWhiteSpace(entryName))
-                        {
-                            return entryName;
-                        }
+            nodes.Reverse();
+
+            string? entryName = null;
+            string? stepName = null;
+            string? branchName = null;
+            int? attempt = null;
+            var executionPath = new List<string>();
+
+            foreach (ScopeNode node in nodes)
+            {
+                if (node.State is not IEnumerable<KeyValuePair<string, object?>> statePairs)
+                {
+                    continue;
+                }
+
+                string? nodeEntryName = null;
+                string? nodeCompositeName = null;
+                string? nodeStepName = null;
+                string? nodeBranchName = null;
+                int? nodeAttempt = null;
+
+                foreach (KeyValuePair<string, object?> pair in statePairs)
+                {
+                    switch (pair.Key)
+                    {
+                        case "EntryName" when pair.Value is string entryValue && !string.IsNullOrWhiteSpace(entryValue):
+                            nodeEntryName = entryValue;
+                            break;
+                        case "CompositeName" when pair.Value is string compositeValue && !string.IsNullOrWhiteSpace(compositeValue):
+                            nodeCompositeName = compositeValue;
+                            break;
+                        case "StepName" when pair.Value is string stepValue && !string.IsNullOrWhiteSpace(stepValue):
+                            nodeStepName = stepValue;
+                            break;
+                        case "BranchName" when pair.Value is string branchValue && !string.IsNullOrWhiteSpace(branchValue):
+                            nodeBranchName = branchValue;
+                            break;
+                        case "Attempt" when pair.Value is int attemptValue && attemptValue > 0:
+                            nodeAttempt = attemptValue;
+                            break;
                     }
+                }
+
+                if (entryName is null && nodeEntryName is not null)
+                {
+                    entryName = nodeEntryName;
+                    executionPath.Add(nodeEntryName);
+                }
+
+                if (nodeCompositeName is not null)
+                {
+                    executionPath.Add(nodeCompositeName);
+                }
+
+                if (nodeStepName is not null)
+                {
+                    stepName = nodeStepName;
+                    attempt = nodeAttempt;
+                    executionPath.Add(nodeStepName);
+                }
+
+                if (nodeBranchName is not null)
+                {
+                    branchName = nodeBranchName;
+                    executionPath.Add(nodeBranchName);
                 }
             }
 
-            return null;
+            return new EngineLogScopeSnapshot(entryName, stepName, branchName, attempt, executionPath);
         }
 
         /// <summary>
@@ -478,6 +626,7 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
         {
             private readonly EngineLoggingScopeState scopeState;
             private readonly ScopeNode? snapshot;
+            private bool disposed;
 
             /// <summary>
             /// 復元対象の scope state と snapshot を指定して disposable を初期化します。
@@ -495,6 +644,12 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
             /// </summary>
             public void Dispose()
             {
+                if (disposed)
+                {
+                    return;
+                }
+
+                disposed = true;
                 scopeState.current.Value = snapshot;
             }
         }
