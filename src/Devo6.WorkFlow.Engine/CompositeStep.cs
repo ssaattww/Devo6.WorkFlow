@@ -1231,7 +1231,6 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         Stopwatch stopwatch = Stopwatch.StartNew();
         using IDisposable? stepScope = engineLogger.BeginScope(new Dictionary<string, object?>
         {
-            ["EntryName"] = QualifiedName,
             ["StepName"] = step.Name,
             ["Attempt"] = 1,
         });
