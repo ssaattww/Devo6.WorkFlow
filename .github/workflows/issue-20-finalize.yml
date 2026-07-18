@@ -1,6 +1,9 @@
 name: Issue 20 final verification and tracking
 
 on:
+  push:
+    branches:
+      - agent/issue-20-dotnet-script-compatibility-design
   pull_request:
     branches:
       - master
