@@ -20,24 +20,28 @@ public sealed class EngineLoggingHierarchyTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            var loggingOptions = new EngineLoggingOptions
+            string content;
             {
-                ConsoleEnabled = false,
-                FileEnabled = true,
-                FileDirectory = directory,
-                FileNameFormat = "{RootStepName}.log",
-                FileFormat = EngineLoggingFormat.Text,
-            };
-            using var loggerFactory = new EngineLoggerFactory(loggingOptions, null);
-            CompositeStep<string> workflow = CompositeStep
-                .Define("Main")
-                .Run<LoggingStep, string>()
-                    .StoreAs();
+                var loggingOptions = new EngineLoggingOptions
+                {
+                    ConsoleEnabled = false,
+                    FileEnabled = true,
+                    FileDirectory = directory,
+                    FileNameFormat = "{RootStepName}.log",
+                    FileFormat = EngineLoggingFormat.Text,
+                };
+                using var loggerFactory = new EngineLoggerFactory(loggingOptions, null);
+                CompositeStep<string> workflow = CompositeStep
+                    .Define("Main")
+                    .Run<LoggingStep, string>()
+                        .StoreAs();
 
-            WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
+                WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
 
-            Assert.True(result.Succeeded);
-            string content = File.ReadAllText(Path.Combine(directory, "Main.log"));
+                Assert.True(result.Succeeded);
+            }
+
+            content = File.ReadAllText(Path.Combine(directory, "Main.log"));
             Assert.Contains(
                 "Devo6.WorkFlow.Engine [Main > LoggingStep] [attempt=1] Step started for attempt 1",
                 content,
@@ -66,28 +70,32 @@ public sealed class EngineLoggingHierarchyTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            var loggingOptions = new EngineLoggingOptions
+            string content;
             {
-                ConsoleEnabled = false,
-                FileEnabled = true,
-                FileDirectory = directory,
-                FileNameFormat = "workflow.log",
-                FileFormat = EngineLoggingFormat.Text,
-            };
-            using var loggerFactory = new EngineLoggerFactory(loggingOptions, null);
-            CompositeStep<string> workflow = CompositeStep
-                .Define("Main")
-                .Run("Seed", _ => "seed")
-                .If(
-                    "Choice",
-                    _ => true,
-                    thenFlow => thenFlow.Run("ThenStep", current => current),
-                    elseFlow => elseFlow.Run("ElseStep", current => current));
+                var loggingOptions = new EngineLoggingOptions
+                {
+                    ConsoleEnabled = false,
+                    FileEnabled = true,
+                    FileDirectory = directory,
+                    FileNameFormat = "workflow.log",
+                    FileFormat = EngineLoggingFormat.Text,
+                };
+                using var loggerFactory = new EngineLoggerFactory(loggingOptions, null);
+                CompositeStep<string> workflow = CompositeStep
+                    .Define("Main")
+                    .Run("Seed", _ => "seed")
+                    .If(
+                        "Choice",
+                        _ => true,
+                        thenFlow => thenFlow.Run("ThenStep", current => current),
+                        elseFlow => elseFlow.Run("ElseStep", current => current));
 
-            WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
+                WorkflowResult result = workflow.ExecuteWorkflow(new WorkflowExecutionOptions(loggerFactory));
 
-            Assert.True(result.Succeeded);
-            string content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
+                Assert.True(result.Succeeded);
+            }
+
+            content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
             Assert.Contains("[Main > Choice > then > ThenStep] [attempt=1]", content, StringComparison.Ordinal);
             Assert.DoesNotContain("ElseStep", content, StringComparison.Ordinal);
         }
@@ -107,31 +115,35 @@ public sealed class EngineLoggingHierarchyTests
         RetryLoggingStep.Reset();
         try
         {
-            var loggingOptions = new EngineLoggingOptions
+            string content;
             {
-                ConsoleEnabled = false,
-                FileEnabled = true,
-                FileDirectory = directory,
-                FileNameFormat = "workflow.log",
-                FileFormat = EngineLoggingFormat.Text,
-            };
-            using var loggerFactory = new EngineLoggerFactory(loggingOptions, null);
-            CompositeStep<string> workflow = CompositeStep
-                .Define("Main")
-                .Run<RetryLoggingStep, string>()
-                    .StoreAs();
-            var executionOptions = new WorkflowExecutionOptions(loggerFactory)
-            {
-                Retry = new RetryOptions
+                var loggingOptions = new EngineLoggingOptions
                 {
-                    MaxAttempts = 2,
-                },
-            };
+                    ConsoleEnabled = false,
+                    FileEnabled = true,
+                    FileDirectory = directory,
+                    FileNameFormat = "workflow.log",
+                    FileFormat = EngineLoggingFormat.Text,
+                };
+                using var loggerFactory = new EngineLoggerFactory(loggingOptions, null);
+                CompositeStep<string> workflow = CompositeStep
+                    .Define("Main")
+                    .Run<RetryLoggingStep, string>()
+                        .StoreAs();
+                var executionOptions = new WorkflowExecutionOptions(loggerFactory)
+                {
+                    Retry = new RetryOptions
+                    {
+                        MaxAttempts = 2,
+                    },
+                };
 
-            WorkflowResult result = workflow.ExecuteWorkflow(executionOptions);
+                WorkflowResult result = workflow.ExecuteWorkflow(executionOptions);
 
-            Assert.True(result.Succeeded);
-            string content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
+                Assert.True(result.Succeeded);
+            }
+
+            content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
             Assert.Contains(
                 "[Main > RetryLoggingStep] [attempt=1] Step attempt 1 failed",
                 content,
@@ -156,47 +168,51 @@ public sealed class EngineLoggingHierarchyTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            var loggingOptions = new EngineLoggingOptions
+            string[] lines;
             {
-                ConsoleEnabled = false,
-                FileEnabled = true,
-                FileDirectory = directory,
-                FileNameFormat = "scope.jsonl",
-                FileFormat = EngineLoggingFormat.Json,
-            };
-            using var provider = new EngineLoggingProvider(
-                loggingOptions,
-                null,
-                () => new DateTimeOffset(2026, 7, 18, 12, 0, 0, TimeSpan.Zero));
-            ILogger logger = provider.CreateLogger("Test.Category");
+                var loggingOptions = new EngineLoggingOptions
+                {
+                    ConsoleEnabled = false,
+                    FileEnabled = true,
+                    FileDirectory = directory,
+                    FileNameFormat = "scope.jsonl",
+                    FileFormat = EngineLoggingFormat.Json,
+                };
+                using var provider = new EngineLoggingProvider(
+                    loggingOptions,
+                    null,
+                    () => new DateTimeOffset(2026, 7, 18, 12, 0, 0, TimeSpan.Zero));
+                ILogger logger = provider.CreateLogger("Test.Category");
 
-            using (logger.BeginScope(new Dictionary<string, object?>
-            {
-                ["EntryName"] = "Main",
-            }))
-            {
                 using (logger.BeginScope(new Dictionary<string, object?>
                 {
-                    ["StepName"] = "Choice",
-                    ["Attempt"] = 1,
-                }))
-                using (logger.BeginScope(new Dictionary<string, object?>
-                {
-                    ["BranchName"] = "then",
-                }))
-                using (logger.BeginScope(new Dictionary<string, object?>
-                {
-                    ["StepName"] = "ThenStep",
-                    ["Attempt"] = 2,
+                    ["EntryName"] = "Main",
                 }))
                 {
-                    logger.LogInformation("branch-body");
+                    using (logger.BeginScope(new Dictionary<string, object?>
+                    {
+                        ["StepName"] = "Choice",
+                        ["Attempt"] = 1,
+                    }))
+                    using (logger.BeginScope(new Dictionary<string, object?>
+                    {
+                        ["BranchName"] = "then",
+                    }))
+                    using (logger.BeginScope(new Dictionary<string, object?>
+                    {
+                        ["StepName"] = "ThenStep",
+                        ["Attempt"] = 2,
+                    }))
+                    {
+                        logger.LogInformation("branch-body");
+                    }
+
+                    logger.LogInformation("entry-body");
                 }
 
-                logger.LogInformation("entry-body");
             }
 
-            string[] lines = File.ReadAllLines(Path.Combine(directory, "scope.jsonl"));
+            lines = File.ReadAllLines(Path.Combine(directory, "scope.jsonl"));
             Assert.Equal(2, lines.Length);
 
             using JsonDocument branchDocument = JsonDocument.Parse(lines[0]);

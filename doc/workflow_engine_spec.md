@@ -556,9 +556,9 @@ Entry 全体 Config 互換 API では、`--workflow-set` または `--wset` の 
 
 入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
 
-配列またはリストには、`Items[0].Name=value` のような既存要素への添字 override に加え、`--workflow-set Items=[alpha, beta]` または `--wset Items=[alpha, beta]` による collection 全体の置換を扱う。全体置換の値は YAML インライン配列として解釈し、`[]` は空 collection とする。初期範囲は 1 次元配列、`List<T>`、基本型要素、通常の Config object 要素とする。添字が範囲外、負数、または数値でない場合は `CONFIG_LOAD_FAILED` とする。添字による自動拡張は行わない。
+配列またはリストには、`Items[0].Name=value` のような既存要素への添字 override に加え、`--workflow-set Items=[alpha, beta]` または `--wset Items=[alpha, beta]` によるコレクション全体の置換を扱う。全体置換の値は YAML インライン配列として解釈し、`[]` は空のコレクションとする。初期範囲は 1 次元配列、`List<T>`、基本型要素、通常の Config オブジェクト要素とする。添字が範囲外、負数、または数値でない場合は `CONFIG_LOAD_FAILED` とする。添字による自動拡張は行わない。
 
-collection 全体置換用の YAML 断片は対象 collection 型へ厳格に変換する。オブジェクト要素の未知プロパティ、無効 YAML、要素型不一致、または対象型を生成できない場合は `CONFIG_LOAD_FAILED` とし、最初の Step を実行しない。この厳格変換は CLI の YAML 断片だけに適用し、既存 Config YAML 読み込みの `IgnoreUnmatchedProperties()` 契約は変更しない。多次元配列、read-only collection、interface だけで具体型を決められない collection、および engine config の collection property は対象外とする。
+コレクション全体置換用の YAML 断片は対象のコレクション型へ厳格に変換する。オブジェクト要素の未知プロパティ、無効な YAML、要素型不一致、または対象型を生成できない場合は `CONFIG_LOAD_FAILED` とし、最初の Step を実行しない。この厳格変換は CLI の YAML 断片だけに適用し、既存 Config YAML 読み込みの `IgnoreUnmatchedProperties()` 契約は変更しない。多次元配列、読み取り専用のコレクション、具体的な実装型を特定できない抽象型のコレクション、および engine config に含まれるコレクションのプロパティは対象外とする。
 
 型変換は override 対象プロパティの型に対して行う。標準契約では `string`、`bool`、`int`、`long`、`double`、`decimal`、`enum`、nullable な基本型を扱う。型変換に失敗した場合は `CONFIG_LOAD_FAILED` とする。
 
@@ -944,7 +944,7 @@ public enum FailurePolicy
 
 指定された `--workflow-config` または `--engine-config` が存在しない場合は `CONFIG_NOT_FOUND` とする。
 
-読み込み不能、YAML 構文エラー、型変換失敗、Config override 適用失敗、`DataAnnotations` または `IValidatableObject` の失敗は `CONFIG_LOAD_FAILED` とする。`--workflow-set` または `--wset` の collection 全体置換では、YAML 断片の未知プロパティ、無効 YAML、要素型不一致、対象型の生成不能も `CONFIG_LOAD_FAILED` とし、最初の Step を実行しない。
+読み込み不能、YAML 構文エラー、型変換失敗、Config override 適用失敗、`DataAnnotations` または `IValidatableObject` の失敗は `CONFIG_LOAD_FAILED` とする。`--workflow-set` または `--wset` のコレクション全体置換では、YAML 断片の未知プロパティ、無効な YAML、要素型不一致、対象型の生成不能も `CONFIG_LOAD_FAILED` とし、最初の Step を実行しない。
 
 ### 11.4 retry と timeout
 
@@ -2343,7 +2343,7 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - Step 既定 Config YAML、root Config 区画、CLI `--workflow-set` / `--wset` の順による上書き
 - CLI `run` の境界 Config 型変換、CLI override 適用、Config 検証
 - CLI `run` の `--workflow-set` / `--wset` プロパティ path override と Config 検証前適用
-- CLI `run` の `--workflow-set` / `--wset` YAML インライン配列による workflow collection 全体置換
+- CLI `run` の `--workflow-set` / `--wset` YAML インライン配列によるワークフローのコレクション全体置換
 - CLI `run` の `--engine-set` / `--eset` プロパティ path override と engine config 検証前適用
 - 対象 Step 実行直前の `StepContext.Set<TStep.Config>()` 登録
 - Step 登録単位 Config がない場合の `WithConfig<TConfig>()` による Entry 全体 Config 互換 API
@@ -2376,7 +2376,7 @@ Step 本体失敗、retry 途中失敗、timeout、外部キャンセルでは�
 - Step 型への Config 自動注入
 - `--engine-set`、`--eset` による配列全体またはリスト全体の置換
 - `--workflow-set`、`--wset`、`--engine-set`、`--eset` による配列またはリストの自動拡張
-- `--workflow-set`、`--wset` による多次元配列、read-only collection、interface だけで具体型を決められない collection の全体置換
+- `--workflow-set`、`--wset` による多次元配列、読み取り専用のコレクション、具体的な実装型を特定できない抽象型のコレクションの全体置換
 - `engine validate` での Config 型変換、override 型検証、Config 値検証
 - CLI の timeout オプション
 - CLI の retry オプション
@@ -2514,13 +2514,13 @@ Step 配下に置く既定 Config YAML は、Step Config 型の入力例また�
 
 入れ子プロパティの途中が `null` の場合、引数なしで生成できるクラスは自動生成して続行する。生成できない場合は `CONFIG_LOAD_FAILED` とする。
 
-配列またはリストは、`Items[0].Name=value` のような既存要素への添字 override を維持する。加えて `--workflow-set Items=[alpha, beta]` または `--wset Items=[alpha, beta]` のように、workflow config の collection property 全体を YAML インライン配列で置換できる。`[]` は空 collection とする。初期範囲は 1 次元配列、`List<T>`、基本型要素、通常の Config object 要素とする。添字による自動拡張は行わない。
+配列またはリストは、`Items[0].Name=value` のような既存要素への添字 override を維持する。加えて `--workflow-set Items=[alpha, beta]` または `--wset Items=[alpha, beta]` のように、workflow config に含まれるコレクションのプロパティ全体を YAML インライン配列で置換できる。`[]` は空のコレクションとする。初期範囲は 1 次元配列、`List<T>`、基本型要素、通常の Config オブジェクト要素とする。添字による自動拡張は行わない。
 
-collection 全体置換では、値全体を対象 collection 型へ厳格に YAML 変換する。CLI YAML 断片内の未知プロパティ、無効 YAML、要素型不一致、対象型を生成できない場合は `CONFIG_LOAD_FAILED` とし、Step 実行前に失敗する。既存 Config YAML の `IgnoreUnmatchedProperties()` による未知プロパティ無視は維持し、この未知プロパティ無視を CLI YAML 断片へ拡張しない。多次元配列、read-only collection、interface だけで具体型を決められない collection、engine config の collection property は対象外とする。
+コレクション全体置換では、値全体を対象のコレクション型へ厳格に YAML 変換する。CLI YAML 断片内の未知プロパティ、無効な YAML、要素型不一致、対象型を生成できない場合は `CONFIG_LOAD_FAILED` とし、Step 実行前に失敗する。既存 Config YAML の `IgnoreUnmatchedProperties()` による未知プロパティ無視は維持し、この未知プロパティ無視を CLI YAML 断片へ拡張しない。多次元配列、読み取り専用のコレクション、具体的な実装型を特定できない抽象型のコレクション、engine config に含まれるコレクションのプロパティは対象外とする。
 
-空白または引用符を含む YAML 断片を shell が別引数へ分割しないよう、collection 全体置換では `Key=value` 全体を引用する。PowerShell と bash 系シェルの例は次のとおりとする。
+空白または引用符を含む YAML 断片がコマンド実行環境で別の引数に分割されないよう、コレクション全体置換では `Key=value` 全体を引用する。`PowerShell` と `Bash` の例は次のとおりとする。
 
-PowerShell:
+`PowerShell`:
 
 ```powershell
 engine run main.csx --workflow-config appsettings.yaml --workflow-set 'Tags=[alpha, beta]'
@@ -2528,7 +2528,7 @@ engine run main.csx --workflow-config appsettings.yaml --wset 'Targets=[{Name: a
 engine run main.csx --workflow-config appsettings.yaml --wset 'Tags=[]'
 ```
 
-bash 系シェル:
+`Bash`:
 
 ```bash
 engine run main.csx --workflow-config appsettings.yaml --workflow-set 'Tags=[alpha, beta]'
@@ -2540,7 +2540,7 @@ engine run main.csx --workflow-config appsettings.yaml --wset 'Tags=[]'
 
 同一 key の複数 override は後勝ちとする。
 
-無効書式、存在しないプロパティ、型変換失敗、配列またはリストの添字不正は `CONFIG_LOAD_FAILED` とする。collection 全体置換の YAML 断片に未知プロパティがある、YAML が無効である、要素型が一致しない、または対象 collection 型を生成できない場合も `CONFIG_LOAD_FAILED` とする。ただし、CLI 解析層で override 引数の値がない、`key=value` になっていない、または key が空の場合は CLI 解析エラーとして終了コード 2 で失敗する。
+無効書式、存在しないプロパティ、型変換失敗、配列またはリストの添字不正は `CONFIG_LOAD_FAILED` とする。コレクション全体置換の YAML 断片に未知プロパティがある、YAML が無効である、要素型が一致しない、または対象のコレクション型を生成できない場合も `CONFIG_LOAD_FAILED` とする。ただし、CLI 解析層で override 引数の値がない、`key=value` になっていない、または key が空の場合は CLI 解析エラーとして終了コード 2 で失敗する。
 
 `engine validate` は workflow config path と engine config path の存在確認までを維持し、override の型検証は `engine run` で行う。
 
@@ -2548,7 +2548,7 @@ engine run main.csx --workflow-config appsettings.yaml --wset 'Tags=[]'
 
 Entry 全体 Config 互換 API では、`--workflow-set` または `--wset` の key 全体を Entry 全体 Config 型へのプロパティ path override として扱う。
 
-検査では、基本型 override、既存 collection 要素への添字 override、同一 key の後勝ち、検証前に override を適用する境界を回帰確認する。collection 全体置換では、1 次元配列、空の `List<T>`、基本型配列、通常の Config object 配列、`[]`、未知プロパティ、無効 YAML、要素型不一致、生成不能型、および Step が実行されないことを確認する。
+検査では、基本型 override、既存コレクション要素への添字 override、同一 key の後勝ち、検証前に override を適用する境界を回帰確認する。コレクション全体置換では、1 次元配列、空の `List<T>`、基本型配列、通常の Config オブジェクト配列、`[]`、未知プロパティ、無効な YAML、要素型不一致、生成不能型、および Step が実行されないことを確認する。
 
 ### 21.4 Produce 後の値の寿命
 

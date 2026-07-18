@@ -591,7 +591,11 @@ internal sealed class EngineLoggingProvider : ILoggerProvider
                 if (nodeStepName is not null)
                 {
                     stepName = nodeStepName;
-                    attempt = nodeAttempt;
+                    if (nodeAttempt is not null)
+                    {
+                        attempt = nodeAttempt;
+                    }
+
                     executionPath.Add(nodeStepName);
                 }
 
