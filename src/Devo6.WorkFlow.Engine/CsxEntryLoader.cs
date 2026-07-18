@@ -4,6 +4,7 @@ using Dotnet.Script.DependencyModel.Context;
 using Dotnet.Script.DependencyModel.Logging;
 using Dotnet.Script.DependencyModel.Runtime;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 using Microsoft.CodeAnalysis.Text;
@@ -27,6 +28,11 @@ public sealed class CsxEntryLoader
     private const string DefaultEntryName = "Main";
     private const string DefaultNuGetLockFileName = "devo6.nuget.lock.yaml";
     private static readonly ICsxNuGetDependencyGraphProvider DefaultNuGetDependencyGraphProvider = new DotnetScriptCsxNuGetDependencyGraphProvider();
+    private static readonly ImmutableDictionary<string, ReportDiagnostic> DotnetScriptDiagnosticOptions = Enumerable
+        .Range(8600, 56)
+        .ToImmutableDictionary(
+            number => $"CS{number}",
+            _ => ReportDiagnostic.Error);
     private static readonly IDeserializer NuGetLockDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -72,9 +78,7 @@ public sealed class CsxEntryLoader
                 scriptOptions,
                 typeof(object));
 
-            ImmutableArray<Diagnostic> errors = script.Compile()
-                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
-                .ToImmutableArray();
+            ImmutableArray<Diagnostic> errors = GetCompileErrors(script);
 
             if (!errors.IsEmpty)
             {
@@ -157,9 +161,7 @@ public sealed class CsxEntryLoader
                 source.Code,
                 scriptOptions,
                 typeof(object));
-            ImmutableArray<Diagnostic> compileErrors = script.Compile()
-                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
-                .ToImmutableArray();
+            ImmutableArray<Diagnostic> compileErrors = GetCompileErrors(script);
 
             if (!compileErrors.IsEmpty)
             {
@@ -500,7 +502,10 @@ public sealed class CsxEntryLoader
         {
             return (loaderOptions.NuGetDependencyGraphProvider ?? DefaultNuGetDependencyGraphProvider).Resolve(
                 context.NuGetReferences,
-                new CsxNuGetDependencyGraphRequest(entryPath, context.WorkflowRoot, lockPath, sourceCode));
+                new CsxNuGetDependencyGraphRequest(entryPath, context.WorkflowRoot, lockPath, sourceCode)
+                {
+                    DotnetScriptCachePath = loaderOptions.DotnetScriptCachePath,
+                });
         }
         catch (CsxReferenceValidationException)
         {
@@ -826,16 +831,34 @@ public sealed class CsxEntryLoader
     }
 
     /// <summary>
+    /// Dotnet.Script.Core 2.0.1 と同じ nullable 診断を error へ昇格し、compile error を取得します。
+    /// </summary>
+    /// <param name="script">診断対象の Roslyn script。</param>
+    /// <returns>error として扱う compile 診断。</returns>
+    private static ImmutableArray<Diagnostic> GetCompileErrors(Microsoft.CodeAnalysis.Scripting.Script<object> script)
+    {
+        CSharpCompilation compilation = (CSharpCompilation)script.GetCompilation();
+        CSharpCompilationOptions options = compilation.Options
+            .WithSpecificDiagnosticOptions(DotnetScriptDiagnosticOptions);
+
+        return compilation
+            .WithOptions(options)
+            .GetDiagnostics()
+            .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+            .ToImmutableArray();
+    }
+
+    /// <summary>
     /// Roslyn script 実行に使う参照と import を組み立てます。
     /// </summary>
     /// <param name="entryPath">entry script の path。</param>
     /// <param name="source">読み込み済み script source。</param>
     /// <returns>script compile と実行に使う option。</returns>
-    private static ScriptOptions CreateScriptOptions(string entryPath, CsxScriptSource source)
+    private ScriptOptions CreateScriptOptions(string entryPath, CsxScriptSource source)
     {
         LogFactory logFactory = _ => (_, _, _) => { };
         string workingDirectory = Path.GetDirectoryName(Path.GetFullPath(entryPath)) ?? Directory.GetCurrentDirectory();
-        var compiler = new ScriptCompiler(logFactory, workingDirectory, true);
+        var compiler = new ScriptCompiler(logFactory, loaderOptions.DotnetScriptCachePath ?? "", true);
         var context = new ScriptContext(
             SourceText.From(source.Code),
             workingDirectory,
@@ -1866,7 +1889,7 @@ public sealed class CsxEntryLoader
         {
             LogFactory logFactory = _ => (_, _, _) => { };
             string workingDirectory = Path.GetDirectoryName(Path.GetFullPath(request.EntryPath)) ?? request.WorkflowRoot;
-            var compiler = new ScriptCompiler(logFactory, workingDirectory, true);
+            var compiler = new ScriptCompiler(logFactory, request.DotnetScriptCachePath ?? "", true);
             var context = new ScriptContext(
                 SourceText.From(request.SourceCode),
                 workingDirectory,
@@ -1953,6 +1976,11 @@ public sealed class CsxEntryLoaderOptions
     public bool RequireNuGetLock { get; init; }
 
     /// <summary>
+    /// Dotnet.Script の依存復元に使う cache path を取得または設定します。null の場合は Dotnet.Script の標準位置を使います。
+    /// </summary>
+    public string? DotnetScriptCachePath { get; init; }
+
+    /// <summary>
     /// NuGet dependency graph を解決する provider を取得または設定します。null の場合は Dotnet.Script の既定 provider を使います。
     /// </summary>
     public ICsxNuGetDependencyGraphProvider? NuGetDependencyGraphProvider { get; init; }
@@ -2035,6 +2063,11 @@ public sealed class CsxNuGetDependencyGraphRequest
     /// NuGet directive を含む script source を取得します。
     /// </summary>
     public string SourceCode { get; }
+
+    /// <summary>
+    /// Dotnet.Script の依存復元に使う cache path を取得または設定します。null の場合は標準位置を使います。
+    /// </summary>
+    public string? DotnetScriptCachePath { get; init; }
 }
 
 /// <summary>

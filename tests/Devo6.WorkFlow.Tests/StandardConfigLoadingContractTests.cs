@@ -654,6 +654,8 @@ public sealed class StandardConfigLoadingContractTests
     {
         string scriptPath = CreateScript(
             """
+            #nullable enable
+
             #r "System.ComponentModel.Annotations"
 
             using Devo6.WorkFlow.Abstractions;
@@ -848,6 +850,8 @@ public sealed class StandardConfigLoadingContractTests
     {
         string scriptPath = CreateScript(
             """
+            #nullable enable
+
             using Devo6.WorkFlow.Abstractions;
             using Devo6.WorkFlow.Engine;
             using System.IO;
