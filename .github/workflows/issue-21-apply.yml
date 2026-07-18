@@ -1,4 +1,4 @@
-name: Issue 21 implementation and evidence
+name: Finalize Issue 21 tracking
 
 on:
   push:
@@ -6,120 +6,79 @@ on:
       - agent/issue-21-logging-hierarchy-design
     paths:
       - .github/workflows/issue-21-apply.yml
-  pull_request:
-    branches:
-      - master
 
 permissions:
   contents: write
 
 jobs:
-  apply:
+  finalize:
     runs-on: ubuntu-latest
-    env:
-      TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
     steps:
-      - name: Checkout head branch
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 8.0.x
-
-      - name: Restore
-        run: dotnet restore Devo6.WorkFlow.sln
-
-      - name: Apply coding standards fixes
+      - name: Update design and tracking
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p artifacts/test-results
-          python3 - <<'PY' 2>&1 | tee artifacts/test-results/apply-standards.log
+          python3 - <<'PY'
           from pathlib import Path
 
-          provider_path = Path("src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs")
-          provider = provider_path.read_text(encoding="utf-8")
-          old_provider = "internal sealed record EngineLoggingOptions"
-          new_provider = "internal sealed class EngineLoggingOptions"
-          if old_provider in provider:
-              provider = provider.replace(old_provider, new_provider, 1)
-          elif new_provider not in provider:
-              raise RuntimeError("EngineLoggingOptions declaration was not found")
-          provider_path.write_text(provider, encoding="utf-8")
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
 
-          engine_path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
-          engine = engine_path.read_text(encoding="utf-8")
-          old_engine = "\n".join([
-              "            object? boxedValue = value;",
-              "            displayValue = boxedValue switch",
-              "            {",
-              "                null => \"null\",",
-              "                IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? \"null\",",
-              "                _ => boxedValue.ToString() ?? \"null\",",
-              "            };",
-          ])
-          new_engine = "\n".join([
-              "            object? boxedValue = value;",
-              "            if (boxedValue is null)",
-              "            {",
-              "                displayValue = \"null\";",
-              "            }",
-              "            else if (boxedValue is IFormattable)",
-              "            {",
-              "                displayValue = ((IFormattable)boxedValue).ToString(null, CultureInfo.InvariantCulture) ?? \"null\";",
-              "            }",
-              "            else",
-              "            {",
-              "                displayValue = boxedValue.ToString() ?? \"null\";",
-              "            }",
-          ])
-          if old_engine in engine:
-              engine = engine.replace(old_engine, new_engine, 1)
-          elif new_engine not in engine:
-              raise RuntimeError("Switch branch formatter block was not found")
-          engine_path.write_text(engine, encoding="utf-8")
+          design_path = Path("doc/issue-21-hierarchical-logging-design.md")
+          design = design_path.read_text(encoding="utf-8")
+          design = replace_once(
+              design,
+              "nested Composite の lifecycle は、ルート workflow の内部 logging context を取得できる場合は `Devo6.WorkFlow.Engine` を使用する。\nstandalone `Execute` / `ExecuteAsync` では `StepContext.Logger` を使用する。",
+              "nested Composite と simple execution の lifecycle は `StepContext.Logger` を使用し、`Devo6.WorkFlow.Step` category で出力する。\nroot workflow の Entry、retry、timeout、branch 制御は引き続き `Devo6.WorkFlow.Engine` category を使用する。",
+              "logger category",
+          )
+          design = replace_once(
+              design,
+              "- root workflow 用の内部 logging context を `StepContext` へ登録する。",
+              "- simple execution の lifecycle は `StepContext.Logger` へ出力する。",
+              "change target",
+          )
+          design = replace_once(
+              design,
+              "### nested Composite の lifecycle category\n\nroot workflow から内部 logging context を渡し、可能な限り engine category を使用する。\nstandalone 実行だけは `StepContext.Logger` へ fallback する。",
+              "### nested Composite の lifecycle category\n\nnested Composite は `StepContext.Logger` を使い、外側 Step 本体ログと同じ `Devo6.WorkFlow.Step` category に統一する。\nroot workflow の lifecycle category とは分け、公開 API や内部 context 型を増やさない。",
+              "category risk",
+          )
+          design_path.write_text(design, encoding="utf-8")
+
+          tasks_path = Path("tasks-status.md")
+          tasks = tasks_path.read_text(encoding="utf-8").rstrip() + "\n"
+          if "| T73 |" not in tasks:
+              tasks += "| T73 | 完了 | 課題 #21 の階層ログ契約を設計する。 | Step 名、nested Composite、分岐、retry、Text/JSON 形式、互換性、検査方針が設計書に定義される。 | `doc/issue-21-hierarchical-logging-design.md`、PR #25 |\n"
+              tasks += "| T74 | 完了 | 課題 #21 の失敗検査を実装前に追加する。 | Text/JSON、Step 本体、nested Composite、If/Switch、retry の不足が赤い TRX artifact で確認される。 | `tests/Devo6.WorkFlow.Tests/HierarchicalLoggingContractTests.cs`、workflow run 29635422686、artifact 8426932606 |\n"
+              tasks += "| T75 | 完了 | CLI logger provider を構造化 scope 表示へ更新する。 | Text に実行 path と attempt が出力され、JSON に `EntryName`、`StepName`、`BranchName`、`Attempt`、`ExecutionPath` が追加される。 | `src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs`、`tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs` |\n"
+              tasks += "| T76 | 完了 | Engine の nested Composite、分岐、retry の logger scope を実装する。 | simple execution、`If`、`Switch`、retry が選択経路だけを階層表示し、公開 workflow 契約を維持する。 | `src/Devo6.WorkFlow.Engine/CompositeStep.cs`、focused 10/10、関連回帰 32 成功・1 skip |\n"
+              tasks += "| T77 | 完了 | 課題 #21 の文書、artifact 検証、進捗、PR を統合する。 | サンプル説明、TRX artifact、コード規約、format、差分検査がそろい、PR #25 が実装内容へ更新される。 | `samples/multi-folder-composite/README.md`、`.github/workflows/pr-xunit-tests.yml`、artifact 8426981336、artifact 8427137522、PR #25 |\n"
+          tasks_path.write_text(tasks, encoding="utf-8")
+
+          phases_path = Path("phases-status.md")
+          phases = phases_path.read_text(encoding="utf-8").rstrip() + "\n"
+          if "| P31 |" not in phases:
+              phases += "| P31 | 完了 | 課題 #21 の階層ログを整備する。 | T73-T77 が実施され、Step 名、nested Composite、選択分岐、retry を Text/JSON ログから確認できる。テスト先行の赤い artifact、緑の focused・回帰・コード規約 artifact、利用者文書、PR がそろう。 | T73-T77 完了、`doc/issue-21-hierarchical-logging-design.md`、PR #25 |\n"
+          phases_path.write_text(phases, encoding="utf-8")
           PY
 
-      - name: Format
-        run: dotnet format Devo6.WorkFlow.sln --no-restore
-
-      - name: Verify standards and logging
-        shell: bash
-        run: |
-          set -o pipefail
-          dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj \
-            --no-restore \
-            --filter "FullyQualifiedName~CodingStandardsContractTests|FullyQualifiedName~HierarchicalLoggingContractTests|FullyQualifiedName~EngineLoggingHierarchyTests|FullyQualifiedName~WorkflowResultContractTests|FullyQualifiedName~RetryExecutionContractTests|FullyQualifiedName~IfBranchContractTests|FullyQualifiedName~SwitchBranchContractTests" \
-            --logger "trx;LogFileName=issue-21-standards.trx" \
-            --results-directory artifacts/test-results \
-            2>&1 | tee artifacts/test-results/issue-21-standards.log
+          rm .github/workflows/issue-21-apply.yml
 
       - name: Diff check
         run: git diff --check
 
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: issue-21-standards-evidence-${{ github.run_attempt }}
-          path: artifacts/test-results
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Commit fixes
-        shell: bash
+      - name: Commit finalization
         run: |
-          if git diff --quiet -- src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs src/Devo6.WorkFlow.Engine/CompositeStep.cs; then
-            echo "No standards changes to commit."
-            exit 0
-          fi
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs src/Devo6.WorkFlow.Engine/CompositeStep.cs
-          git commit -m "fix: align hierarchical logging with coding standards"
-          git push origin HEAD:"${TARGET_BRANCH}"
+          git add -A
+          git commit -m "docs: finalize Issue 21 tracking"
+          git push origin HEAD:${GITHUB_REF_NAME}
