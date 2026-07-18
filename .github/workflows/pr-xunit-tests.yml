@@ -6,11 +6,16 @@ on:
       - master
   workflow_dispatch:
 
+concurrency:
+  group: pr-xunit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout
@@ -22,7 +27,47 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Restore
-        run: dotnet restore Devo6.WorkFlow.sln
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p TestResults
+          dotnet restore Devo6.WorkFlow.sln \
+            2>&1 | tee TestResults/restore.log
+
+      - name: Format verification
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet format Devo6.WorkFlow.sln \
+            --verify-no-changes \
+            --no-restore \
+            2>&1 | tee TestResults/format.log
 
       - name: Test
-        run: dotnet test Devo6.WorkFlow.sln --configuration Release --no-restore --verbosity minimal
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet test Devo6.WorkFlow.sln \
+            --configuration Release \
+            --no-restore \
+            --verbosity minimal \
+            --logger "trx;LogFileName=test-results.trx" \
+            --results-directory TestResults \
+            2>&1 | tee TestResults/test-results.log
+
+      - name: Diff check
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p TestResults
+          git diff --check 2>&1 | tee TestResults/diff-check.log
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: TestResults
+          if-no-files-found: warn
+          retention-days: 14

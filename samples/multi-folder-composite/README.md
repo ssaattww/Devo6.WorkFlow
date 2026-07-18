@@ -19,6 +19,27 @@ engine run "$ENTRY" --workflow-config appsettings.yaml --engine-config engine.ya
 
 標準出力ログでは `Entry started`、`Step started for attempt 1`、`Loading source text from input/source.txt`、`Parsing YAML front matter with delimiter ---`、`Building report with heading Composite sample report`、`Saving report text to output/result.txt`、`Entry succeeded` の順に処理状況を追えます。これを進捗表示として見れば、Entry 開始、各 Step の処理内容、成功、Entry 完了を確認できます。
 
+各ログ行には、現在の実行位置が外側から内側の順で表示されます。root workflow の通常 Step は次のように Entry 名、Step 名、試行番号を持ちます。
+
+```text
+[12:00:00] [Information] Devo6.WorkFlow.Engine [Main > RunTextPipelineStep] [attempt=1] Step started for attempt 1
+```
+
+内側の `TextPipeline` が実行する Step のログには、外側 Step、nested `CompositeStep`、内側 Step の順で実行 path が表示されます。
+
+```text
+[12:00:00] [Information] Devo6.WorkFlow.Step [Main > RunTextPipelineStep > TextPipeline > LoadTextStep] Loading source text from input/source.txt
+```
+
+`If` と `Switch` では、選択された branch だけが実行 path に含まれます。
+
+```text
+[Main > RunTextPipelineStep > TextPipeline > DocumentLength > then > KeepDetailedDocument]
+[Main > RunTextPipelineStep > TextPipeline > ReportRoute > case=Guide > UseGuideReport]
+```
+
+`Logging.Console.Format` または `Logging.File.Format` を `Json` にすると、既存の `Timestamp`、`Level`、`Category`、`Message`、`Exception` に加えて、`EntryName`、`StepName`、`BranchName`、`Attempt`、文字列配列の `ExecutionPath` が出力されます。
+
 内側の `TextPipeline` は、本文分析後に `RunIf`、`TapIf`、`If`、`Switch` を使います。既定入力では `guide` 文書のメタデータを `TapIf` で検査し、長い文書の `If` 分岐と `guide` の `Switch` 分岐を通ってから結果文書を作ります。入力の `tags:` に `summary` を追加すると、`RunIf` が `tags:` 要約を本文末尾へ追加します。`category: summary` ではなく `tags:` 条件です。
 
 root の `appsettings.yaml` は、Step 側の既定 YAML を全部置き換えるのではなく、境界 Config から必要な値だけを部分上書きします。このサンプルでは `Pipeline.Load.Path`、`Pipeline.Normalize.Uppercase`、`Pipeline.Report.Heading`、`Pipeline.Report.BodyHeading`、`Save.Path` を root 側で示し、`Pipeline.Parse` や `Pipeline.Analyze` は Step 側の既定 YAML をそのまま使います。
