@@ -73,9 +73,13 @@ JSON 形式は既存 field を維持し、次を追加する。
 
 - 課題専用設計書を追加
 - 複数フォルダサンプル README に Text / JSON 例を追加
-- PR xUnit workflow が TRX artifact を 14 日間保存するように更新
 - `tasks-status.md` に T73-T77 を反映
 - `phases-status.md` に P31 を反映
+- PR xUnit workflow を検証専用に維持
+- Restore、format、solution test、diff check のログと TRX を `TestResults` artifact として14日間保存
+- 前段が失敗しても取得済み証跡を upload してから、最後の判定 step で workflow を失敗にする
+
+PR xUnit workflow の権限は `contents: read` とし、ソースの変更、commit、pushを行わない。artifactで失敗原因を確認した後の修正は、GitHubコネクタ経由で対象ファイルへ明示的にcommitする。
 
 ## 4. 公開契約
 
@@ -87,14 +91,25 @@ JSON 形式は既存 field を維持し、次を追加する。
 - `WorkflowResult`
 - `ExecutionTrace` / `ExecutionTraceStep`
 
-Text ログの 1 行形式には実行 path が追加される。機械処理では JSON 形式または structured logging provider の利用を推奨する。
+Text ログの1行形式には実行 path が追加される。機械処理では JSON 形式または structured logging provider の利用を推奨する。
 
 ## 5. 全体検証の途中結果
 
-PR xUnit run `29635784971` の artifact `8427061404` では、300 件中 296 件成功、既存 skip 3 件、コード規約 1 件失敗だった。失敗内容は pattern variable と record 宣言に起因する解析指摘であり、後続修正後の artifact `8427137522` で対象規約検査の成功を確認した。
+PR xUnit run `29635784971` の artifact `8427061404` では、300 件中 296 件成功、既存 skip 3 件、コード規約1件失敗だった。失敗内容は pattern variable と record 宣言に起因する解析指摘であり、後続修正後の artifact `8427137522` で対象規約検査の成功を確認した。
 
-最終 head に対する solution 全体の TRX artifact は、最終レビュー報告へ記録する。
+最終 head では、検証専用の PR xUnit workflow が solution 全体を実行し、Restore、format、test、diff check の結果を同じ artifactへ保存する。最終結果と artifact ID はPRの検証欄へ反映する。
 
-## 6. skill 振り返り
+## 6. 作業方法の整理
+
+一時的に追加されたソース自動修正用workflowは削除した。
+
+今後の分担は次のとおりとする。
+
+1. GitHub Actionsは検査とartifact保存だけを行う。
+2. 失敗原因はartifactのログとTRXから調査する。
+3. コード、文書、CI定義の修正はGitHubコネクタ経由で行う。
+4. 修正後のcommitを起点にPR CIを再実行する。
+
+## 7. skill 振り返り
 
 本課題は既存の development-orchestrator、tdd-executor、review、progress、GitHub workflow の組み合わせで処理できた。新しい skill の追加は不要と判断する。
