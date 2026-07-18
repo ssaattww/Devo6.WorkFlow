@@ -88,14 +88,16 @@ public sealed class DotnetScriptCompatibilityTests
     [Fact(DisplayName = "既定キャッシュは workflow directory ではなく dotnet-script 標準位置へ委譲する")]
     public void DefaultCachePolicyDoesNotUseWorkflowDirectory()
     {
-        Type policyType = Assert.NotNull(
-            typeof(CsxEntryLoader).Assembly.GetType("Devo6.WorkFlow.Engine.DotnetScriptCachePathPolicy"));
-        MethodInfo resolveMethod = Assert.NotNull(policyType.GetMethod(
+        Type? policyType = typeof(CsxEntryLoader).Assembly.GetType(
+            "Devo6.WorkFlow.Engine.DotnetScriptCachePathPolicy");
+        Assert.NotNull(policyType);
+        MethodInfo? resolveMethod = policyType!.GetMethod(
             "Resolve",
-            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic));
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        Assert.NotNull(resolveMethod);
         string workflowDirectory = Path.Combine(Path.GetTempPath(), $"devo6-workflow-{Guid.NewGuid():N}");
 
-        object? effectiveCachePath = resolveMethod.Invoke(null, [workflowDirectory]);
+        object? effectiveCachePath = resolveMethod!.Invoke(null, [workflowDirectory]);
 
         Assert.Null(effectiveCachePath);
     }
