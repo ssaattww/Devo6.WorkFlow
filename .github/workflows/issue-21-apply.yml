@@ -70,21 +70,18 @@ jobs:
 
           engine_path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
           engine_text = engine_path.read_text(encoding="utf-8")
-          old_scope = '''        using IDisposable? stepScope = engineLogger.BeginScope(new Dictionary<string, object?>
-          {
-              ["EntryName"] = QualifiedName,
+          old_fields = '''            ["EntryName"] = QualifiedName,
               ["StepName"] = step.Name,
-              ["Attempt"] = 1,
-          });'''
-          new_scope = '''        using IDisposable? stepScope = engineLogger.BeginScope(new Dictionary<string, object?>
-          {
-              ["StepName"] = step.Name,
-              ["Attempt"] = 1,
-          });'''
-          if old_scope in engine_text:
-              engine_text = engine_text.replace(old_scope, new_scope, 1)
-          elif new_scope not in engine_text:
-              raise RuntimeError("conditional branch scope shape was not found")
+              ["Attempt"] = 1,'''
+          new_fields = '''            ["StepName"] = step.Name,
+              ["Attempt"] = 1,'''
+          field_count = engine_text.count(old_fields)
+          if field_count == 1:
+              engine_text = engine_text.replace(old_fields, new_fields, 1)
+          elif field_count == 0 and new_fields in engine_text:
+              pass
+          else:
+              raise RuntimeError(f"conditional branch scope: expected zero or one old shape, found {field_count}")
           engine_path.write_text(engine_text, encoding="utf-8")
 
           test_path = Path("tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs")
