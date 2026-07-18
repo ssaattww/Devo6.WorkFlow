@@ -88,7 +88,7 @@ public sealed class EngineLoggingHierarchyTests
 
             Assert.True(result.Succeeded);
             string content = File.ReadAllText(Path.Combine(directory, "workflow.log"));
-            Assert.Contains("[Main > Choice > ThenStep] [attempt=1]", content, StringComparison.Ordinal);
+            Assert.Contains("[Main > Choice > then > ThenStep] [attempt=1]", content, StringComparison.Ordinal);
             Assert.DoesNotContain("ElseStep", content, StringComparison.Ordinal);
         }
         finally

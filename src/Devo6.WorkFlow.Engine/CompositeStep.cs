@@ -2,6 +2,7 @@ using Devo6.WorkFlow.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Devo6.WorkFlow.Engine;
@@ -616,7 +617,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             nextStartIndex += GetFlattenedStepCount(switchCase.Steps);
         }
 
-        BranchExecutionPlan defaultPlan = new(defaultCase.Steps, nextStartIndex);
+        BranchExecutionPlan defaultPlan = new(defaultCase.Steps, nextStartIndex, "default");
         nextConfigRegistrations.AddRange(RemapBranchConfigRegistrations(
             defaultCase.StepConfigRegistrations,
             nextStartIndex));
@@ -778,11 +779,30 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
     {
         ArgumentNullException.ThrowIfNull(input);
 
-        object? currentValue = default(TOut);
+        ILogger logger = input.Context.Logger;
+        using IDisposable? compositeScope = logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["CompositeName"] = QualifiedName,
+        });
+        logger.LogInformation("Composite started");
 
-        currentValue = await ExecuteSimpleStepSequenceAsync(steps, input, currentValue, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            object? currentValue = default(TOut);
+            currentValue = await ExecuteSimpleStepSequenceAsync(
+                steps,
+                input,
+                currentValue,
+                cancellationToken).ConfigureAwait(false);
+            logger.LogInformation("Composite succeeded");
 
-        return (TOut)currentValue!;
+            return (TOut)currentValue!;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Composite failed");
+            throw;
+        }
     }
 
     /// <summary>
@@ -828,7 +848,6 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         using IDisposable? entryScope = engineLogger.BeginScope(new Dictionary<string, object?>
         {
             ["EntryName"] = QualifiedName,
-            ["Attempt"] = 1,
         });
 
         engineLogger.LogInformation("Entry started");
@@ -874,22 +893,53 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
         object? currentValue,
         CancellationToken cancellationToken)
     {
+        ILogger logger = input.Context.Logger;
         foreach (StepRegistration step in stepSequence)
         {
-            if (step.TryGetBranch(input, currentValue, out BranchExecutionPlan? branchPlan))
+            using IDisposable? stepScope = logger.BeginScope(new Dictionary<string, object?>
             {
-                currentValue = await ExecuteSimpleStepSequenceAsync(
-                    branchPlan!.Steps,
+                ["StepName"] = step.Name,
+            });
+            logger.LogInformation("Step started");
+
+            try
+            {
+                if (step.TryGetBranch(input, currentValue, out BranchExecutionPlan? branchPlan))
+                {
+                    using IDisposable? branchScope = logger.BeginScope(new Dictionary<string, object?>
+                    {
+                        ["BranchName"] = branchPlan!.BranchName,
+                    });
+                    currentValue = await ExecuteSimpleStepSequenceAsync(
+                        branchPlan.Steps,
+                        input,
+                        currentValue,
+                        cancellationToken).ConfigureAwait(false);
+                    step.Produce(input, currentValue);
+                    logger.LogInformation("Step succeeded");
+                    continue;
+                }
+
+                StepExecutionResult result = await step.ExecuteAsync(
                     input,
                     currentValue,
                     cancellationToken).ConfigureAwait(false);
+                currentValue = result.Value;
                 step.Produce(input, currentValue);
-                continue;
+                if (result.Status == ExecutionTraceStepStatus.Skipped)
+                {
+                    logger.LogInformation("Step skipped");
+                }
+                else
+                {
+                    logger.LogInformation("Step succeeded");
+                }
             }
-
-            StepExecutionResult result = await step.ExecuteAsync(input, currentValue, cancellationToken).ConfigureAwait(false);
-            currentValue = result.Value;
-            step.Produce(input, currentValue);
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Step failed");
+                throw;
+            }
         }
 
         return currentValue;
@@ -954,7 +1004,6 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
                 Stopwatch stopwatch = Stopwatch.StartNew();
                 using IDisposable? stepScope = engineLogger.BeginScope(new Dictionary<string, object?>
                 {
-                    ["EntryName"] = QualifiedName,
                     ["StepName"] = step.Name,
                     ["Attempt"] = attempt,
                 });
@@ -1093,7 +1142,6 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
 
             using IDisposable? produceScope = engineLogger.BeginScope(new Dictionary<string, object?>
             {
-                ["EntryName"] = QualifiedName,
                 ["StepName"] = step.Name,
                 ["Attempt"] = succeededAttempt,
             });
@@ -1251,6 +1299,10 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
             });
         }
 
+        using IDisposable? branchScope = engineLogger.BeginScope(new Dictionary<string, object?>
+        {
+            ["BranchName"] = branchPlan.BranchName,
+        });
         var branchTraceSteps = new List<ExecutionTraceStep>();
         WorkflowSequenceExecutionResult branchResult = await ExecuteWorkflowStepSequenceAsync(
             branchPlan.Steps,
@@ -2003,7 +2055,7 @@ public sealed class BranchBuilder<TOut>
             nextStartIndex += GetFlattenedStepCount(switchCase.Steps);
         }
 
-        BranchExecutionPlan defaultPlan = new(defaultCase.Steps, nextStartIndex);
+        BranchExecutionPlan defaultPlan = new(defaultCase.Steps, nextStartIndex, "default");
         nextConfigRegistrations.AddRange(RemapBranchConfigRegistrations(
             defaultCase.StepConfigRegistrations,
             nextStartIndex));
@@ -2790,7 +2842,10 @@ internal sealed class StepRegistration
 
                 return selectedCase is null
                     ? defaultPlan
-                    : new BranchExecutionPlan(selectedCase.Steps, selectedCase.StartStepIndex);
+                    : new BranchExecutionPlan(
+                        selectedCase.Steps,
+                        selectedCase.StartStepIndex,
+                        FormatSwitchBranchName(selectedCase.Value));
             },
             1 + cases.Sum(switchCase => GetFlattenedStepCount(switchCase.Steps)) + GetFlattenedStepCount(defaultPlan.Steps),
             WorkflowErrorCodes.SwitchSelectorFailed);
@@ -2905,6 +2960,38 @@ internal sealed class StepRegistration
     }
 
     /// <summary>
+    /// Switch case 値からログ表示用の branch 名を作成します。
+    /// </summary>
+    /// <typeparam name="TCase">case 値の型。</typeparam>
+    /// <param name="value">表示する case 値。</param>
+    /// <returns>安全な表示文字列を含む branch 名。</returns>
+    private static string FormatSwitchBranchName<TCase>(TCase value)
+    {
+        string displayValue;
+        try
+        {
+            object? boxedValue = value;
+            displayValue = boxedValue switch
+            {
+                null => "null",
+                IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "null",
+                _ => boxedValue.ToString() ?? "null",
+            };
+        }
+        catch
+        {
+            displayValue = "<unavailable>";
+        }
+
+        char[] characters = displayValue
+            .Select(character => char.IsControl(character) ? ' ' : character)
+            .Take(128)
+            .ToArray();
+
+        return $"case={new string(characters)}";
+    }
+
+    /// <summary>
     /// 条件判定を実行し、例外を条件判定失敗として包みます。
     /// </summary>
     /// <param name="condition">実行する条件判定。</param>
@@ -2983,10 +3070,10 @@ internal sealed class ConditionalBranchRegistration
         {
             if (condition(input, currentValue))
             {
-                return new BranchExecutionPlan(thenStepArray, thenStartStepIndex);
+                return new BranchExecutionPlan(thenStepArray, thenStartStepIndex, "then");
             }
 
-            return new BranchExecutionPlan(elseStepArray, elseStartStepIndex);
+            return new BranchExecutionPlan(elseStepArray, elseStartStepIndex, "else");
         };
         flattenedLength = 1 + GetFlattenedStepCount(thenStepArray) + GetFlattenedStepCount(elseStepArray);
         SelectionFailureErrorCode = WorkflowErrorCodes.ConditionEvaluationFailed;
@@ -3052,7 +3139,11 @@ internal sealed class ConditionalBranchRegistration
 /// </summary>
 /// <param name="Steps">選択された branch の Step 登録列。</param>
 /// <param name="StartStepIndex">選択された branch の開始 Step index。</param>
-internal sealed record BranchExecutionPlan(IReadOnlyList<StepRegistration> Steps, int StartStepIndex);
+/// <param name="BranchName">ログへ記録する選択 branch 名。</param>
+internal sealed record BranchExecutionPlan(
+    IReadOnlyList<StepRegistration> Steps,
+    int StartStepIndex,
+    string BranchName);
 
 /// <summary>
 /// Switch の case 値、branch Step 列、開始 Step index を保持します。
