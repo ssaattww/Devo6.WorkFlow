@@ -215,12 +215,9 @@ Composite succeeded / Composite failed
 
 ルート workflow の `Entry started` / `Entry succeeded` と二重にならないよう、`ExecuteWorkflowAsync` 自身は `Composite started` を出力しない。
 
-ネスト経路の lifecycle logger は次の優先順位で解決する。
+ネスト経路の lifecycle logger には `StepContext.Logger` を使用する。root workflow から呼び出された場合は外側の Entry と Step の scope chain を継承し、standalone `Execute` / `ExecuteAsync` でも同じ logger 契約を維持する。
 
-1. ルート workflow が `StepContext` に登録した engine 内部 logging context の engine logger。
-2. logging context がない standalone 実行では `StepContext.Logger`。
-
-内部 logging context は engine assembly 内部型として保持し、公開 API には追加しない。
+nested Composite と simple execution の lifecycle category は `Devo6.WorkFlow.Step` とし、root workflow の Entry、retry、timeout、branch 制御は `Devo6.WorkFlow.Engine` を維持する。内部 logging context や公開 API は追加しない。
 
 ### 7.4 If
 
