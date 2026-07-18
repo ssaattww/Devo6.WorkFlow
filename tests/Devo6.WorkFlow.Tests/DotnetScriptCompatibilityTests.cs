@@ -1,11 +1,12 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
 using System.Reflection;
+using System.Text.Json;
 
 namespace Devo6.WorkFlow.Tests;
 
 /// <summary>
-/// dotnet-script と同じ nullable 診断境界とキャッシュ境界で csx を処理することを確認します。
+/// dotnet-script と同じ nullable 診断境界、キャッシュ境界、補完設定で csx を処理することを確認します。
 /// </summary>
 public sealed class DotnetScriptCompatibilityTests
 {
@@ -100,6 +101,28 @@ public sealed class DotnetScriptCompatibilityTests
     }
 
     /// <summary>
+    /// 複数フォルダサンプルが OmniSharp の script NuGet 参照を有効にすることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "sample の omnisharp.json は script NuGet 参照と net8.0 を有効にする")]
+    public void SampleOmniSharpConfigurationEnablesScriptNuGetReferences()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string configurationPath = Path.Combine(
+            repositoryRoot,
+            "samples",
+            "multi-folder-composite",
+            "omnisharp.json");
+
+        Assert.True(File.Exists(configurationPath), $"OmniSharp configuration was not found: {configurationPath}");
+
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(configurationPath));
+        JsonElement script = document.RootElement.GetProperty("script");
+
+        Assert.True(script.GetProperty("enableScriptNuGetReferences").GetBoolean());
+        Assert.Equal("net8.0", script.GetProperty("defaultTargetFramework").GetString());
+    }
+
+    /// <summary>
     /// nullable context の有無を切り替えた検査用 script を作成します。
     /// </summary>
     /// <param name="nullableEnabled">nullable context を有効にする場合は true。</param>
@@ -141,5 +164,25 @@ public sealed class DotnetScriptCompatibilityTests
         File.WriteAllText(scriptPath, source);
 
         return scriptPath;
+    }
+
+    /// <summary>
+    /// solution file を持つ repository root を探索します。
+    /// </summary>
+    /// <returns>repository root の絶対 path。</returns>
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Devo6.WorkFlow.sln")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Repository root containing Devo6.WorkFlow.sln was not found.");
     }
 }
