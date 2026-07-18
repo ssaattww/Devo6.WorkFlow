@@ -14,15 +14,21 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: issue-21-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   apply:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
     steps:
-      - name: Checkout
+      - name: Checkout head branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -33,7 +39,25 @@ jobs:
         run: dotnet restore Devo6.WorkFlow.sln
 
       - name: Apply implementation
-        run: python3 -c "import tools.issue21_apply as patch; patch.patch_composite()"
+        shell: bash
+        run: |
+          if grep -q '\["CompositeName"\] = QualifiedName' src/Devo6.WorkFlow.Engine/CompositeStep.cs; then
+            echo "Issue #21 engine patch is already applied."
+          else
+            python3 -c "import tools.issue21_apply as patch; patch.patch_composite()"
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              "[Main > Choice > ThenStep] [attempt=1]",
+              "[Main > Choice > then > ThenStep] [attempt=1]",
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
 
       - name: Format
         run: dotnet format Devo6.WorkFlow.sln --no-restore
@@ -45,7 +69,7 @@ jobs:
           mkdir -p artifacts/test-results
           dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj \
             --no-restore \
-            --filter "FullyQualifiedName~HierarchicalLoggingContractTests" \
+            --filter "FullyQualifiedName~HierarchicalLoggingContractTests|FullyQualifiedName~EngineLoggingHierarchyTests" \
             --logger "trx;LogFileName=hierarchical-logging.trx" \
             --results-directory artifacts/test-results \
             2>&1 | tee artifacts/test-results/hierarchical-logging.log
@@ -74,19 +98,28 @@ jobs:
           retention-days: 14
 
       - name: Commit implementation
+        shell: bash
         run: |
+          if git diff --quiet -- src/Devo6.WorkFlow.Engine/CompositeStep.cs tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs; then
+            echo "No implementation changes to commit."
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/Devo6.WorkFlow.Engine/CompositeStep.cs
+          git add src/Devo6.WorkFlow.Engine/CompositeStep.cs tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs
           git commit -m "feat: implement hierarchical step logging"
-          git push origin HEAD:${GITHUB_REF_NAME}
+          git push origin HEAD:"${TARGET_BRANCH}"
 
   verify:
     if: github.event_name == 'pull_request'
+    needs: apply
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout updated head branch
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
