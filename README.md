@@ -41,8 +41,8 @@ dotnet tool install --global Devo6.WorkFlow.Cli --add-source ./artifacts/package
 導入後は `engine` コマンドを使います。
 
 ```bash
-engine run main.csx --config appsettings.yaml
-engine validate main.csx --config appsettings.yaml
+engine run main.csx --workflow-config appsettings.yaml
+engine validate main.csx --workflow-config appsettings.yaml
 ```
 
 更新する場合は同じパッケージ参照元を指定します。
@@ -114,6 +114,7 @@ NuGet 参照を使う実行では、公開済みの `Devo6.WorkFlow.Engine` 0.1.
 ```csharp
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using System.Collections.Generic;
 using System.IO;
 
 public sealed class MainConfig
@@ -153,6 +154,32 @@ public sealed class ConvertStep : IStep<ConvertResult>
     public sealed class Config
     {
         public bool ToUpper { get; set; }
+
+        /// <summary>
+        /// 変換に付与するタグを取得または設定します。
+        /// </summary>
+        public List<string> Tags { get; set; } = new();
+
+        /// <summary>
+        /// 変換対象の一覧を取得または設定します。
+        /// </summary>
+        public List<Target> Targets { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 変換対象を表します。
+    /// </summary>
+    public sealed class Target
+    {
+        /// <summary>
+        /// 対象名を取得または設定します。
+        /// </summary>
+        public string Name { get; set; } = "";
+
+        /// <summary>
+        /// 変換対象を有効にするかどうかを取得または設定します。
+        /// </summary>
+        public bool Enabled { get; set; }
     }
 
     public ConvertResult Execute(StepInput input)
@@ -205,6 +232,8 @@ Load:
 
 Convert:
   ToUpper: true
+  Tags: [default, document]
+  Targets: [{Name: guide, Enabled: true}]
 
 Save:
   Path: ./output.txt
@@ -212,7 +241,7 @@ Save:
 
 `MainConfig` は CompositeStep 境界 Config 型です。`Load`、`Convert`、`Save` は境界 Config 型上のプロパティ path です。`WithConfig<MainConfig>()` で境界 Config 型を宣言し、`WithConfig<LoadStep.Config>("Load")` のように Step ごとの Config 型と境界 Config 型上のプロパティ path を対応させます。
 
-実行時は、Step 側の既定 Config YAML、root Config の該当区画、CLI `--set` の順に値を重ねてから `MainConfig` へ変換します。その後、対象 Step の実行直前に `MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録します。`Convert` と `Save` も同じ規則です。
+実行時は、Step 側の既定 Config YAML、root Config の該当区画、CLI `--workflow-set` または `--wset` の順に値を重ねてから `MainConfig` へ変換します。その後、対象 Step の実行直前に `MainConfig.Load` を `StepContext.Set<LoadStep.Config>()` へ登録します。`Convert` と `Save` も同じ規則です。
 
 ## 条件付き実行
 
@@ -245,21 +274,39 @@ var Main = CompositeStep.Define("Main")
 既定の Entry 名は `Main` です。
 
 ```bash
-engine run main.csx --config appsettings.yaml
-engine validate main.csx --config appsettings.yaml
+engine run main.csx --workflow-config appsettings.yaml
+engine validate main.csx --workflow-config appsettings.yaml
 ```
 
-`run` は Entry `.csx` を読み込み、指定 Entry を解決して Step を実行します。Config API を使う Entry で `--config` を省略すると、最初の Step 実行前に失敗します。
+`run` は Entry `.csx` を読み込み、指定 Entry を解決して Step を実行します。Config API を使う Entry で `--workflow-config` を省略し、既定 Config YAML だけでも Config を構成できない場合は、最初の Step 実行前に失敗します。
 
-`validate` は実行前検証用です。Entry `.csx` の存在、Entry 解決、`#load`、参照、コンパイル、Config path の存在などを確認します。`validate` は Config path の存在確認までで、Config 型変換、`--set` 適用、Config 値検証は行いません。これらは `run` 時に行います。
+`validate` は実行前検証用です。Entry `.csx` の存在、Entry 解決、`#load`、参照、コンパイル、Config path の存在などを確認します。`validate` は Config path の存在確認までで、Config 型変換、`--workflow-set` / `--wset` 適用、Config 値検証は行いません。これらは `run` 時に行います。
 
-Config の一部は `--set` で上書きできます。
+Config の一部は `--workflow-set` または短縮名の `--wset` で上書きできます。
 
 ```bash
-engine run main.csx --config appsettings.yaml --set Convert.ToUpper=false
+engine run main.csx --workflow-config appsettings.yaml --workflow-set Convert.ToUpper=false
 ```
 
-Step 登録単位 Config では、`--set` の key は CompositeStep 境界 Config 型上のプロパティ path です。`Convert.ToUpper=false` は `MainConfig.Convert.ToUpper` への上書きとして扱われます。
+Step 登録単位 Config では、`--workflow-set` または `--wset` の key は CompositeStep 境界 Config 型上のプロパティ path です。`Convert.ToUpper=false` は `MainConfig.Convert.ToUpper` への上書きとして扱われます。
+
+`ConvertStep.Config` の `Tags` と `Targets` は YAML inline array で collection 全体を置換できます。空白を含む断片や object 配列は、`Key=value` 全体を引用します。
+
+PowerShell:
+
+```powershell
+engine run main.csx --workflow-config appsettings.yaml --workflow-set 'Convert.Tags=[release, urgent]'
+engine run main.csx --workflow-config appsettings.yaml --wset 'Convert.Targets=[{Name: guide, Enabled: true}, {Name: api, Enabled: false}]'
+engine run main.csx --workflow-config appsettings.yaml --wset 'Convert.Tags=[]'
+```
+
+bash:
+
+```bash
+engine run main.csx --workflow-config appsettings.yaml --workflow-set 'Convert.Tags=[release, urgent]'
+engine run main.csx --workflow-config appsettings.yaml --wset 'Convert.Targets=[{Name: guide, Enabled: true}, {Name: api, Enabled: false}]'
+engine run main.csx --workflow-config appsettings.yaml --wset 'Convert.Tags=[]'
+```
 
 Entry を明示する場合は `--entry` を使います。
 
@@ -313,9 +360,9 @@ NuGet script パッケージは `dotnet-script` 互換の形式で読み込め�
 - YAML ワークフロー定義
 - Step 専用 Config 引数
 - Step 型への Config 自動注入
-- 任意の複数 `--config` 指定
+- 任意の複数 `--workflow-config` 指定
 - Config 型自動推論
-- `validate` での Config 型変換、`--set` 適用、Config 値検証
+- `validate` での Config 型変換、`--workflow-set` / `--wset` 適用、Config 値検証
 - CLI の timeout オプション
 - CLI の retry オプション
 - Config による retry 指定

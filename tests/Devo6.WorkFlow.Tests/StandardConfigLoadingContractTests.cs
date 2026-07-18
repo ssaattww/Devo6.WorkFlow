@@ -1150,6 +1150,104 @@ public sealed class StandardConfigLoadingContractTests
     }
 
     /// <summary>
+    /// 初期値が空の対応 collection を YAML inline array で全体置換できることを検査します。
+    /// </summary>
+    [Fact(DisplayName = "CollectionOverride は空の List、一次元配列、object collection を YAML inline array で全体置換する")]
+    public async Task CollectionOverrideReplacesInitiallyEmptySupportedCollections()
+    {
+        string scriptPath = CreateCollectionOverrideScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--workflow-config",
+            "appsettings.yaml",
+            "--workflow-set",
+            "Tags=[alpha, beta]",
+            "--wset",
+            "Ports=[8080, 8081]",
+            "--workflow-set",
+            "Targets=[{Name: alpha, Enabled: true}, {Name: beta, Enabled: false}]");
+
+        AssertSuccess(result);
+        Assert.Equal("alpha,beta|8080,8081|alpha:True,beta:False", File.ReadAllText(Path.Combine(directory, "collection-override-marker.txt")));
+    }
+
+    /// <summary>
+    /// YAML inline array の空 collection 指定を検査します。
+    /// </summary>
+    [Fact(DisplayName = "CollectionOverride は [] で空 collection に全体置換する")]
+    public async Task CollectionOverrideReplacesSupportedCollectionsWithEmptyCollection()
+    {
+        string scriptPath = CreateCollectionOverrideScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(
+            Path.Combine(directory, "appsettings.yaml"),
+            "Tags: [yaml]" + Environment.NewLine
+            + "Ports: [1]" + Environment.NewLine
+            + "Targets: [{Name: yaml, Enabled: true}]" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync(
+            "run",
+            scriptPath,
+            "--workflow-config",
+            "appsettings.yaml",
+            "--workflow-set",
+            "Tags=[]",
+            "--wset",
+            "Ports=[]",
+            "--workflow-set",
+            "Targets=[]");
+
+        AssertSuccess(result);
+        Assert.Equal("||", File.ReadAllText(Path.Combine(directory, "collection-override-marker.txt")));
+    }
+
+    /// <summary>
+    /// 不正な collection YAML 断片が Step 実行前に失敗することを検査します。
+    /// </summary>
+    /// <param name="setArgument">失敗させる collection 全体置換引数。</param>
+    [Theory(DisplayName = "CollectionOverride の無効 YAML、要素型不一致、未知 property は CONFIG_LOAD_FAILED で Step を実行しない")]
+    [InlineData("Tags=[alpha")]
+    [InlineData("Ports=[not-a-number]")]
+    [InlineData("Targets=[{Name: alpha, Unknown: true}]")]
+    public async Task CollectionOverrideInvalidValuesFailBeforeStepExecutionWithConfigLoadFailed(string setArgument)
+    {
+        string scriptPath = CreateCollectionOverrideScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml", "--workflow-set", setArgument);
+
+        AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
+        Assert.False(File.Exists(Path.Combine(directory, "collection-override-marker.txt")));
+    }
+
+    /// <summary>
+    /// 標準契約の対象外 collection 全体置換が Step 実行前に失敗することを検査します。
+    /// </summary>
+    /// <param name="setArgument">対象外 collection を指定する引数。</param>
+    [Theory(DisplayName = "CollectionOverride の多次元、read-only、private/init-only、interface collection は CONFIG_LOAD_FAILED で Step を実行しない")]
+    [InlineData("Matrix=[[value]]")]
+    [InlineData("ReadOnlyTags=[alpha]")]
+    [InlineData("PrivateTags=[alpha]")]
+    [InlineData("InitTags=[alpha]")]
+    [InlineData("InterfaceTags=[alpha]")]
+    public async Task CollectionOverrideUnsupportedTargetsFailBeforeStepExecutionWithConfigLoadFailed(string setArgument)
+    {
+        string scriptPath = CreateUnsupportedCollectionOverrideScript();
+        string directory = Path.GetDirectoryName(scriptPath)!;
+        File.WriteAllText(Path.Combine(directory, "appsettings.yaml"), "{}" + Environment.NewLine);
+
+        CliResult result = await RunCliAsync("run", scriptPath, "--workflow-config", "appsettings.yaml", "--workflow-set", setArgument);
+
+        AssertFailure(result, WorkflowErrorCodes.ConfigLoadFailed);
+        Assert.False(File.Exists(Path.Combine(directory, "unsupported-collection-override-marker.txt")));
+    }
+
+    /// <summary>
     /// validate は T24 で --workflow-set の型検証を行わず Config path 存在確認までで成功することを検査します。
     /// </summary>
     [Fact(DisplayName = "validate は T24 で --workflow-set の型検証を行わない")]
@@ -1162,6 +1260,95 @@ public sealed class StandardConfigLoadingContractTests
 
         AssertSuccess(result);
         Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(scriptPath)!, "validate-set-marker.txt")));
+    }
+
+    /// <summary>
+    /// 対応 collection 全体置換用の共通 .csx を作成します。
+    /// </summary>
+    /// <returns>作成した Entry .csx path。</returns>
+    private static string CreateCollectionOverrideScript()
+    {
+        return CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.Collections.Generic;
+            using System.IO;
+            using System.Linq;
+
+            public sealed class AppConfig
+            {
+                public List<string> Tags { get; set; } = new();
+                public int[] Ports { get; set; } = [];
+                public List<TargetConfig> Targets { get; set; } = new();
+            }
+
+            public sealed class TargetConfig
+            {
+                public string Name { get; set; } = "";
+                public bool Enabled { get; set; }
+            }
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    AppConfig config = input.Context.Get<AppConfig>();
+                    string text = string.Join(",", config.Tags)
+                        + "|" + string.Join(",", config.Ports)
+                        + "|" + string.Join(",", config.Targets.Select(target => target.Name + ":" + target.Enabled));
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "collection-override-marker.txt"), text);
+
+                    return text;
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs()
+                .WithConfig<AppConfig>();
+            """);
+    }
+
+    /// <summary>
+    /// 対象外 collection 全体置換用の共通 .csx を作成します。
+    /// </summary>
+    /// <returns>作成した Entry .csx path。</returns>
+    private static string CreateUnsupportedCollectionOverrideScript()
+    {
+        return CreateScript(
+            """
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            using System.Collections.Generic;
+            using System.IO;
+
+            public sealed class AppConfig
+            {
+                public string[,] Matrix { get; set; } = new string[1, 1];
+                public List<string> ReadOnlyTags { get; } = new();
+                public List<string> PrivateTags { get; private set; } = new();
+                public List<string> InitTags { get; init; } = new();
+                public IList<string> InterfaceTags { get; set; } = new List<string>();
+            }
+
+            public sealed class MainStep : IStep<string>
+            {
+                public string Execute(StepInput input)
+                {
+                    EngineArguments arguments = input.Context.Get<EngineArguments>();
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments.EntryPath)!, "unsupported-collection-override-marker.txt"), "ran");
+
+                    return "ran";
+                }
+            }
+
+            var Main = CompositeStep.Define("Main")
+                .Run<MainStep, string>()
+                    .StoreAs()
+                .WithConfig<AppConfig>();
+            """);
     }
 
     /// <summary>
