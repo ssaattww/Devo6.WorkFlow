@@ -70,11 +70,16 @@ jobs:
 
           engine_path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
           engine_text = engine_path.read_text(encoding="utf-8")
-          old_fields = '''            ["EntryName"] = QualifiedName,
-              ["StepName"] = step.Name,
-              ["Attempt"] = 1,'''
-          new_fields = '''            ["StepName"] = step.Name,
-              ["Attempt"] = 1,'''
+          indent = " " * 12
+          old_fields = "\n".join([
+              f'{indent}["EntryName"] = QualifiedName,',
+              f'{indent}["StepName"] = step.Name,',
+              f'{indent}["Attempt"] = 1,',
+          ])
+          new_fields = "\n".join([
+              f'{indent}["StepName"] = step.Name,',
+              f'{indent}["Attempt"] = 1,',
+          ])
           field_count = engine_text.count(old_fields)
           if field_count == 1:
               engine_text = engine_text.replace(old_fields, new_fields, 1)
