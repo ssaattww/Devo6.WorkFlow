@@ -14,6 +14,9 @@ internal static class StandardConfigLoader
         .IgnoreUnmatchedProperties()
         .Build();
 
+    private static readonly IDeserializer StrictDeserializer = new DeserializerBuilder()
+        .Build();
+
     /// <summary>
     /// YAML file を指定された標準 Config 型に変換し、CLI override を適用してから DataAnnotations で検証します。
     /// </summary>
@@ -840,7 +843,7 @@ internal static class StandardConfigLoader
 
             if (isLast)
             {
-                property.SetValue(current, ConvertValue(value, property.PropertyType));
+                property.SetValue(current, ConvertOverrideValue(value, property));
                 return;
             }
 
@@ -1057,6 +1060,54 @@ internal static class StandardConfigLoader
         }
 
         throw new InvalidOperationException($"Config override target type is not supported: {targetType.FullName}");
+    }
+
+    /// <summary>
+    /// raw CLI 値を property 全体上書き用の値へ変換します。
+    /// </summary>
+    /// <param name="value">変換する raw CLI 値。</param>
+    /// <param name="property">上書き対象の property。</param>
+    /// <returns>変換後の値。</returns>
+    private static object? ConvertOverrideValue(string value, PropertyInfo property)
+    {
+        Type targetType = property.PropertyType;
+        if (!HasPublicNonInitSetter(property) || !IsSupportedCollectionOverrideType(targetType))
+        {
+            return ConvertValue(value, targetType);
+        }
+
+        using var reader = new StringReader(value);
+        object? collection = StrictDeserializer.Deserialize(reader, targetType);
+        if (collection is null || collection.GetType() != targetType)
+        {
+            throw new InvalidOperationException($"Config override collection value could not be converted to {targetType.FullName}.");
+        }
+
+        return collection;
+    }
+
+    /// <summary>
+    /// collection 全体上書きの標準契約で対応する型かどうかを判定します。
+    /// </summary>
+    /// <param name="targetType">判定対象の property 型。</param>
+    /// <returns>一次元配列または厳密な List 型の場合は true。</returns>
+    private static bool IsSupportedCollectionOverrideType(Type targetType)
+    {
+        return (targetType.IsArray && targetType.GetArrayRank() == 1)
+            || (targetType.IsGenericType && targetType.GetGenericTypeDefinition() == typeof(List<>));
+    }
+
+    /// <summary>
+    /// collection 全体上書きに使える public 非 init setter を持つかどうかを判定します。
+    /// </summary>
+    /// <param name="property">判定対象の property。</param>
+    /// <returns>public 非 init setter を持つ場合は true。</returns>
+    private static bool HasPublicNonInitSetter(PropertyInfo property)
+    {
+        MethodInfo? setter = property.GetSetMethod(nonPublic: true);
+        return setter is { IsPublic: true }
+            && !setter.ReturnParameter.GetRequiredCustomModifiers()
+                .Contains(typeof(System.Runtime.CompilerServices.IsExternalInit));
     }
 
     /// <summary>
