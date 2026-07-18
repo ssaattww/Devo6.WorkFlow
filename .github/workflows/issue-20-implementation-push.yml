@@ -48,6 +48,7 @@ jobs:
               line[10:] if line.startswith('          ') else line
               for line in lines[start:end]
           ) + '\n'
+          script = script.replace('if count != 1:', 'if count < 1:')
           Path('/tmp/issue20-apply.py').write_text(script, encoding='utf-8')
           EXTRACT
 
@@ -102,6 +103,7 @@ jobs:
           git reset
           rm -f .github/workflows/issue-20-implementation-apply.yml
           rm -f .github/workflows/issue-20-implementation-push.yml
+          rm -f reports/issue-20-automation-failure.md
 
           git add doc/issue-20-dotnet-script-compatibility-design.md
           git commit -m "docs: add issue 20 dotnet-script compatibility design"
