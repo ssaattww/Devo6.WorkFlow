@@ -28,6 +28,9 @@ jobs:
       - name: Restore
         run: dotnet restore Devo6.WorkFlow.sln
 
+      - name: Format verification
+        run: dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore
+
       - name: Test
         shell: bash
         run: |
