@@ -48,68 +48,32 @@ jobs:
 
           engine_path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
           engine = engine_path.read_text(encoding="utf-8")
-          old_engine = '''            object? boxedValue = value;
-            displayValue = boxedValue switch
-            {
-                null => "null",
-                IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "null",
-                _ => boxedValue.ToString() ?? "null",
-            };
-'''
-          new_engine = '''            object? boxedValue = value;
-            if (boxedValue is null)
-            {
-                displayValue = "null";
-            }
-            else if (boxedValue is IFormattable)
-            {
-                displayValue = ((IFormattable)boxedValue).ToString(null, CultureInfo.InvariantCulture) ?? "null";
-            }
-            else
-            {
-                displayValue = boxedValue.ToString() ?? "null";
-            }
-'''
-          if old_engine in engine:
-              engine = engine.replace(old_engine, new_engine, 1)
+          engine = engine.replace(
+              'IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "null",',
+              'IFormattable => ((IFormattable)boxedValue).ToString(null, CultureInfo.InvariantCulture) ?? "null",',
+              1,
+          )
           engine_path.write_text(engine, encoding="utf-8")
 
           design_path = Path("doc/issue-21-hierarchical-logging-design.md")
           design = design_path.read_text(encoding="utf-8")
           design = design.replace(
-              '''ネスト経路の lifecycle logger は次の優先順位で解決する。
-
-1. ルート workflow が `StepContext` に登録した engine 内部 logging context の engine logger。
-2. logging context がない standalone 実行では `StepContext.Logger`。
-
-内部 logging context は engine assembly 内部型として保持し、公開 API には追加しない。
-''',
-              '''ネスト経路の lifecycle logger には `StepContext.Logger` を使用する。root workflow から呼び出された場合は外側の Entry と Step の scope chain を継承し、standalone `Execute` / `ExecuteAsync` でも同じ logger 契約を維持する。内部 logging context や公開 API は追加しない。
-''',
+              "ネスト経路の lifecycle logger は次の優先順位で解決する。\n\n1. ルート workflow が `StepContext` に登録した engine 内部 logging context の engine logger。\n2. logging context がない standalone 実行では `StepContext.Logger`。\n\n内部 logging context は engine assembly 内部型として保持し、公開 API には追加しない。",
+              "ネスト経路の lifecycle logger には `StepContext.Logger` を使用する。root workflow から呼び出された場合は外側の Entry と Step の scope chain を継承し、standalone `Execute` / `ExecuteAsync` でも同じ logger 契約を維持する。内部 logging context や公開 API は追加しない。",
           )
           design = design.replace(
-              '''nested Composite の lifecycle は、ルート workflow の内部 logging context を取得できる場合は `Devo6.WorkFlow.Engine` を使用する。
-standalone `Execute` / `ExecuteAsync` では `StepContext.Logger` を使用する。
-''',
-              '''nested Composite の lifecycle と simple execution の Step lifecycle は `StepContext.Logger` を使用するため、category は `Devo6.WorkFlow.Step` とする。
-''',
+              "nested Composite の lifecycle は、ルート workflow の内部 logging context を取得できる場合は `Devo6.WorkFlow.Engine` を使用する。\nstandalone `Execute` / `ExecuteAsync` では `StepContext.Logger` を使用する。",
+              "nested Composite の lifecycle と simple execution の Step lifecycle は `StepContext.Logger` を使用するため、category は `Devo6.WorkFlow.Step` とする。",
           )
           design = design.replace(
-              '- root workflow 用の内部 logging context を `StepContext` へ登録する。',
-              '- nested Composite と simple execution の lifecycle は既存の `StepContext.Logger` を利用する。',
+              "- root workflow 用の内部 logging context を `StepContext` へ登録する。",
+              "- nested Composite と simple execution の lifecycle は既存の `StepContext.Logger` を利用する。",
           )
           design = design.replace(
-              '''root workflow から内部 logging context を渡し、可能な限り engine category を使用する。
-standalone 実行だけは `StepContext.Logger` へ fallback する。
-''',
-              '''nested Composite の lifecycle は一貫して `StepContext.Logger` を使用する。外側 scope は logger provider の `AsyncLocal` chain により継承する。
-''',
+              "root workflow から内部 logging context を渡し、可能な限り engine category を使用する。\nstandalone 実行だけは `StepContext.Logger` へ fallback する。",
+              "nested Composite の lifecycle は一貫して `StepContext.Logger` を使用する。外側 scope は logger provider の `AsyncLocal` chain により継承する。",
           )
           design_path.write_text(design, encoding="utf-8")
-
-          temporary_workflow = Path(".github/workflows/issue-21-standards-fix.yml")
-          if temporary_workflow.exists():
-              temporary_workflow.unlink()
           PY
 
       - name: Format
@@ -153,7 +117,6 @@ standalone 実行だけは `StepContext.Logger` へ fallback する。
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs \
                   src/Devo6.WorkFlow.Engine/CompositeStep.cs \
-                  doc/issue-21-hierarchical-logging-design.md \
-                  .github/workflows/issue-21-standards-fix.yml
+                  doc/issue-21-hierarchical-logging-design.md
           git commit -m "fix: align hierarchical logging with repository standards"
           git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
