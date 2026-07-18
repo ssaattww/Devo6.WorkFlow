@@ -15,6 +15,7 @@
 - `src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs`
 - `tests/Devo6.WorkFlow.Tests/HierarchicalLoggingContractTests.cs`
 - `tests/Devo6.WorkFlow.Tests/EngineLoggingHierarchyTests.cs`
+- `tests/Devo6.WorkFlow.Tests/SwitchBranchLoggingSafetyTests.cs`
 - `doc/issue-21-hierarchical-logging-design.md`
 - `samples/multi-folder-composite/README.md`
 - `.github/workflows/pr-xunit-tests.yml`
@@ -44,12 +45,14 @@
 - 制御文字を空白へ置換する。
 - 128文字へ制限する。
 - 文字列化失敗時は `<unavailable>` を使い、workflow実行を失敗させない。
+- branch定義時の重複検査と空branch検査ではcase値を文字列化せず、`ToString()`が例外を送出する値でも定義と実行を継続できる。
 
 ### 3.4 文書と追跡
 
 - nested Composite の lifecycle category は実装どおり `StepContext.Logger` / `Devo6.WorkFlow.Step` として設計書へ同期した。
 - サンプル README に通常 Step、nested Composite、`If`、`Switch`、JSON の出力例がある。
 - T73-T77 と P31 が完了状態で追跡されている。
+- PR xUnit workflow は`contents: read`で動作し、ソースを変更、commit、pushしない。
 
 ## 4. 検証証跡
 
@@ -59,8 +62,12 @@
   - 階層ログ10/10成功、関連回帰32件成功、既存skip 1件、失敗0件。
 - コード規約修正後: run `29636057186` / artifact `8427137522`
   - 階層ログ、関連回帰、コード規約45件成功、既存skip 1件、失敗0件。
-- solution全体の途中検証では機能検査296件が成功し、残ったコード規約1件を後続修正した。
-- PR xUnit workflow はrestore、format、solution全体test、diff checkのログとTRXをartifactへ保存し、最終headの判定根拠をPRへ記録する。
+- 最終solution検証: run `29637016261` / artifact `8427438009`
+  - restore成功。
+  - `dotnet format --verify-no-changes`成功。
+  - solution全体303件中300件成功、既存skip 3件、失敗0件。
+  - `git diff --check`成功。
+  - TRX、restore、format、test、diff checkの各ログをartifactへ保存した。
 
 ## 5. 互換性と残リスク
 
@@ -71,4 +78,4 @@
 
 ## 6. 結論
 
-設計、実装、先行失敗検査、focused / 回帰 / コード規約検査、利用者文書、進捗同期に阻害事項は見当たらない。最終headのPR xUnit workflowが成功した時点で、Issue #21の取り込み準備が完了する。
+設計、実装、先行失敗検査、focused / 回帰 / コード規約 / solution全体検査、利用者文書、進捗同期、検証artifactがそろった。Issue #21の受け入れ条件を満たしており、PR #25は取り込み可能な状態である。
