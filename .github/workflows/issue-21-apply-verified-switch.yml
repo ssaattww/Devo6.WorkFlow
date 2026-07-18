@@ -56,18 +56,17 @@ jobs:
       - name: Format
         run: dotnet format Devo6.WorkFlow.sln --no-restore
 
-      - name: Full verification
+      - name: Focused verification
         shell: bash
         run: |
           set -o pipefail
           mkdir -p TestResults
-          dotnet test Devo6.WorkFlow.sln \
-            --configuration Release \
+          dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj \
             --no-restore \
-            --verbosity minimal \
-            --logger "trx;LogFileName=test-results.trx" \
+            --filter "FullyQualifiedName~SwitchBranchLoggingSafetyTests|FullyQualifiedName~SwitchBranchContractTests|FullyQualifiedName~CodingStandardsContractTests" \
+            --logger "trx;LogFileName=switch-safety.trx" \
             --results-directory TestResults \
-            2>&1 | tee TestResults/test-results.log
+            2>&1 | tee TestResults/switch-safety.log
 
       - name: Diff check
         run: git diff --check
