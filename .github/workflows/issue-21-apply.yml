@@ -44,7 +44,22 @@ jobs:
           if grep -q '\["CompositeName"\] = QualifiedName' src/Devo6.WorkFlow.Engine/CompositeStep.cs; then
             echo "Issue #21 engine patch is already applied."
           else
-            python3 -c "import tools.issue21_apply as patch; patch.patch_composite()"
+            python3 - <<'PY'
+          import tools.issue21_apply as patch
+
+          original_replace_once = patch.replace_once
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              if label == "switch default branch name":
+                  count = text.count(old)
+                  if count != 2:
+                      raise RuntimeError(f"{label}: expected two matches, found {count}")
+                  return text.replace(old, new)
+              return original_replace_once(text, old, new, label)
+
+          patch.replace_once = replace_once
+          patch.patch_composite()
+          PY
           fi
 
           python3 - <<'PY'
