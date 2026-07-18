@@ -1,10 +1,11 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using System.Reflection;
 
 namespace Devo6.WorkFlow.Tests;
 
 /// <summary>
-/// dotnet-script と同じ nullable 診断境界で csx を検証することを確認します。
+/// dotnet-script と同じ nullable 診断境界とキャッシュ境界で csx を処理することを確認します。
 /// </summary>
 public sealed class DotnetScriptCompatibilityTests
 {
@@ -78,6 +79,24 @@ public sealed class DotnetScriptCompatibilityTests
         WorkflowResult result = new CsxEntryLoader().Execute(scriptPath);
 
         Assert.True(result.Succeeded);
+    }
+
+    /// <summary>
+    /// 旧実装が渡していた workflow directory を既定キャッシュとして使わないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "既定キャッシュは workflow directory ではなく dotnet-script 標準位置へ委譲する")]
+    public void DefaultCachePolicyDoesNotUseWorkflowDirectory()
+    {
+        Type policyType = Assert.NotNull(
+            typeof(CsxEntryLoader).Assembly.GetType("Devo6.WorkFlow.Engine.DotnetScriptCachePathPolicy"));
+        MethodInfo resolveMethod = Assert.NotNull(policyType.GetMethod(
+            "Resolve",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic));
+        string workflowDirectory = Path.Combine(Path.GetTempPath(), $"devo6-workflow-{Guid.NewGuid():N}");
+
+        object? effectiveCachePath = resolveMethod.Invoke(null, [workflowDirectory]);
+
+        Assert.Null(effectiveCachePath);
     }
 
     /// <summary>
