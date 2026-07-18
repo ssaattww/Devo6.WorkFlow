@@ -1,0 +1,52 @@
+name: Issue 21 implementation patch
+
+on:
+  push:
+    branches:
+      - agent/issue-21-logging-hierarchy-design
+    paths:
+      - tools/issue21_apply.py
+      - .github/workflows/issue-21-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Devo6.WorkFlow.sln
+
+      - name: Apply implementation
+        run: python3 tools/issue21_apply.py
+
+      - name: Format
+        run: dotnet format Devo6.WorkFlow.sln --no-restore
+
+      - name: Focused tests
+        run: dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj --no-restore --filter "FullyQualifiedName~HierarchicalLoggingContractTests"
+
+      - name: Related regression tests
+        run: dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj --no-restore --filter "FullyQualifiedName~WorkflowResultContractTests|FullyQualifiedName~RetryExecutionContractTests|FullyQualifiedName~IfBranchContractTests|FullyQualifiedName~SwitchBranchContractTests"
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Commit implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Devo6.WorkFlow.Engine/CompositeStep.cs src/Devo6.WorkFlow.Cli/EngineLoggingProvider.cs
+          git commit -m "feat: implement hierarchical step logging"
+          git push origin HEAD:${GITHUB_REF_NAME}
