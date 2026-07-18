@@ -1,4 +1,4 @@
-name: Issue 21 implementation patch
+name: Issue 21 implementation and evidence
 
 on:
   push:
@@ -7,12 +7,16 @@ on:
     paths:
       - tools/issue21_apply.py
       - .github/workflows/issue-21-apply.yml
+  pull_request:
+    branches:
+      - master
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -60,11 +64,11 @@ jobs:
       - name: Diff check
         run: git diff --check
 
-      - name: Upload test evidence
+      - name: Upload apply evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: issue-21-test-evidence-${{ github.run_attempt }}
+          name: issue-21-apply-evidence-${{ github.run_attempt }}
           path: artifacts/test-results
           if-no-files-found: warn
           retention-days: 14
@@ -76,3 +80,42 @@ jobs:
           git add src/Devo6.WorkFlow.Engine/CompositeStep.cs
           git commit -m "feat: implement hierarchical step logging"
           git push origin HEAD:${GITHUB_REF_NAME}
+
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Devo6.WorkFlow.sln
+
+      - name: Focused and regression tests
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/test-results
+          dotnet test tests/Devo6.WorkFlow.Tests/Devo6.WorkFlow.Tests.csproj \
+            --no-restore \
+            --filter "FullyQualifiedName~HierarchicalLoggingContractTests|FullyQualifiedName~EngineLoggingHierarchyTests|FullyQualifiedName~WorkflowResultContractTests|FullyQualifiedName~RetryExecutionContractTests|FullyQualifiedName~IfBranchContractTests|FullyQualifiedName~SwitchBranchContractTests" \
+            --logger "trx;LogFileName=issue-21-verification.trx" \
+            --results-directory artifacts/test-results \
+            2>&1 | tee artifacts/test-results/issue-21-verification.log
+
+      - name: Format verification
+        run: dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-21-verification-evidence-${{ github.run_attempt }}
+          path: artifacts/test-results
+          if-no-files-found: warn
+          retention-days: 14
