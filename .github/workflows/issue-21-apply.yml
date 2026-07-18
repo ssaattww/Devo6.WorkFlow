@@ -53,28 +53,30 @@ jobs:
 
           engine_path = Path("src/Devo6.WorkFlow.Engine/CompositeStep.cs")
           engine = engine_path.read_text(encoding="utf-8")
-          old_engine = '''            object? boxedValue = value;
-              displayValue = boxedValue switch
-              {
-                  null => "null",
-                  IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "null",
-                  _ => boxedValue.ToString() ?? "null",
-              };
-          '''
-          new_engine = '''            object? boxedValue = value;
-              if (boxedValue is null)
-              {
-                  displayValue = "null";
-              }
-              else if (boxedValue is IFormattable)
-              {
-                  displayValue = ((IFormattable)boxedValue).ToString(null, CultureInfo.InvariantCulture) ?? "null";
-              }
-              else
-              {
-                  displayValue = boxedValue.ToString() ?? "null";
-              }
-          '''
+          old_engine = "\n".join([
+              "            object? boxedValue = value;",
+              "            displayValue = boxedValue switch",
+              "            {",
+              "                null => \"null\",",
+              "                IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? \"null\",",
+              "                _ => boxedValue.ToString() ?? \"null\",",
+              "            };",
+          ])
+          new_engine = "\n".join([
+              "            object? boxedValue = value;",
+              "            if (boxedValue is null)",
+              "            {",
+              "                displayValue = \"null\";",
+              "            }",
+              "            else if (boxedValue is IFormattable)",
+              "            {",
+              "                displayValue = ((IFormattable)boxedValue).ToString(null, CultureInfo.InvariantCulture) ?? \"null\";",
+              "            }",
+              "            else",
+              "            {",
+              "                displayValue = boxedValue.ToString() ?? \"null\";",
+              "            }",
+          ])
           if old_engine in engine:
               engine = engine.replace(old_engine, new_engine, 1)
           elif new_engine not in engine:
