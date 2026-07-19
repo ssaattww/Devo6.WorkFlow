@@ -44,6 +44,18 @@ engine run "$ENTRY" --workflow-config appsettings.yaml --engine-config engine.ya
 
 root の `appsettings.yaml` は、Step 側の既定 YAML を全部置き換えるのではなく、境界 Config から必要な値だけを部分上書きします。このサンプルでは `Pipeline.Load.Path`、`Pipeline.Normalize.Uppercase`、`Pipeline.Report.Heading`、`Pipeline.Report.BodyHeading`、`Save.Path` を root 側で示し、`Pipeline.Parse` や `Pipeline.Analyze` は Step 側の既定 YAML をそのまま使います。
 
+## NuGet 参照の補完準備
+
+このディレクトリの `omnisharp.json` は、`.csx` 内の NuGet 参照を C# 言語サービスが解決できるように `enableScriptNuGetReferences` を有効にし、対象となる .NET の版を `net8.0` に固定します。
+
+補完用の依存関係を先に復元する場合は、Step を実行しない `validate` を使います。
+
+```bash
+engine validate samples/multi-folder-composite/main.csx --workflow-config appsettings.yaml --engine-config engine.yaml
+```
+
+新しい `#r "nuget: ..."` または `#load "nuget: ..."` を追加した後は、検証成功後に OmniSharp または使用中の C# 言語サービスを再起動してください。Engine は NuGet 復元を行いますが、別プロセスで動作する言語サービスへ参照を直接注入せず、既存の `omnisharp.json` も自動変更しません。
+
 ## workflow 値の上書き
 
 ```bash

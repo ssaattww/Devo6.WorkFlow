@@ -1,3 +1,5 @@
+#nullable enable
+
 #r "nuget: Devo6.WorkFlow.Engine, 0.1.0"
 #r "nuget: YamlDotNet, 16.3.0"
 

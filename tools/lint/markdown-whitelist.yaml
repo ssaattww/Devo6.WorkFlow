@@ -29,6 +29,8 @@ entries:
     description: 設定構造を記述する形式名。
   - term: C#
     description: 実装言語名。
+  - term: コンパイラ
+    description: C# のコードをコンパイルするツール。
   - term: csx
     description: C# script の拡張子名。
   - term: script
@@ -56,7 +58,25 @@ entries:
   - term: ライセンス
     description: 利用と再配布の許諾条件を示す語。
   - term: .NET
+    aliases:
+      - dotnet
     description: C# 実行基盤の名称。
+  - term: JSON
+    description: 設定構造を記述する形式名。
+  - term: OmniSharp
+    description: C# script の補完に使う言語サービスの製品名。
+  - term: solution
+    description: .NET の複数プロジェクトをまとめる構成単位。
+  - term: エディタ
+    description: C# script の補完を提供する編集環境。
+  - term: 言語サービス
+    description: C# の参照解決と補完を提供する別プロセスの機能。
+  - term: フィールド
+    description: クラス内部で状態を保持する構成要素。
+  - term: キャッシュパス
+    description: dotnet-script の復元用キャッシュ基準位置。
+  - term: nullable コンテキスト
+    description: C# コンパイラによる nullable 注釈と警告の扱いを定める設定。
   - term: retry
     description: 失敗した処理を再実行する設定名。
   - term: timeout
