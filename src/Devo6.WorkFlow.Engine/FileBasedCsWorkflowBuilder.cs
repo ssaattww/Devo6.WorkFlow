@@ -122,7 +122,7 @@ public sealed class FileBasedCsWorkflowBuilder
             allowedNuGetReferences);
         if (!buildResult.Succeeded)
         {
-            return Failure(entryPath, buildResult.ErrorCode, buildResult.ErrorMessage);
+            return Failure(entryPath, buildResult.ErrorCode, FormatBuildFailure(buildResult));
         }
 
         return metadataResult ?? Failure(
@@ -181,7 +181,7 @@ public sealed class FileBasedCsWorkflowBuilder
             allowedNuGetReferences);
         if (!buildResult.Succeeded)
         {
-            return ExecutionFailure(entryPath, buildResult.ErrorCode, buildResult.ErrorMessage);
+            return ExecutionFailure(entryPath, buildResult.ErrorCode, FormatBuildFailure(buildResult));
         }
 
         return executionResult ?? ExecutionFailure(entryPath, WorkflowErrorCodes.ScriptLoadFailed,
@@ -197,6 +197,16 @@ public sealed class FileBasedCsWorkflowBuilder
         ErrorCode = code,
         ErrorMessage = message,
     };
+
+    /// <summary>
+    /// build failure の診断 directory を、保持する必要がある場合だけ利用者へ示します。
+    /// </summary>
+    /// <param name="buildResult">SDK build の失敗結果。</param>
+    /// <returns>一時診断 directory を含めた failure message。</returns>
+    private static string FormatBuildFailure(FileBasedCsBuildResult buildResult) =>
+        string.IsNullOrWhiteSpace(buildResult.TemporaryDirectory)
+            ? buildResult.ErrorMessage
+            : $"{buildResult.ErrorMessage}{Environment.NewLine}Diagnostic state retained at: {buildResult.TemporaryDirectory}";
 
     /// <summary>
     /// 入力を前提検査し、SDK restore と build を行って callback を実行します。

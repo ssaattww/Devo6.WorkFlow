@@ -164,7 +164,7 @@ validate と同じ復元前検査・復元・固定情報照合・生成
 
 - 開発基盤のファイル単位入力が使う標準の一時出力を用い、入力ファイルの親ディレクトリとワークフローを定義するコード一式を置く最上位ディレクトリのどちらにも `bin/obj`、依存ライブラリ、生成された `.dll` を作らない。
 - キャッシュキーには入力のハッシュ、許可した指定、開発基盤の版、実効対象実行環境、ワークフロー基準ディレクトリの構築・NuGet 設定、復元済み依存固定情報を含める。入力や設定が変わった場合に古い成果物を再利用しない。
-- 入力パスごとの調整用排他を復元前に取得し、同じ入力の通常要求は順に処理する。各要求は OS の一時領域に利用者専用の session directory を作り、SDK runfile、一時領域、CLI home、NuGet package / HTTP cache を分離する。SDK へ `NUGET_PACKAGES` と `RestorePackagesPath` の両方を同じ session 内の package directory に固定し、復元前の実効 property と復元後の assets に記録された package path / folders を照合する。assets、DLL、中間出力も同じ session の runfile root に置き、実効 MSBuild 出力先を復元前に照合する。SDK 子プロセスや出力 pipe の終了だけでは書込み完了とみなさない。中止時または失敗時の session は診断用に残し、後続要求は別 session だけを照合・使用する。`run` / `validate` は成功して成果物利用を終えた後に、自ら作成した session だけを削除する。公開 `Build` の成功結果は呼出し側が利用後に `Dispose()` して回収する。取消後の不確かな session や他者のファイルは削除しない。
+- 入力パスごとの調整用排他を復元前に取得し、同じ入力の通常要求は順に処理する。各要求は OS の一時領域に利用者専用の session directory を作り、SDK runfile、一時領域、CLI home、NuGet package / HTTP cache を分離する。SDK へ `NUGET_PACKAGES` と `RestorePackagesPath` の両方を同じ session 内の package directory に固定し、復元前の実効 property と復元後の assets に記録された package path / folders を照合する。assets、DLL、中間出力も同じ session の runfile root に置き、実効 MSBuild 出力先を復元前に照合する。SDK 子プロセスや出力 pipe の終了だけでは書込み完了とみなさない。中止時または失敗時の session は診断用に残し、SDK 失敗を返す `run` / `validate` は診断 directory を示す。後続要求は別 session だけを照合・使用する。`run` / `validate` は成功して成果物利用を終えた後に、自ら作成した session だけを削除する。公開 `Build` の成功結果は呼出し側が利用後に `Dispose()` して回収する。取消後の不確かな session や他者のファイルは削除しない。
 - 検証から実行までの間に入力のハッシュが変わった場合、成果物は使わず、入力を再度解決する。
 
 ## 10. 受入試験表

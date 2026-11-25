@@ -275,14 +275,15 @@ public sealed class CsFileInputPreflightTests
         var runner = new InputChangingSdkRunner(sourcePath, feedPath, outputRoot, useForeignNuGetCacheInAssets: true);
         var builder = new FileBasedCsWorkflowBuilder(runner, () => outputRoot);
 
-        FileBasedCsBuildResult result = builder.Build(sourcePath, "0.1.0");
+        WorkflowResult result = builder.Run(sourcePath, "0.1.0");
 
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMismatch, result.ErrorCode);
+        Assert.NotNull(runner.RunContext);
+        Assert.Contains(runner.RunContext.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(runner.RunContext.SessionDirectory));
         Assert.DoesNotContain(runner.Calls, call => call.FirstOrDefault() == "build"
             && !call.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)));
-        Assert.NotNull(result.TemporaryDirectory);
-        Assert.True(Directory.Exists(result.TemporaryDirectory));
         Directory.Delete(directory, recursive: true);
     }
 #endif
