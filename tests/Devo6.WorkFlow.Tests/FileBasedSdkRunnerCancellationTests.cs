@@ -171,13 +171,12 @@ public sealed class FileBasedSdkRunnerCancellationTests
             """);
         string artifactsName = Path.GetFileName(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(sourcePath, outputRoot));
         string lateMarkerPath = Path.Combine("$XDG_DATA_HOME", "dotnet", "runfile", artifactsName, "bin", "debug", "late-writer.marker");
-        File.WriteAllText(scriptPath, $$"""
-            #!/bin/sh
-            setsid sh -c 'echo started > "{{childStartedPath}}"; while [ ! -f "{{releasePath}}" ]; do sleep 0.01; done; mkdir -p "$(dirname "{{lateMarkerPath}}")"; printf old-run > "{{lateMarkerPath}}"; echo completed > "{{childCompletedPath}}"' </dev/null >/dev/null 2>&1 &
-            while [ ! -f "{{childStartedPath}}" ]; do sleep 0.01; done
-            echo $$
-            exit 0
-            """);
+        File.WriteAllText(scriptPath, "#!/bin/sh" + Environment.NewLine + $$"""
+setsid sh -c 'echo started > "{{childStartedPath}}"; while [ ! -f "{{releasePath}}" ]; do sleep 0.01; done; mkdir -p "$(dirname "{{lateMarkerPath}}")"; printf old-run > "{{lateMarkerPath}}"; echo completed > "{{childCompletedPath}}"' </dev/null >/dev/null 2>&1 &
+while [ ! -f "{{childStartedPath}}" ]; do sleep 0.01; done
+echo $$
+exit 0
+""");
         File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
         using var cancellation = new CancellationTokenSource();
