@@ -1,6 +1,7 @@
 #if NET10_0
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json;
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
 
@@ -64,8 +65,8 @@ public sealed class FileBasedSdkRunnerCancellationTests
             $"#!/bin/sh\n(echo started > '{childStartedPath}'; while [ ! -f '{releasePath}' ]; do sleep 0.01; done; printf '%s' '{childPayload}' > '{childPendingPath}' && mv '{childPendingPath}' '{childCompletedPath}') &\necho $$ > '{parentPidPath}'\nexit 0\n");
         File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
-        var firstRunner = new BuilderLockTestSdkRunner(scriptPath, childCompletedPath, blockFirstRestore: true);
-        var secondRunner = new BuilderLockTestSdkRunner(scriptPath, childCompletedPath, blockFirstRestore: false);
+        var firstRunner = new BuilderLockTestSdkRunner(scriptPath, childCompletedPath, outputRoot, blockFirstRestore: true);
+        var secondRunner = new BuilderLockTestSdkRunner(scriptPath, childCompletedPath, outputRoot, blockFirstRestore: false);
         var firstBuilder = new FileBasedCsWorkflowBuilder(firstRunner, () => outputRoot);
         var lockContentionObserved = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondBuilder = new FileBasedCsWorkflowBuilder(secondRunner, () => outputRoot, path => lockContentionObserved.TrySetResult(path));
@@ -270,6 +271,7 @@ public sealed class FileBasedSdkRunnerCancellationTests
         private const string SdkInfo = ".NET SDK:\n Version: 10.0.404\n Base Path: /usr/share/dotnet/sdk/10.0.404/";
         private readonly DotnetFileBasedSdkRunner processRunner;
         private readonly string childCompletedPath;
+        private readonly string outputRoot;
         private readonly bool blockFirstRestore;
         private int restoreCount;
 
@@ -279,10 +281,11 @@ public sealed class FileBasedSdkRunnerCancellationTests
         /// <param name="scriptPath">SDK 呼出しとして起動する fixture のパス。</param>
         /// <param name="childCompletedPath">子プロセスが完了時に公開するファイルのパス。</param>
         /// <param name="blockFirstRestore">最初の restore を fixture に委ねる場合は true。</param>
-        public BuilderLockTestSdkRunner(string scriptPath, string childCompletedPath, bool blockFirstRestore)
+        public BuilderLockTestSdkRunner(string scriptPath, string childCompletedPath, string outputRoot, bool blockFirstRestore)
         {
             processRunner = new DotnetFileBasedSdkRunner(scriptPath);
             this.childCompletedPath = childCompletedPath;
+            this.outputRoot = outputRoot;
             this.blockFirstRestore = blockFirstRestore;
         }
 
@@ -324,9 +327,9 @@ public sealed class FileBasedSdkRunnerCancellationTests
                 return new FileBasedSdkProcessResult(0, SdkInfo, "");
             }
 
-            if (arguments.Contains("-getProperty:TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath"))
+            if (arguments.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
             {
-                return new FileBasedSdkProcessResult(0, EvaluationJson, "");
+                return new FileBasedSdkProcessResult(0, CreateEvaluationJson(arguments[1]), "");
             }
 
             if (arguments.Count > 0 && arguments[0] == "restore")
@@ -352,7 +355,53 @@ public sealed class FileBasedSdkRunnerCancellationTests
             return new FileBasedSdkProcessResult(0, "", "");
         }
 
-        private const string EvaluationJson = """{"Properties":{"TargetFramework":"net10.0","TargetFrameworks":"","OutputType":"Library","PublishAot":"false","RestorePackagesWithLockFile":"false","RestoreLockedMode":"false","ManagePackageVersionsCentrally":"false","RestoreAdditionalProjectSources":"","RestoreConfigFile":"","RestoreSources":"","MSBuildSDKsPath":"/usr/share/dotnet/sdk/10.0.404/Sdks","MSBuildExtensionsPath":"/usr/share/dotnet/sdk/10.0.404/"},"Items":{"PackageReference":[{"Identity":"Devo6.WorkFlow.Engine","Version":"[0.1.0]"}]}}""";
+        /// <summary>
+        /// SDK の実効 output directory を反映した評価 JSON を生成します。
+        /// </summary>
+        /// <param name="entryPath">SDK が評価する file-based source path。</param>
+        /// <returns>評価した project property と package reference の JSON。</returns>
+        private string CreateEvaluationJson(string entryPath)
+        {
+            string artifacts = Path.GetFullPath(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, outputRoot));
+            string bin = Path.Combine(artifacts, "bin");
+            string output = Path.Combine(bin, "debug");
+            string obj = Path.Combine(artifacts, "obj");
+            return JsonSerializer.Serialize(new
+            {
+                Properties = new Dictionary<string, string>
+                {
+                    ["TargetFramework"] = "net10.0",
+                    ["TargetFrameworks"] = "",
+                    ["OutputType"] = "Library",
+                    ["PublishAot"] = "false",
+                    ["RestorePackagesWithLockFile"] = "false",
+                    ["RestoreLockedMode"] = "false",
+                    ["ManagePackageVersionsCentrally"] = "false",
+                    ["RestoreAdditionalProjectSources"] = "",
+                    ["RestoreConfigFile"] = "",
+                    ["RestoreSources"] = Path.Combine(Path.GetDirectoryName(entryPath)!, "feed"),
+                    ["MSBuildSDKsPath"] = "/usr/share/dotnet/sdk/10.0.404/Sdks",
+                    ["MSBuildExtensionsPath"] = "/usr/share/dotnet/sdk/10.0.404/",
+                    ["BaseOutputPath"] = bin + Path.DirectorySeparatorChar,
+                    ["OutputPath"] = output + Path.DirectorySeparatorChar,
+                    ["OutDir"] = output + Path.DirectorySeparatorChar,
+                    ["BaseIntermediateOutputPath"] = obj + Path.DirectorySeparatorChar,
+                    ["IntermediateOutputPath"] = Path.Combine(obj, "debug") + Path.DirectorySeparatorChar,
+                    ["MSBuildProjectExtensionsPath"] = obj + Path.DirectorySeparatorChar,
+                    ["TargetPath"] = Path.Combine(output, Path.GetFileNameWithoutExtension(entryPath) + ".dll"),
+                    ["ArtifactsPath"] = artifacts,
+                    ["RuntimeIdentifier"] = "",
+                    ["RuntimeIdentifiers"] = "",
+                },
+                Items = new
+                {
+                    PackageReference = new[]
+                    {
+                        new { Identity = "Devo6.WorkFlow.Engine", Version = "[0.1.0]" },
+                    },
+                },
+            });
+        }
     }
 }
 #endif

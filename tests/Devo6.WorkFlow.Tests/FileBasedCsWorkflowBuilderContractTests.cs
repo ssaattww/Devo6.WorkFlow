@@ -34,6 +34,8 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
             ["https://packages.example/v3/index.json"],
             "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            "/tmp/workflow-artifacts",
+            "/tmp/workflow.cs",
             out string error), error);
     }
 
@@ -50,6 +52,8 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
             ["https://packages.example/v3/index.json"],
             "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            "/tmp/workflow-artifacts",
+            "/tmp/workflow.cs",
             out _));
     }
 
@@ -69,6 +73,8 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
             ["https://packages.example/v3/index.json"],
             "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            "/tmp/workflow-artifacts",
+            "/tmp/workflow.cs",
             out _));
     }
 
@@ -107,7 +113,65 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
             ["https://packages.example/v3/index.json"],
             "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            "/tmp/workflow-artifacts",
+            "/tmp/workflow.cs",
             out _));
+    }
+
+    [Theory(DisplayName = "effective SDK output and intermediate overrides outside the artifact directory are rejected")]
+    [InlineData("\"BaseOutputPath\": \"/tmp/workflow-artifacts/bin/\"", "\"BaseOutputPath\": \"/tmp/unlocked/bin/\"")]
+    [InlineData("\"IntermediateOutputPath\": \"/tmp/workflow-artifacts/obj/debug/\"", "\"IntermediateOutputPath\": \"/tmp/unlocked/obj/debug/\"")]
+    [InlineData("\"MSBuildProjectExtensionsPath\": \"/tmp/workflow-artifacts/obj/\"", "\"MSBuildProjectExtensionsPath\": \"/tmp/unlocked/obj/\"")]
+    [InlineData("\"TargetPath\": \"/tmp/workflow-artifacts/bin/debug/workflow.dll\"", "\"TargetPath\": \"/tmp/unlocked/workflow.dll\"")]
+    /// <summary>
+    /// DLL、assets、中間出力がロック対象の runfile directory から外れる評価結果を拒否します。
+    /// </summary>
+    public void EffectiveProjectRejectsOutputPathOverride(string expectedProperty, string overriddenProperty)
+    {
+        string json = EvaluationJson("net10.0", "[0.1.0]").Replace(expectedProperty, overriddenProperty, StringComparison.Ordinal);
+
+        Assert.False(FileBasedCsWorkflowBuilder.ValidateEffectiveProjectJson(
+            json,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
+            ["https://packages.example/v3/index.json"],
+            "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            "/tmp/workflow-artifacts",
+            "/tmp/workflow.cs",
+            out _));
+    }
+
+    [Fact(DisplayName = "NuGet source comparison follows URI and filesystem semantics")]
+    /// <summary>
+    /// URI host は大文字小文字を区別せず、URI path は区別して NuGet source を比較します。
+    /// </summary>
+    public void PackageSourcesUseUriSemantics()
+    {
+        Assert.True(FileBasedCsWorkflowBuilder.PackageSourcesEqual(
+            ["https://Packages.Example:443/v3/index.json"],
+            ["https://packages.example/v3/index.json"],
+            "/tmp"));
+        Assert.False(FileBasedCsWorkflowBuilder.PackageSourcesEqual(
+            ["https://packages.example/v3/index.json"],
+            ["https://packages.example/V3/index.json"],
+            "/tmp"));
+        Assert.True(FileBasedCsWorkflowBuilder.PackageSourcesEqual(
+            ["../feed"],
+            ["/tmp/feed"],
+            "/tmp/workflow"));
+        Assert.True(FileBasedCsWorkflowBuilder.PackageSourcesEqual(
+            ["file:///tmp/feed"],
+            ["/tmp/feed"],
+            "/tmp"));
+        Assert.True(FileBasedCsWorkflowBuilder.PackageSourcesEqual(
+            ["/tmp/LocalFeed"],
+            ["/tmp/localfeed"],
+            "/tmp",
+            isWindows: true));
+        Assert.False(FileBasedCsWorkflowBuilder.PackageSourcesEqual(
+            ["/tmp/LocalFeed"],
+            ["/tmp/localfeed"],
+            "/tmp",
+            isWindows: false));
     }
 
     [Fact(DisplayName = "C# compiler diagnostics are distinguished from MSBuild failures")]
@@ -202,7 +266,17 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             "RestoreConfigFile": "",
             "RestoreSources": "https://packages.example/v3/index.json",
             "MSBuildSDKsPath": "{{sdkSdksPath}}",
-            "MSBuildExtensionsPath": "{{extensionsPath}}"
+            "MSBuildExtensionsPath": "{{extensionsPath}}",
+            "BaseOutputPath": "/tmp/workflow-artifacts/bin/",
+            "OutputPath": "/tmp/workflow-artifacts/bin/debug/",
+            "OutDir": "/tmp/workflow-artifacts/bin/debug/",
+            "BaseIntermediateOutputPath": "/tmp/workflow-artifacts/obj/",
+            "IntermediateOutputPath": "/tmp/workflow-artifacts/obj/debug/",
+            "MSBuildProjectExtensionsPath": "/tmp/workflow-artifacts/obj/",
+            "TargetPath": "/tmp/workflow-artifacts/bin/debug/workflow.dll",
+            "ArtifactsPath": "/tmp/workflow-artifacts",
+            "RuntimeIdentifier": "",
+            "RuntimeIdentifiers": ""
           },
           "Items": {
             "PackageReference": [

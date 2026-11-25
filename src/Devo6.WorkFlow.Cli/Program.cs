@@ -40,7 +40,8 @@ public static class Program
         string? hostTargetFramework = null
 #if NET10_0
         , string? hostPackageVersion = null,
-        Func<FileBasedCsWorkflowBuilder>? fileBasedBuilderFactory = null
+        Func<FileBasedCsWorkflowBuilder>? fileBasedBuilderFactory = null,
+        Func<string, string?>? packageVersionReader = null
 #endif
         )
     {
@@ -74,9 +75,28 @@ public static class Program
             }
 
 #if NET10_0
-            string effectivePackageVersion = hostPackageVersion
-                ?? ToolPackageVersionReader.ReadInstalledPackageVersion(AppContext.BaseDirectory)
-                ?? "";
+            string? discoveredPackageVersion = hostPackageVersion;
+            if (discoveredPackageVersion is null)
+            {
+                try
+                {
+                    Func<string, string?> versionReader = packageVersionReader
+                        ?? (path => ToolPackageVersionReader.ReadInstalledPackageVersion(path));
+                    discoveredPackageVersion = versionReader(AppContext.BaseDirectory);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+                {
+                    discoveredPackageVersion = null;
+                }
+            }
+
+            string effectivePackageVersion = discoveredPackageVersion ?? "";
+            if (!ToolPackageVersionReader.IsExactPackageVersion(effectivePackageVersion))
+            {
+                Console.Error.WriteLine($"{WorkflowErrorCodes.PackageVersionUnknown}: The installed CLI NuGet package version could not be read or was invalid.");
+                return 1;
+            }
+
             var builder = fileBasedBuilderFactory?.Invoke() ?? new FileBasedCsWorkflowBuilder();
             IReadOnlyList<string> configPaths = CollectValidationConfigPaths(
                 string.IsNullOrWhiteSpace(workflowConfigPath) ? null : workflowConfigPath,

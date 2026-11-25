@@ -17,7 +17,7 @@ namespace Devo6.WorkFlow.Engine;
 public sealed class FileBasedCsWorkflowBuilder
 {
     private const string EffectiveProjectProperties =
-        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath";
+        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath,BaseOutputPath,OutputPath,OutDir,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath,TargetPath,ArtifactsPath,RuntimeIdentifier,RuntimeIdentifiers";
     private static readonly IDeserializer LockDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -167,7 +167,7 @@ public sealed class FileBasedCsWorkflowBuilder
                 }
 
                 executionResult = FileBasedWorkflowExecutor.Execute(
-                    assemblyPath, providerTypeName, qualifiedEntryName, options);
+                    assemblyPath, providerTypeName, qualifiedEntryName, options, cancellationToken);
             },
             allowedNuGetReferences);
         if (!buildResult.Succeeded)
@@ -307,7 +307,14 @@ public sealed class FileBasedCsWorkflowBuilder
 
             string evaluationError = "";
             if (!evaluationResult.Succeeded
-                || !TryValidateEffectiveProject(evaluationResult.StandardOutput, preflight, lockFile!, expectedSdkSdksPath, out evaluationError))
+                || !TryValidateEffectiveProject(
+                    evaluationResult.StandardOutput,
+                    preflight,
+                    lockFile!,
+                    expectedSdkSdksPath,
+                    GetSdkArtifactsDirectory(fullEntryPath, runFileRoot),
+                    fullEntryPath,
+                    out evaluationError))
             {
                 string detail = evaluationResult.Succeeded
                     ? evaluationError
@@ -369,6 +376,13 @@ public sealed class FileBasedCsWorkflowBuilder
                 return FileBasedCsBuildResult.Failure(
                     ClassifyBuildFailure(buildResult),
                     FormatProcessFailure(buildResult));
+            }
+
+            if (!string.Equals(sourceHash, ComputeFileHash(fullEntryPath), StringComparison.Ordinal))
+            {
+                return FileBasedCsBuildResult.Failure(
+                    WorkflowErrorCodes.ScriptFileDirectiveInvalid,
+                    "The workflow source changed during build; the generated assembly was discarded.");
             }
 
             string assemblyPath = GetSdkOutputAssemblyPath(fullEntryPath, runFileRoot);
@@ -446,7 +460,7 @@ public sealed class FileBasedCsWorkflowBuilder
             }
 
             IReadOnlyList<string> configuredSources = ReadPackageSources(Path.GetDirectoryName(entryPath)!);
-            if (!StringSetEquals(configuredSources, parsedLock.PackageSources))
+            if (!PackageSourcesEqual(configuredSources, parsedLock.PackageSources, Path.GetDirectoryName(entryPath)!))
             {
                 error = "Configured NuGet package sources do not match the lock file.";
                 return false;
@@ -562,7 +576,7 @@ public sealed class FileBasedCsWorkflowBuilder
 
             JsonElement restore = root.GetProperty("project").GetProperty("restore");
             IReadOnlyList<string> restoredSources = restore.GetProperty("sources").EnumerateObject().Select(item => item.Name).ToArray();
-            if (!StringSetEquals(restoredSources, lockFile.PackageSources))
+            if (!PackageSourcesEqual(restoredSources, lockFile.PackageSources, Path.GetDirectoryName(preflight.LockFilePath)!))
             {
                 error = "Restored NuGet package sources do not match the lock file.";
                 return false;
@@ -592,6 +606,8 @@ public sealed class FileBasedCsWorkflowBuilder
         CsFileInputPreflight.PreflightResult preflight,
         FileBasedNuGetLock lockFile,
         string expectedSdkSdksPath,
+        string expectedArtifactsDirectory,
+        string entryPath,
         out string error)
     {
         return ValidateEffectiveProjectJson(
@@ -599,6 +615,8 @@ public sealed class FileBasedCsWorkflowBuilder
             preflight.PackageReferences,
             lockFile.PackageSources,
             expectedSdkSdksPath,
+            expectedArtifactsDirectory,
+            entryPath,
             out error);
     }
 
@@ -610,6 +628,8 @@ public sealed class FileBasedCsWorkflowBuilder
         IReadOnlyDictionary<string, string> expectedPackageReferences,
         IReadOnlyList<string> expectedSources,
         string expectedSdkSdksPath,
+        string expectedArtifactsDirectory,
+        string entryPath,
         out string error)
     {
         error = "";
@@ -630,6 +650,16 @@ public sealed class FileBasedCsWorkflowBuilder
             string restoreSources = GetProperty(properties, "RestoreSources");
             string msbuildSdksPath = GetProperty(properties, "MSBuildSDKsPath");
             string msbuildExtensionsPath = GetProperty(properties, "MSBuildExtensionsPath");
+            string baseOutputPath = GetProperty(properties, "BaseOutputPath");
+            string outputPath = GetProperty(properties, "OutputPath");
+            string outDir = GetProperty(properties, "OutDir");
+            string baseIntermediateOutputPath = GetProperty(properties, "BaseIntermediateOutputPath");
+            string intermediateOutputPath = GetProperty(properties, "IntermediateOutputPath");
+            string projectExtensionsPath = GetProperty(properties, "MSBuildProjectExtensionsPath");
+            string targetPath = GetProperty(properties, "TargetPath");
+            string artifactsPath = GetProperty(properties, "ArtifactsPath");
+            string runtimeIdentifier = GetProperty(properties, "RuntimeIdentifier");
+            string runtimeIdentifiers = GetProperty(properties, "RuntimeIdentifiers");
 
             if (!string.Equals(targetFramework, "net10.0", StringComparison.OrdinalIgnoreCase)
                 || !string.IsNullOrWhiteSpace(targetFrameworks)
@@ -653,6 +683,26 @@ public sealed class FileBasedCsWorkflowBuilder
                 return false;
             }
 
+            string expectedArtifacts = Path.GetFullPath(expectedArtifactsDirectory);
+            string expectedBin = Path.Combine(expectedArtifacts, "bin");
+            string expectedOutput = Path.Combine(expectedBin, "debug");
+            string expectedObj = Path.Combine(expectedArtifacts, "obj");
+            string expectedTarget = Path.Combine(expectedOutput, Path.GetFileNameWithoutExtension(entryPath) + ".dll");
+            if (!PathsEqual(baseOutputPath, expectedBin)
+                || !PathsEqual(outputPath, expectedOutput)
+                || !PathsEqual(outDir, expectedOutput)
+                || !PathsEqual(baseIntermediateOutputPath, expectedObj)
+                || !PathsEqual(intermediateOutputPath, Path.Combine(expectedObj, "debug"))
+                || !PathsEqual(projectExtensionsPath, expectedObj)
+                || !PathsEqual(targetPath, expectedTarget)
+                || !PathsEqual(artifactsPath, expectedArtifacts)
+                || !string.IsNullOrWhiteSpace(runtimeIdentifier)
+                || !string.IsNullOrWhiteSpace(runtimeIdentifiers))
+            {
+                error = "The effective SDK output, intermediate, assets, or target path differs from the locked file-based artifact directory.";
+                return false;
+            }
+
             if (IsEnabled(packageLockEnabled) || IsEnabled(restoreLockedMode) || IsEnabled(centralVersionsEnabled)
                 || !string.IsNullOrWhiteSpace(additionalSources)
                 || !string.IsNullOrWhiteSpace(restoreConfigFile))
@@ -664,7 +714,7 @@ public sealed class FileBasedCsWorkflowBuilder
             if (!string.IsNullOrWhiteSpace(restoreSources))
             {
                 string[] sources = restoreSources.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                if (!StringSetEquals(sources, expectedSources))
+                if (!PackageSourcesEqual(sources, expectedSources, Path.GetDirectoryName(entryPath)!))
                 {
                     error = "The evaluated NuGet source override does not match the required lock sources.";
                     return false;
@@ -822,12 +872,58 @@ public sealed class FileBasedCsWorkflowBuilder
     }
 
     /// <summary>
-    /// 文字列集合を大文字小文字を区別せず比較します。
+    /// NuGet source URLs compare by URI authority and case-sensitive path; local paths use OS path casing.
     /// </summary>
-    private static bool StringSetEquals(IEnumerable<string> left, IEnumerable<string> right)
+    internal static bool PackageSourcesEqual(IEnumerable<string> left, IEnumerable<string> right, string baseDirectory)
     {
-        return new HashSet<string>(left, StringComparer.OrdinalIgnoreCase)
-            .SetEquals(right);
+        return PackageSourcesEqual(left, right, baseDirectory, OperatingSystem.IsWindows());
+    }
+
+    /// <summary>
+    /// 指定した OS の path 規則で NuGet package source の集合が一致するか判定します。
+    /// </summary>
+    /// <param name="left">比較する左側の package source。</param>
+    /// <param name="right">比較する右側の package source。</param>
+    /// <param name="baseDirectory">相対 path を解決する基準 directory。</param>
+    /// <param name="isWindows">Windows の path 比較規則を使う場合は <see langword="true"/>。</param>
+    /// <returns>正規化後の source 集合が一致する場合は <see langword="true"/>。</returns>
+    internal static bool PackageSourcesEqual(
+        IEnumerable<string> left,
+        IEnumerable<string> right,
+        string baseDirectory,
+        bool isWindows)
+    {
+        string[] normalizedLeft = left.Select(source => NormalizePackageSource(source, baseDirectory, isWindows)).ToArray();
+        string[] normalizedRight = right.Select(source => NormalizePackageSource(source, baseDirectory, isWindows)).ToArray();
+        return new HashSet<string>(normalizedLeft, StringComparer.Ordinal).SetEquals(normalizedRight);
+    }
+
+    /// <summary>
+    /// source URI または相対 path を比較用の platform identity に正規化します。
+    /// </summary>
+    /// <param name="source">元の NuGet package source。</param>
+    /// <param name="baseDirectory">相対 path を解決する基準 directory。</param>
+    /// <returns>source の比較用 identity。</returns>
+    private static string NormalizePackageSource(string source, string baseDirectory, bool isWindows)
+    {
+        if (Uri.TryCreate(source, UriKind.Absolute, out Uri? uri) && !uri.IsFile)
+        {
+            string userInfo = uri.UserInfo.Length == 0 ? "" : $"{uri.UserInfo}@";
+            string authority = $"{uri.Scheme.ToLowerInvariant()}://{userInfo}{uri.IdnHost.ToLowerInvariant()}:{uri.Port}";
+            string pathAndQuery = uri.GetComponents(UriComponents.PathAndQuery | UriComponents.Fragment, UriFormat.UriEscaped);
+            return $"uri:{authority}/{pathAndQuery.TrimStart('/')}";
+        }
+
+        string localPath = Uri.TryCreate(source, UriKind.Absolute, out uri) && uri.IsFile
+            ? uri.LocalPath
+            : source;
+        string normalizedPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(localPath, baseDirectory));
+        if (isWindows)
+        {
+            normalizedPath = normalizedPath.ToUpperInvariant();
+        }
+
+        return $"path:{normalizedPath}";
     }
 
     /// <summary>
@@ -836,27 +932,25 @@ public sealed class FileBasedCsWorkflowBuilder
     internal static string? FindAssetsFile(string entryPath, string runFileRoot)
     {
         string artifactsDirectory = GetSdkArtifactsDirectory(entryPath, runFileRoot);
-        if (!Directory.Exists(artifactsDirectory))
+        string assetsPath = Path.GetFullPath(Path.Combine(artifactsDirectory, "obj", "project.assets.json"));
+        if (!File.Exists(assetsPath))
         {
             return null;
         }
 
         string expectedProjectPath = Path.GetFullPath(entryPath) + ".csproj";
         StringComparison pathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        foreach (string candidate in Directory.EnumerateFiles(artifactsDirectory, "project.assets.json", SearchOption.AllDirectories))
+        try
         {
-            try
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(assetsPath));
+            string projectPath = document.RootElement.GetProperty("project").GetProperty("restore").GetProperty("projectPath").GetString() ?? "";
+            if (string.Equals(Path.GetFullPath(projectPath), expectedProjectPath, pathComparison))
             {
-                using JsonDocument document = JsonDocument.Parse(File.ReadAllText(candidate));
-                string projectPath = document.RootElement.GetProperty("project").GetProperty("restore").GetProperty("projectPath").GetString() ?? "";
-                if (string.Equals(Path.GetFullPath(projectPath), expectedProjectPath, pathComparison))
-                {
-                    return Path.GetFullPath(candidate);
-                }
+                return assetsPath;
             }
-            catch (Exception exception) when (exception is IOException or JsonException or KeyNotFoundException or InvalidOperationException)
-            {
-            }
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or KeyNotFoundException or InvalidOperationException)
+        {
         }
 
         return null;

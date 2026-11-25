@@ -2,6 +2,7 @@ using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Cli;
 using Devo6.WorkFlow.Engine;
 using System.Collections;
+using System.Text.Json;
 
 namespace Devo6.WorkFlow.Tests;
 
@@ -82,6 +83,114 @@ public sealed class CsFileInputPreflightTests
         Assert.Equal(1, exitCode);
         Assert.Contains(WorkflowErrorCodes.ScriptReferenceNotAllowed, capturedError.ToString());
         Assert.Empty(runner.Calls);
+    }
+
+    /// <summary>
+    /// 配布 .nuspec の列挙に失敗したとき run と validate を PACKAGE_VERSION_UNKNOWN に統一します。
+    /// </summary>
+    [Theory(DisplayName = "package version enumeration failure has one diagnostic for run and validate")]
+    [InlineData("run")]
+    [InlineData("validate")]
+    public void PackageVersionEnumerationFailureUsesUnknownDiagnostic(string command)
+    {
+        string sourcePath = CreateFileBasedSource();
+        string directory = Path.GetDirectoryName(sourcePath)!;
+        string feedPath = Path.Combine(directory, "feed");
+        Directory.CreateDirectory(feedPath);
+        File.WriteAllText(Path.Combine(directory, "NuGet.Config"),
+            $"<configuration><packageSources><clear/><add key=\"local\" value=\"{feedPath}\" /></packageSources></configuration>");
+        File.WriteAllText(Path.Combine(directory, "devo6.nuget.lock.yaml"), $$"""
+            version: 1
+            targetFramework: net10.0
+            verifyPackageSources: true
+            packageSources:
+              - "{{feedPath}}"
+            directReferences:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            resolvedDependencies:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            """);
+
+        var runner = new RecordingSdkRunner();
+        var builder = new FileBasedCsWorkflowBuilder(runner);
+        TextWriter originalError = Console.Error;
+        using var capturedError = new StringWriter();
+        int exitCode;
+        try
+        {
+            Console.SetError(capturedError);
+            exitCode = Program.Run(
+                [command, sourcePath],
+                hostTargetFramework: Net10Host,
+                packageVersionReader: _ => throw new UnauthorizedAccessException("fixture enumeration denied"),
+                fileBasedBuilderFactory: () => builder);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains(WorkflowErrorCodes.PackageVersionUnknown, capturedError.ToString(), StringComparison.Ordinal);
+        Assert.Empty(runner.Calls);
+    }
+
+    /// <summary>
+    /// nuspec directory enumeration failures are returned as an unknown version.
+    /// </summary>
+    [Fact(DisplayName = "tool package version reader contains directory enumeration failures")]
+    public void PackageVersionReaderReturnsUnknownWhenEnumerationFails()
+    {
+        string version = ToolPackageVersionReader.ReadInstalledPackageVersion(
+            Path.GetTempPath(),
+            _ => throw new IOException("fixture enumeration failed")) ?? "";
+
+        Assert.Equal("", version);
+    }
+
+    /// <summary>
+    /// build の実行中に元入力が変化した場合、既に出力 DLL があっても成果物を返しません。
+    /// </summary>
+    [Fact(DisplayName = "builder rejects a generated assembly when its input changes during build")]
+    public void BuilderDiscardsAssemblyAfterInputMutationDuringBuild()
+    {
+        string sourcePath = CreateFileBasedSource();
+        string directory = Path.GetDirectoryName(sourcePath)!;
+        string feedPath = Path.Combine(directory, "feed");
+        Directory.CreateDirectory(feedPath);
+        File.WriteAllText(Path.Combine(directory, "NuGet.Config"),
+            $"<configuration><packageSources><clear/><add key=\"local\" value=\"{feedPath}\" /></packageSources></configuration>");
+        File.WriteAllText(Path.Combine(directory, "devo6.nuget.lock.yaml"), $$"""
+            version: 1
+            targetFramework: net10.0
+            verifyPackageSources: true
+            packageSources:
+              - "{{feedPath}}"
+            directReferences:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            resolvedDependencies:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            """);
+        string outputRoot = Path.Combine(directory, "sdk-output");
+        var runner = new InputChangingSdkRunner(sourcePath, feedPath, outputRoot);
+        var builder = new FileBasedCsWorkflowBuilder(runner, () => outputRoot);
+
+        FileBasedCsBuildResult result = builder.Build(sourcePath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptFileDirectiveInvalid, result.ErrorCode);
+        Assert.Null(result.AssemblyPath);
+        Assert.True(File.Exists(FileBasedCsWorkflowBuilder.GetSdkOutputAssemblyPath(sourcePath, outputRoot)));
+        Assert.Contains(runner.Calls, call => call.Contains("restore", StringComparer.Ordinal));
+        Assert.Contains(runner.Calls, call => call.Contains("--no-restore", StringComparer.Ordinal));
     }
 #endif
 
@@ -395,6 +504,138 @@ public sealed class CsFileInputPreflightTests
             }
 
             return new FileBasedSdkProcessResult(0, evaluationJson, "");
+        }
+    }
+
+    /// <summary>
+    /// SDK build 中に入力を変更し、stale assembly が破棄されることを検査します。
+    /// </summary>
+    /// <param name="entryPath">検査対象の workflow source。</param>
+    /// <param name="feedPath">SDK fixture の package source。</param>
+    /// <param name="outputRoot">SDK runfile の分離 output root。</param>
+    private sealed class InputChangingSdkRunner(string entryPath, string feedPath, string outputRoot) : IFileBasedSdkRunner
+    {
+        private const string SdkVersion = "10.0.404";
+        /// <summary>
+        /// SDK fixture が処理した引数列を取得します。
+        /// </summary>
+        public List<IReadOnlyList<string>> Calls { get; } = [];
+
+        /// <summary>
+        /// SDK の復元・評価・生成を模擬し、生成中の入力変更を発生させます。
+        /// </summary>
+        public FileBasedSdkProcessResult Run(
+            IReadOnlyList<string> arguments,
+            string workingDirectory,
+            CancellationToken cancellationToken)
+        {
+            Calls.Add(arguments.ToArray());
+            if (arguments.SequenceEqual(["--version"], StringComparer.Ordinal))
+            {
+                return new FileBasedSdkProcessResult(0, SdkVersion, "");
+            }
+
+            if (arguments.SequenceEqual(["--info"], StringComparer.Ordinal))
+            {
+                return new FileBasedSdkProcessResult(0, ".NET SDK:\n Version: 10.0.404\n Base Path: /usr/share/dotnet/sdk/10.0.404/", "");
+            }
+
+            string artifactsDirectory = FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, outputRoot);
+            if (arguments.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
+            {
+                return new FileBasedSdkProcessResult(0, EvaluationJson(), "");
+            }
+
+            if (arguments.FirstOrDefault() == "restore")
+            {
+                string assetsPath = Path.Combine(artifactsDirectory, "obj", "project.assets.json");
+                Directory.CreateDirectory(Path.GetDirectoryName(assetsPath)!);
+                File.WriteAllText(assetsPath, JsonSerializer.Serialize(new
+                {
+                    targets = new Dictionary<string, object> { ["net10.0"] = new Dictionary<string, object>() },
+                    libraries = new Dictionary<string, object>
+                    {
+                        ["Devo6.WorkFlow.Engine/0.1.0"] = new { type = "package" },
+                    },
+                    project = new
+                    {
+                        frameworks = new Dictionary<string, object>
+                        {
+                            ["net10.0"] = new
+                            {
+                                dependencies = new Dictionary<string, object>
+                                {
+                                    ["Devo6.WorkFlow.Engine"] = new { target = "Package", version = "[0.1.0, 0.1.0]" },
+                                },
+                            },
+                        },
+                        restore = new
+                        {
+                            projectPath = Path.GetFullPath(entryPath) + ".csproj",
+                            sources = new Dictionary<string, object> { [feedPath] = new { } },
+                        },
+                    },
+                }));
+                return new FileBasedSdkProcessResult(0, "", "");
+            }
+
+            if (arguments.FirstOrDefault() == "build")
+            {
+                string assemblyPath = FileBasedCsWorkflowBuilder.GetSdkOutputAssemblyPath(entryPath, outputRoot);
+                Directory.CreateDirectory(Path.GetDirectoryName(assemblyPath)!);
+                File.WriteAllText(assemblyPath, "stale fixture assembly");
+                File.AppendAllText(entryPath, Environment.NewLine + "// changed while building");
+                return new FileBasedSdkProcessResult(0, "", "");
+            }
+
+            throw new InvalidOperationException($"Unexpected SDK fixture invocation: {string.Join(' ', arguments)}");
+        }
+
+        /// <summary>
+        /// SDK が返す実効 build path と PackageReference を表す JSON を作成します。
+        /// </summary>
+        /// <returns>有効な file-based project evaluation JSON。</returns>
+        private string EvaluationJson()
+        {
+            string artifacts = Path.GetFullPath(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, outputRoot));
+            string bin = Path.Combine(artifacts, "bin");
+            string output = Path.Combine(bin, "debug");
+            string obj = Path.Combine(artifacts, "obj");
+            return JsonSerializer.Serialize(new
+            {
+                Properties = new Dictionary<string, string>
+                {
+                    ["TargetFramework"] = "net10.0",
+                    ["TargetFrameworks"] = "",
+                    ["OutputType"] = "Library",
+                    ["PublishAot"] = "false",
+                    ["RestorePackagesWithLockFile"] = "false",
+                    ["RestoreLockedMode"] = "false",
+                    ["ManagePackageVersionsCentrally"] = "false",
+                    ["RestoreAdditionalProjectSources"] = "",
+                    ["RestoreConfigFile"] = "",
+                    ["RestoreSources"] = feedPath,
+                    ["MSBuildSDKsPath"] = "/usr/share/dotnet/sdk/10.0.404/Sdks",
+                    ["MSBuildExtensionsPath"] = "/usr/share/dotnet/sdk/10.0.404/",
+                    ["BaseOutputPath"] = bin + Path.DirectorySeparatorChar,
+                    ["OutputPath"] = output + Path.DirectorySeparatorChar,
+                    ["OutDir"] = output + Path.DirectorySeparatorChar,
+                    ["BaseIntermediateOutputPath"] = obj + Path.DirectorySeparatorChar,
+                    ["IntermediateOutputPath"] = Path.Combine(obj, "debug") + Path.DirectorySeparatorChar,
+                    ["MSBuildProjectExtensionsPath"] = obj + Path.DirectorySeparatorChar,
+                    ["TargetPath"] = Path.Combine(output, Path.GetFileNameWithoutExtension(entryPath) + ".dll"),
+                    ["ArtifactsPath"] = artifacts,
+                    ["RuntimeIdentifier"] = "",
+                    ["RuntimeIdentifiers"] = "",
+                },
+                Items = new
+                {
+                    PackageReference = new[]
+                    {
+                        new { Identity = "Devo6.WorkFlow.Engine", Version = "[0.1.0]" },
+                    },
+                },
+            });
         }
     }
 #endif

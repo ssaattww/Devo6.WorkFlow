@@ -2,6 +2,7 @@
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using Devo6.WorkFlow.Abstractions;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,7 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
 {
     private readonly AssemblyDependencyResolver dependencyResolver;
     private readonly Dictionary<string, Assembly> sharedAssemblies;
+    private readonly Dictionary<string, AssemblyName> sharedFrameworkAssemblies;
 
     /// <summary>
     /// host の API 型を共有する collectible load context を構成します。
@@ -29,6 +31,7 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
             [typeof(WorkflowErrorCodes).Assembly.GetName().Name!] = typeof(WorkflowErrorCodes).Assembly,
             [typeof(ILogger).Assembly.GetName().Name!] = typeof(ILogger).Assembly,
         };
+        sharedFrameworkAssemblies = ReadSharedFrameworkAssemblies();
     }
 
     /// <summary>
@@ -66,8 +69,9 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
                     continue;
                 }
 
-                if (IsSharedFrameworkAssembly(requested.Name))
+                if (sharedFrameworkAssemblies.TryGetValue(requested.Name ?? "", out AssemblyName? frameworkAssembly))
                 {
+                    EnsureCompatibleIdentity(requested, frameworkAssembly, "shared framework");
                     continue;
                 }
 
@@ -113,8 +117,9 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
             return LoadFromAssemblyPath(dependencyPath);
         }
 
-        if (IsSharedFrameworkAssembly(assemblyName.Name))
+        if (sharedFrameworkAssemblies.TryGetValue(assemblyName.Name ?? "", out AssemblyName? frameworkAssembly))
         {
+            EnsureCompatibleIdentity(assemblyName, frameworkAssembly, "shared framework");
             return null;
         }
 
@@ -183,15 +188,44 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
     }
 
     /// <summary>
-    /// default load context に委ねる shared framework assembly か判定します。
+    /// 現在の runtime directory に実在する shared framework assemblies を読み取ります。
     /// </summary>
-    private static bool IsSharedFrameworkAssembly(string? assemblyName)
+    private static Dictionary<string, AssemblyName> ReadSharedFrameworkAssemblies()
     {
-        return assemblyName is "mscorlib" or "netstandard" or "System"
-            || assemblyName?.StartsWith("System.", StringComparison.Ordinal) == true
-            || assemblyName?.StartsWith("Microsoft.NETCore.", StringComparison.Ordinal) == true
-            || assemblyName?.StartsWith("Microsoft.AspNetCore.", StringComparison.Ordinal) == true
-            || assemblyName?.StartsWith("Microsoft.Win32.", StringComparison.Ordinal) == true;
+        string runtimeDirectory = RuntimeEnvironment.GetRuntimeDirectory();
+        var result = new Dictionary<string, AssemblyName>(StringComparer.OrdinalIgnoreCase);
+        foreach (string assemblyPath in Directory.EnumerateFiles(runtimeDirectory, "*.dll", SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                AssemblyName identity = AssemblyName.GetAssemblyName(assemblyPath);
+                if (!string.IsNullOrWhiteSpace(identity.Name))
+                {
+                    result.TryAdd(identity.Name, identity);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or BadImageFormatException)
+            {
+                // Non-managed files in the runtime directory are not assembly assets.
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 実際に存在する共有 runtime asset の assembly identity を照合します。
+    /// </summary>
+    /// <param name="requested">workflow が参照する assembly identity。</param>
+    /// <param name="available">現在の runtime に存在する assembly identity。</param>
+    /// <param name="source">診断に使う asset の種類。</param>
+    private static void EnsureCompatibleIdentity(AssemblyName requested, AssemblyName available, string source)
+    {
+        if (!AssemblyIdentityEquals(requested, available))
+        {
+            throw new FileLoadException(
+                $"A declared dependency does not match the installed {source} asset: requested {requested.FullName}; available {available.FullName}.");
+        }
     }
 }
 #endif

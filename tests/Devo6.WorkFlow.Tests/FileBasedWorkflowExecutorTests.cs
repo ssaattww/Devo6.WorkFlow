@@ -39,6 +39,41 @@ public sealed class FileBasedWorkflowExecutorTests
             .OrderBy(name => name, StringComparer.Ordinal));
     }
 
+    /// <summary>
+    /// PE metadata が選んだ非ジェネリック Create だけを実行します。
+    /// </summary>
+    [Fact(DisplayName = "file-based execution invokes the exact public Create validated by metadata")]
+    public void ExecutorUsesMetadataValidatedCreateWhenGenericOverloadExists()
+    {
+        string directory = CreateDirectory();
+        string marker = Path.Combine(directory, "create-called");
+        string escapedMarker = marker.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+        string source = $$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider() { }
+                public IWorkflowEntry Create()
+                {
+                    File.WriteAllText("{{escapedMarker}}", "created");
+                    return CompositeStep.Define("Main").Run<int>("step", _ => 1);
+                }
+                public IWorkflowEntry Create<T>() => throw new System.InvalidOperationException("wrong Create overload");
+            }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+        WorkflowValidationResult validation = FileBasedCsMetadataValidator.Validate(
+            assemblyPath, "Main", out string? providerTypeName, out string? qualifiedEntryName);
+        Assert.True(validation.Succeeded, FormatErrors(validation));
+
+        WorkflowResult result = FileBasedWorkflowExecutor.Execute(
+            assemblyPath, providerTypeName!, qualifiedEntryName!, options: null);
+
+        Assert.True(result.Succeeded, $"{result.ErrorCode}: {result.ErrorMessage}");
+        Assert.Equal("created", File.ReadAllText(marker));
+    }
+
     [Fact(DisplayName = "file-based execution rejects a mismatched Create result before the Step")]
     /// <summary>
     /// 返却 Entry 名の不一致で Step が実行されないことを確認します。
@@ -86,6 +121,62 @@ public sealed class FileBasedWorkflowExecutorTests
         Assert.DoesNotContain("step", Directory.GetFiles(markers).Select(Path.GetFileName));
     }
 
+    /// <summary>
+    /// Run に渡した外部 cancellation が Step へ届き、後続 Step が実行されないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "file-based run propagates cancellation into the current Step")]
+    public async Task RunCancellationReachesCurrentStepAndStopsFollowingSteps()
+    {
+        string directory = CreateDirectory();
+        string startedPath = Path.Combine(directory, "step-started");
+        string followingPath = Path.Combine(directory, "following-step-ran");
+        string source = $$"""
+            using System.IO;
+            using System.Threading.Tasks;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider() { }
+                public IWorkflowEntry Create() => CompositeStep.Define("Main")
+                    .RunAsync<int>("wait", async (_, token) =>
+                    {
+                        File.WriteAllText("{{startedPath}}", "started");
+                        await Task.Delay(System.Threading.Timeout.Infinite, token);
+                        return 1;
+                    })
+                    .Run<string>("after", (_, _) =>
+                    {
+                        File.WriteAllText("{{followingPath}}", "ran");
+                        return "done";
+                    });
+            }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+        WorkflowValidationResult validation = FileBasedCsMetadataValidator.Validate(
+            assemblyPath, "Main", out string? providerTypeName, out string? qualifiedEntryName);
+        Assert.True(validation.Succeeded, FormatErrors(validation));
+
+        using var cancellation = new CancellationTokenSource();
+        using var started = new ManualResetEventSlim();
+        using var watcher = new FileSystemWatcher(directory, Path.GetFileName(startedPath));
+        watcher.Created += (_, _) => started.Set();
+        watcher.EnableRaisingEvents = true;
+        Task<WorkflowResult> execution = Task.Run(() => FileBasedWorkflowExecutor.Execute(
+            assemblyPath,
+            providerTypeName!,
+            qualifiedEntryName!,
+            options: null,
+            cancellation.Token));
+
+        Assert.True(started.Wait(TimeSpan.FromSeconds(10)), "The asynchronous Step did not report entry.");
+        cancellation.Cancel();
+        WorkflowResult result = await execution.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.False(File.Exists(followingPath));
+    }
+
     [Fact(DisplayName = "file-based steps can use the host ILogger contract")]
     /// <summary>
     /// file-based Step が host 共有 ILogger を使えることを確認します。
@@ -126,13 +217,13 @@ public sealed class FileBasedWorkflowExecutorTests
     {
         string directory = CreateDirectory();
         string marker = Path.Combine(directory, "provider-created");
-        string dependencyPath = Path.Combine(directory, "MissingPrivateDependency.dll");
-        CompileFixture(directory, "namespace PrivateDependency; public static class Hook { public static void Touch() { } }", dependencyPath);
+        string dependencyPath = Path.Combine(directory, "System.FakeFramework.dll");
+        CompileFixture(directory, "namespace System.FakeFramework; public static class Hook { public static void Touch() { } }", dependencyPath);
         string escapedMarker = marker.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
         string source = $$"""
             using System.IO;
             using Devo6.WorkFlow.Engine;
-            using PrivateDependency;
+            using System.FakeFramework;
             [WorkflowEntry("Main")] public sealed class MissingDependencyProvider : IWorkflowEntryProvider
             {
                 public MissingDependencyProvider() => File.WriteAllText("{{escapedMarker}}", "constructed");

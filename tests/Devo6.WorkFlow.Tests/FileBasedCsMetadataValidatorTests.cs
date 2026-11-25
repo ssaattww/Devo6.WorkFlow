@@ -63,6 +63,30 @@ public sealed class FileBasedCsMetadataValidatorTests
         Assert.Equal(expectedErrorCode, Assert.Single(result.Errors).Code);
     }
 
+    /// <summary>
+    /// metadata が検証する public Create と interface の明示実装が異なる Provider を拒否します。
+    /// </summary>
+    [Fact(DisplayName = "metadata validation rejects a generic public Create that differs from the interface target")]
+    public void GenericPublicCreateDoesNotMatchTheValidatedEntryMethod()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainWorkflow : IWorkflowEntryProvider
+            {
+                public MainWorkflow() { }
+                IWorkflowEntry IWorkflowEntryProvider.Create() => null!;
+                public IWorkflowEntry Create<T>() => null!;
+            }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
+    }
+
     [Fact(DisplayName = "metadata validation diagnoses an absent requested entry")]
     /// <summary>
     /// 要求 Entry がない場合の診断を確認します。

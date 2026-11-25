@@ -203,15 +203,15 @@ internal static class FileBasedCsMetadataValidator
         }
 
         bool hasPublicParameterlessConstructor = false;
-        bool hasPublicCreateMethod = false;
-        var signatureProvider = new MetadataSignatureTypeProvider();
+        int publicCreateMethodCount = 0;
+        var signatureProvider = new MetadataIdentitySignatureTypeProvider();
         foreach (MethodDefinitionHandle methodHandle in type.GetMethods())
         {
             MethodDefinition method = reader.GetMethodDefinition(methodHandle);
             MethodAttributes methodAttributes = method.Attributes;
             bool isPublicInstance = (methodAttributes & MethodAttributes.MemberAccessMask) == MethodAttributes.Public
                 && (methodAttributes & MethodAttributes.Static) == 0;
-            MethodSignature<string> signature = method.DecodeSignature(signatureProvider, genericContext: null);
+            MethodSignature<MetadataTypeIdentity> signature = method.DecodeSignature(signatureProvider, genericContext: null);
             string methodName = reader.GetString(method.Name);
 
             if (methodName == ".ctor" && isPublicInstance && signature.ParameterTypes.Length == 0)
@@ -223,7 +223,7 @@ internal static class FileBasedCsMetadataValidator
                 && isPublicInstance
                 && IsCreateSignature(signature))
             {
-                hasPublicCreateMethod = true;
+                publicCreateMethodCount++;
             }
         }
 
@@ -231,7 +231,7 @@ internal static class FileBasedCsMetadataValidator
             .Select(handle => reader.GetInterfaceImplementation(handle).Interface)
             .Any(interfaceHandle => GetTypeFullName(reader, interfaceHandle) == EntryProviderTypeName
                 && IsEngineTypeReference(reader, interfaceHandle));
-        return implementsProvider && hasPublicParameterlessConstructor && hasPublicCreateMethod;
+        return implementsProvider && hasPublicParameterlessConstructor && publicCreateMethodCount == 1;
     }
 
     /// <summary>
@@ -248,9 +248,12 @@ internal static class FileBasedCsMetadataValidator
     /// <summary>
     /// Create method の metadata signature を確認します。
     /// </summary>
-    private static bool IsCreateSignature(MethodSignature<string> signature)
+    private static bool IsCreateSignature(MethodSignature<MetadataTypeIdentity> signature)
     {
-        return signature.ParameterTypes.Length == 0 && signature.ReturnType == EntryTypeName;
+        return signature.GenericParameterCount == 0
+            && signature.ParameterTypes.Length == 0
+            && signature.ReturnType.FullName == EntryTypeName
+            && signature.ReturnType.AssemblyName == EngineAssemblyName;
     }
 
     /// <summary>
@@ -453,6 +456,67 @@ internal static class FileBasedCsMetadataValidator
         string? NamespaceName,
         string QualifiedName,
         bool IsValidProvider);
+
+    /// <summary>
+    /// metadata signature の型名と参照 assembly を保持します。
+    /// </summary>
+    /// <param name="FullName">signature に記録された型の完全名。</param>
+    /// <param name="AssemblyName">signature の型参照が解決する assembly 名。</param>
+    private readonly record struct MetadataTypeIdentity(string FullName, string? AssemblyName);
+
+    private sealed class MetadataIdentitySignatureTypeProvider : ISignatureTypeProvider<MetadataTypeIdentity, object?>
+    {
+        /// <summary>Array 型名を作成します。</summary>
+        public MetadataTypeIdentity GetArrayType(MetadataTypeIdentity elementType, ArrayShape shape) =>
+            new($"{elementType.FullName}[{new string(',', Math.Max(shape.Rank - 1, 0))}]", elementType.AssemblyName);
+        /// <summary>ByRef 型名を作成します。</summary>
+        public MetadataTypeIdentity GetByReferenceType(MetadataTypeIdentity elementType) => new($"{elementType.FullName}&", elementType.AssemblyName);
+        /// <summary>Function pointer 型名を作成します。</summary>
+        public MetadataTypeIdentity GetFunctionPointerType(MethodSignature<MetadataTypeIdentity> signature) => new("methodptr", null);
+        /// <summary>Generic instance 型名を作成します。</summary>
+        public MetadataTypeIdentity GetGenericInstantiation(MetadataTypeIdentity genericType, ImmutableArray<MetadataTypeIdentity> typeArguments) =>
+            new($"{genericType.FullName}<{string.Join(",", typeArguments.Select(argument => argument.FullName))}>", genericType.AssemblyName);
+        /// <summary>Generic method parameter 名を作成します。</summary>
+        public MetadataTypeIdentity GetGenericMethodParameter(object? genericContext, int index) => new($"!!{index}", null);
+        /// <summary>Generic type parameter 名を作成します。</summary>
+        public MetadataTypeIdentity GetGenericTypeParameter(object? genericContext, int index) => new($"!{index}", null);
+        /// <summary>Modified 型名を作成します。</summary>
+        public MetadataTypeIdentity GetModifiedType(MetadataTypeIdentity modifier, MetadataTypeIdentity unmodifiedType, bool isRequired) => unmodifiedType;
+        /// <summary>Pinned 型名を作成します。</summary>
+        public MetadataTypeIdentity GetPinnedType(MetadataTypeIdentity elementType) => new($"{elementType.FullName} pinned", elementType.AssemblyName);
+        /// <summary>Pointer 型名を作成します。</summary>
+        public MetadataTypeIdentity GetPointerType(MetadataTypeIdentity elementType) => new($"{elementType.FullName}*", elementType.AssemblyName);
+        /// <summary>Primitive 型名を作成します。</summary>
+        public MetadataTypeIdentity GetPrimitiveType(PrimitiveTypeCode typeCode) => new(typeCode.ToString(), null);
+        /// <summary>Single-dimensional array 型名を作成します。</summary>
+        public MetadataTypeIdentity GetSZArrayType(MetadataTypeIdentity elementType) => new($"{elementType.FullName}[]", elementType.AssemblyName);
+        /// <summary>TypeDefinition を型名に変換します。</summary>
+        public MetadataTypeIdentity GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind) =>
+            new(GetTypeFullName(reader, handle), reader.GetString(reader.GetAssemblyDefinition().Name));
+        /// <summary>TypeReference を assembly identity 付きの型名に変換します。</summary>
+        public MetadataTypeIdentity GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind) =>
+            new(GetTypeReferenceFullName(reader, handle), GetTypeReferenceAssemblyName(reader, handle));
+        /// <summary>TypeSpecification を型名に変換します。</summary>
+        public MetadataTypeIdentity GetTypeFromSpecification(MetadataReader reader, object? genericContext, TypeSpecificationHandle handle, byte rawTypeKind) =>
+            reader.GetTypeSpecification(handle).DecodeSignature(this, genericContext);
+
+        /// <summary>
+        /// TypeReference を定義する assembly 名を入れ子 scope から取得します。
+        /// </summary>
+        /// <param name="reader">検査対象 PE の metadata reader。</param>
+        /// <param name="handle">参照型の metadata handle。</param>
+        /// <returns>assembly reference の名前。assembly scope でなければ null。</returns>
+        private static string? GetTypeReferenceAssemblyName(MetadataReader reader, TypeReferenceHandle handle)
+        {
+            TypeReference reference = reader.GetTypeReference(handle);
+            return reference.ResolutionScope.Kind switch
+            {
+                HandleKind.AssemblyReference => reader.GetString(reader.GetAssemblyReference((AssemblyReferenceHandle)reference.ResolutionScope).Name),
+                HandleKind.TypeReference => GetTypeReferenceAssemblyName(reader, (TypeReferenceHandle)reference.ResolutionScope),
+                _ => null,
+            };
+        }
+    }
 
     private sealed class MetadataSignatureTypeProvider : ISignatureTypeProvider<string, object?>
     {

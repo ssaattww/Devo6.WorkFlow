@@ -16,7 +16,8 @@ internal static class FileBasedWorkflowExecutor
         string assemblyPath,
         string providerTypeName,
         string expectedQualifiedEntryName,
-        WorkflowExecutionOptions? options)
+        WorkflowExecutionOptions? options,
+        CancellationToken cancellationToken = default)
     {
         FileBasedWorkflowLoadContext? loadContext = null;
         Assembly assembly;
@@ -48,7 +49,21 @@ internal static class FileBasedWorkflowExecutor
                     "The loaded Provider does not implement the host IWorkflowEntryProvider type.");
             }
 
-            IWorkflowEntry? entry = provider.Create();
+            MethodInfo[] createMethods = providerType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                .Where(method => method.Name == nameof(IWorkflowEntryProvider.Create)
+                    && !method.IsGenericMethodDefinition
+                    && method.GetParameters().Length == 0
+                    && method.ReturnType == typeof(IWorkflowEntry))
+                .ToArray();
+            if (createMethods.Length != 1)
+            {
+                return Failure(
+                    expectedQualifiedEntryName,
+                    WorkflowErrorCodes.ScriptEntryProviderInvalid,
+                    "The loaded Provider does not declare the public non-generic Create() method validated from metadata.");
+            }
+
+            IWorkflowEntry? entry = createMethods[0].Invoke(providerObject, null) as IWorkflowEntry;
             if (entry is null || !IsHostCompositeStep(entry.GetType()))
             {
                 return Failure(
@@ -75,7 +90,7 @@ internal static class FileBasedWorkflowExecutor
                 return configFailure;
             }
 
-            return CsxEntryLoader.ExecuteEntry(entry, preparedOptions);
+            return ExecuteEntryWithCancellation(entry, preparedOptions, cancellationToken);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -88,6 +103,27 @@ internal static class FileBasedWorkflowExecutor
         {
             loadContext.Unload();
         }
+    }
+
+    /// <summary>
+    /// 既存の公開 asynchronous workflow execution 契約に外部取消を渡します。
+    /// </summary>
+    private static WorkflowResult ExecuteEntryWithCancellation(
+        object entry,
+        WorkflowExecutionOptions? options,
+        CancellationToken cancellationToken)
+    {
+        MethodInfo? method = entry.GetType().GetMethod(
+            nameof(CompositeStep<Unit>.ExecuteWorkflowAsync),
+            BindingFlags.Instance | BindingFlags.Public,
+            [typeof(WorkflowExecutionOptions), typeof(CancellationToken)]);
+
+        if (method?.Invoke(entry, [options, cancellationToken]) is Task<WorkflowResult> execution)
+        {
+            return execution.GetAwaiter().GetResult();
+        }
+
+        return Failure("", WorkflowErrorCodes.EntryStepNotFound, "Entry step could not be executed.");
     }
 
     /// <summary>
