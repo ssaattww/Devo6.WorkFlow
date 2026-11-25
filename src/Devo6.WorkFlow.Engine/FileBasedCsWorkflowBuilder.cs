@@ -268,6 +268,9 @@ public sealed class FileBasedCsWorkflowBuilder
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
         FileBasedSdkRunContext? sdkRunContext = null;
+        /// <summary>
+        /// SDK 処理の失敗を、利用可能な診断 session の場所とともに作成します。
+        /// </summary>
         FileBasedCsBuildResult Failure(string code, string message) =>
             FileBasedCsBuildResult.Failure(code, message, sdkRunContext?.SessionDirectory);
 
@@ -1482,6 +1485,9 @@ internal sealed record FileBasedSdkRunContext(
         }
     }
 
+    /// <summary>
+    /// 現在の OS で path を比較する際の大文字小文字の規則を返します。
+    /// </summary>
     private static StringComparison PathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase
         : StringComparison.Ordinal;

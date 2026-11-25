@@ -134,6 +134,10 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     {
         private const string SdkInfo = ".NET SDK:\n Version: 10.0.404\n Base Path: /usr/share/dotnet/sdk/10.0.404/";
 
+        /// <summary>
+        /// 指定した Provider ソースを使い、session の保持と回収を検証する fixture を作成します。
+        /// </summary>
+        /// <param name="providerSource">fixture の生成物へコンパイルする Provider ソース。</param>
         public BuilderFixture(string providerSource)
         {
             Root = Path.Combine(Path.GetTempPath(), "devo6-file-based-lifecycle", Guid.NewGuid().ToString("N"));
@@ -178,12 +182,22 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
                 sdkSessionRootProvider: () => SessionRoot);
         }
 
+        /// <summary>入力、設定、fixture 資材を置く一時ディレクトリを取得します。</summary>
         public string Root { get; }
+
+        /// <summary>SDK session の保持動作を検査する一時ディレクトリを取得します。</summary>
         public string SessionRoot { get; }
+
+        /// <summary>fixture の workflow 入力ファイルの path を取得します。</summary>
         public string EntryPath { get; }
+
+        /// <summary>SDK の応答と生成物を模擬する runner を取得します。</summary>
         public LifecycleSdkRunner Runner { get; }
+
+        /// <summary>fixture の入力を検証または実行する builder を取得します。</summary>
         public FileBasedCsWorkflowBuilder Builder { get; }
 
+        /// <summary>fixture が所有する一時ディレクトリを削除します。</summary>
         public void Dispose()
         {
             Directory.Delete(Root, recursive: true);
@@ -193,6 +207,9 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
             }
         }
 
+        /// <summary>Provider ソースをテスト用のメタデータ fixture assembly にコンパイルします。</summary>
+        /// <param name="providerSource">コンパイルする Provider の C# ソース。</param>
+        /// <param name="outputPath">生成する fixture assembly の path。</param>
         private static void CompileFixture(string providerSource, string outputPath)
         {
             SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(providerSource,
@@ -217,8 +234,11 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         }
     }
 
+    /// <summary>指定した一時ディレクトリの削除を管理します。</summary>
+    /// <param name="path">この管理対象となるディレクトリの path。</param>
     private sealed class TemporaryDirectory(string path) : IDisposable
     {
+        /// <summary>管理対象の一時ディレクトリがあれば再帰的に削除します。</summary>
         public void Dispose()
         {
             if (Directory.Exists(path))
@@ -228,11 +248,24 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         }
     }
 
+    /// <summary>入力、lock、fixture assembly を使う SDK 応答 runner を作成します。</summary>
+    /// <param name="entryPath">builder が処理する workflow 入力の path。</param>
+    /// <param name="feedPath">fixture の NuGet source の path。</param>
+    /// <param name="fixtureAssemblyPath">build 時に配置するメタデータ fixture assembly の path。</param>
     private sealed class LifecycleSdkRunner(string entryPath, string feedPath, string fixtureAssemblyPath) : IFileBasedSdkRunner
     {
+        /// <summary>直近の SDK 呼び出しに渡された session context を取得します。</summary>
         public FileBasedSdkRunContext? RunContext { get; private set; }
+
+        /// <summary>build 呼び出しで配置した assembly の path を取得します。</summary>
         public string? GeneratedAssemblyPath { get; private set; }
 
+        /// <summary>想定した SDK 呼び出しへ応答し、fixture 成果物を配置します。</summary>
+        /// <param name="arguments">SDK に渡されたコマンドライン引数。</param>
+        /// <param name="workingDirectory">SDK process の作業ディレクトリ。</param>
+        /// <param name="cancellationToken">SDK 呼び出しを取り消す token。</param>
+        /// <param name="runContext">SDK session と出力先を示す任意 context。</param>
+        /// <returns>SDK 呼び出しを模擬した終了コード、標準出力、標準エラー。</returns>
         public FileBasedSdkProcessResult Run(
             IReadOnlyList<string> arguments,
             string workingDirectory,
@@ -300,6 +333,10 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
             throw new InvalidOperationException($"Unexpected SDK fixture invocation: {string.Join(' ', arguments)}");
         }
 
+        /// <summary>SDK の評価結果として返す実効 property と package 参照を JSON 化します。</summary>
+        /// <param name="artifacts">SDK が使用する成果物の基準ディレクトリ。</param>
+        /// <param name="packagesDirectory">restore 対象の NuGet packages directory。</param>
+        /// <returns>builder が評価結果として解析する JSON。</returns>
         private static string EvaluationJson(string artifacts, string packagesDirectory)
         {
             string bin = Path.Combine(artifacts, "bin");
