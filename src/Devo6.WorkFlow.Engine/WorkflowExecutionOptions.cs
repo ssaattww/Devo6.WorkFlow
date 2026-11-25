@@ -35,6 +35,11 @@ public sealed class WorkflowExecutionOptions
     public TimeSpan? StepTimeout { get; set; }
 
     /// <summary>
+    /// テストで実際の Step timeout token を観測する任意 callback。
+    /// </summary>
+    internal Action<CancellationToken>? StepTimeoutTokenObserver { get; set; }
+
+    /// <summary>
     /// Step 本体の通常例外に適用する retry 設定を取得または設定します。null の場合は retry を行いません。
     /// </summary>
     public RetryOptions? Retry { get; set; }
@@ -64,6 +69,7 @@ public sealed class WorkflowExecutionOptions
             StepConfigs = StepConfigs,
             StandardConfig = standardConfig,
             StepTimeout = StepTimeout,
+            StepTimeoutTokenObserver = StepTimeoutTokenObserver,
         };
     }
 
@@ -82,6 +88,7 @@ public sealed class WorkflowExecutionOptions
             StandardConfig = StandardConfig,
             StepConfigs = stepConfigs.ToArray(),
             StepTimeout = StepTimeout,
+            StepTimeoutTokenObserver = StepTimeoutTokenObserver,
         };
     }
 }

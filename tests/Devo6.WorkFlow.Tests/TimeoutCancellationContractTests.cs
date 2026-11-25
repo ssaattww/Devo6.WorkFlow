@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Reflection;
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
@@ -10,8 +9,6 @@ namespace Devo6.WorkFlow.Tests;
 /// </summary>
 public sealed class TimeoutCancellationContractTests
 {
-    private static readonly TimeSpan SyncStepDelay = TimeSpan.FromMilliseconds(150);
-
     /// <summary>
     /// WorkflowExecutionOptions が Step 単位の nullable timeout を公開することを確認します。
     /// </summary>
@@ -158,21 +155,43 @@ public sealed class TimeoutCancellationContractTests
             .Run<ShouldNotRunStep, string>()
                 .StoreAs();
         WorkflowExecutionOptions options = CreateOptionsWithStepTimeout(TimeSpan.FromMilliseconds(30));
+        var timeoutRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationTokenRegistration timeoutRegistration = default;
+        options.StepTimeoutTokenObserver = token =>
+            timeoutRegistration = token.Register(() => timeoutRequested.TrySetResult());
+        Task<WorkflowResult> workflowTask = Task.Run(
+            () => step.ExecuteWorkflowAsync(options, cancellationTokenSource.Token));
+        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            try
+            {
+                await ContractTestState.WaitForSyncStepStartAsync(testTimeout.Token);
+                await timeoutRequested.Task.WaitAsync(testTimeout.Token);
+                await cancellationTokenSource.CancelAsync();
+            }
+            finally
+            {
+                ContractTestState.ReleaseSyncStep();
+                await workflowTask.WaitAsync(TimeSpan.FromSeconds(2));
+            }
 
-        cancellationTokenSource.CancelAfter(TimeSpan.FromMilliseconds(60));
-        var stopwatch = Stopwatch.StartNew();
-        WorkflowResult result = await step.ExecuteWorkflowAsync(options, cancellationTokenSource.Token);
-        stopwatch.Stop();
+            WorkflowResult result = await workflowTask;
 
-        Assert.False(result.Succeeded);
-        Assert.Equal("Main", result.EntryName);
-        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
-        Assert.True(stopwatch.Elapsed >= SyncStepDelay);
-        Assert.Equal(["sync-timeout-external-cancel:start", "sync-timeout-external-cancel:end"], ContractTestState.Snapshot());
-        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
-        Assert.Equal(nameof(SlowTimeoutAndExternallyCanceledSynchronousStep), traceStep.StepName);
-        Assert.Equal(ExecutionTraceStepStatus.Failed, traceStep.Status);
-        Assert.Equal(WorkflowErrorCodes.StepCanceled, traceStep.ErrorCode);
+            Assert.False(result.Succeeded);
+            Assert.Equal("Main", result.EntryName);
+            Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+            Assert.Equal(["sync-timeout-external-cancel:start", "sync-timeout-external-cancel:end"], ContractTestState.Snapshot());
+            ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+            Assert.Equal(nameof(SlowTimeoutAndExternallyCanceledSynchronousStep), traceStep.StepName);
+            Assert.Equal(ExecutionTraceStepStatus.Failed, traceStep.Status);
+            Assert.Equal(WorkflowErrorCodes.StepCanceled, traceStep.ErrorCode);
+        }
+        finally
+        {
+            timeoutRegistration.Dispose();
+        }
+
     }
 
     /// <summary>
@@ -194,20 +213,41 @@ public sealed class TimeoutCancellationContractTests
             .Run<ShouldNotRunStep, string>()
                 .StoreAs();
         WorkflowExecutionOptions options = CreateOptionsWithStepTimeout(TimeSpan.FromMilliseconds(30));
+        var timeoutRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationTokenRegistration timeoutRegistration = default;
+        options.StepTimeoutTokenObserver = token =>
+            timeoutRegistration = token.Register(() => timeoutRequested.TrySetResult());
+        Task<WorkflowResult> workflowTask = Task.Run(() => step.ExecuteWorkflowAsync(options));
+        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            try
+            {
+                await ContractTestState.WaitForSyncStepStartAsync(testTimeout.Token);
+                await timeoutRequested.Task.WaitAsync(testTimeout.Token);
+            }
+            finally
+            {
+                ContractTestState.ReleaseSyncStep();
+                await workflowTask.WaitAsync(TimeSpan.FromSeconds(2));
+            }
 
-        var stopwatch = Stopwatch.StartNew();
-        WorkflowResult result = await step.ExecuteWorkflowAsync(options);
-        stopwatch.Stop();
+            WorkflowResult result = await workflowTask;
 
-        Assert.False(result.Succeeded);
-        Assert.Equal("Main", result.EntryName);
-        Assert.Equal(WorkflowErrorCodes.StepTimeout, result.ErrorCode);
-        Assert.True(stopwatch.Elapsed >= SyncStepDelay);
-        Assert.Equal(["sync-timeout:start", "sync-timeout:end"], ContractTestState.Snapshot());
-        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
-        Assert.Equal(nameof(SlowSynchronousStep), traceStep.StepName);
-        Assert.Equal(ExecutionTraceStepStatus.Failed, traceStep.Status);
-        Assert.Equal(WorkflowErrorCodes.StepTimeout, traceStep.ErrorCode);
+            Assert.False(result.Succeeded);
+            Assert.Equal("Main", result.EntryName);
+            Assert.Equal(WorkflowErrorCodes.StepTimeout, result.ErrorCode);
+            Assert.Equal(["sync-timeout:start", "sync-timeout:end"], ContractTestState.Snapshot());
+            ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+            Assert.Equal(nameof(SlowSynchronousStep), traceStep.StepName);
+            Assert.Equal(ExecutionTraceStepStatus.Failed, traceStep.Status);
+            Assert.Equal(WorkflowErrorCodes.StepTimeout, traceStep.ErrorCode);
+        }
+        finally
+        {
+            timeoutRegistration.Dispose();
+        }
+
     }
 
     /// <summary>
@@ -331,7 +371,7 @@ public sealed class TimeoutCancellationContractTests
         public TimedOutput Execute(StepInput input)
         {
             ContractTestState.Add("sync-timeout:start");
-            Thread.Sleep(SyncStepDelay);
+            ContractTestState.WaitAtSyncStepGate();
             ContractTestState.Add("sync-timeout:end");
 
             return new TimedOutput("sync-timeout");
@@ -367,7 +407,7 @@ public sealed class TimeoutCancellationContractTests
         public TimedOutput Execute(StepInput input)
         {
             ContractTestState.Add("sync-timeout-external-cancel:start");
-            Thread.Sleep(SyncStepDelay);
+            ContractTestState.WaitAtSyncStepGate();
             ContractTestState.Add("sync-timeout-external-cancel:end");
 
             return new TimedOutput("sync-timeout-external-cancel");
@@ -479,6 +519,21 @@ public sealed class TimeoutCancellationContractTests
             }
 
             await source.Task.WaitAsync(timeout);
+        }
+
+        /// <summary>
+        /// sync Step が指定した期限内に進入するまで待機します。
+        /// </summary>
+        /// <param name="cancellationToken">テスト全体の待機期限を制御する token。</param>
+        public static async Task WaitForSyncStepStartAsync(CancellationToken cancellationToken)
+        {
+            TaskCompletionSource source;
+            lock (Gate)
+            {
+                source = syncStepStarted;
+            }
+
+            await source.Task.WaitAsync(cancellationToken);
         }
 
         /// <summary>

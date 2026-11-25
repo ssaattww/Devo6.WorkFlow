@@ -1015,7 +1015,10 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
 
                 engineLogger.LogInformation("Step started for attempt {Attempt}", attempt);
 
-                using StepExecutionCancellation stepCancellation = CreateStepExecutionCancellation(options.StepTimeout, cancellationToken);
+                using StepExecutionCancellation stepCancellation = CreateStepExecutionCancellation(
+                    options.StepTimeout,
+                    cancellationToken,
+                    options.StepTimeoutTokenObserver);
 
                 try
                 {
@@ -1401,7 +1404,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
     /// <returns>Step 実行中に使う cancellation 状態。</returns>
     private static StepExecutionCancellation CreateStepExecutionCancellation(
         TimeSpan? stepTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<CancellationToken>? timeoutTokenObserver)
     {
         CancellationTokenSource? timeoutSource = null;
         CancellationTokenSource? linkedSource = null;
@@ -1415,6 +1419,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
 
             timeoutSource = new CancellationTokenSource();
             timeoutSource.CancelAfter(stepTimeout.Value);
+            timeoutTokenObserver?.Invoke(timeoutSource.Token);
             linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
 
             return new StepExecutionCancellation(linkedSource.Token, stepTimeout, timeoutSource, linkedSource);
