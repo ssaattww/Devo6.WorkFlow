@@ -85,6 +85,9 @@ public sealed class FileBasedWorkflowExecutorTests
     }
 
     [Fact(DisplayName = "file-based steps can use the host ILogger contract")]
+    /// <summary>
+    /// file-based Step が host 共有 ILogger を使えることを確認します。
+    /// </summary>
     public void StepCanUseSharedHostLoggerType()
     {
         string directory = CreateDirectory();
@@ -102,6 +105,9 @@ public sealed class FileBasedWorkflowExecutorTests
     }
 
     [Fact(DisplayName = "missing declared dependencies fail before Provider construction")]
+    /// <summary>
+    /// 宣言依存が欠落した場合に Provider ctor より先に失敗することを確認します。
+    /// </summary>
     public void MissingDependencyIsReportedBeforeProviderConstructor()
     {
         string directory = CreateDirectory();

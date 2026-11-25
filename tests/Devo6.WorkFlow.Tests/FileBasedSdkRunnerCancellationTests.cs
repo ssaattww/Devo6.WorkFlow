@@ -9,6 +9,9 @@ namespace Devo6.WorkFlow.Tests;
 public sealed class FileBasedSdkRunnerCancellationTests
 {
     [Fact(DisplayName = "cancelling an SDK mock terminates its child before the runner returns")]
+    /// <summary>
+    /// cancellation が子 process tree と pipe の終了を待つことを fixture で確認します。
+    /// </summary>
     public async Task CancellationWaitsForProcessTreeAndOutputPipes()
     {
         if (OperatingSystem.IsWindows())
@@ -20,7 +23,7 @@ public sealed class FileBasedSdkRunnerCancellationTests
         Directory.CreateDirectory(directory);
         string scriptPath = Path.Combine(directory, "sdk-mock.sh");
         string markerPath = Path.Combine(directory, "marker");
-        File.WriteAllText(scriptPath, $"#!/bin/sh\n(sleep 1; echo late >> '{markerPath}') &\necho started > '{markerPath}'\nwait\n");
+        File.WriteAllText(scriptPath, $"#!/bin/sh\n(sleep 5; echo late >> '{markerPath}') &\necho started > '{markerPath}'\nwait\n");
         File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var runner = new DotnetFileBasedSdkRunner(scriptPath);
         using var cancellation = new CancellationTokenSource();
@@ -34,8 +37,8 @@ public sealed class FileBasedSdkRunnerCancellationTests
 
         Assert.True(File.Exists(markerPath), "The harmless local process fixture did not start.");
         await cancellation.CancelAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await runnerTask.WaitAsync(TimeSpan.FromSeconds(5)));
-        await Task.Delay(TimeSpan.FromMilliseconds(1100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await runnerTask.WaitAsync(TimeSpan.FromSeconds(10)));
+        await Task.Delay(TimeSpan.FromMilliseconds(5100));
         Assert.Equal("started", File.ReadAllText(markerPath).Trim());
     }
 }

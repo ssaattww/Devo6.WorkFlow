@@ -27,7 +27,10 @@
 - Markdown lint は Node 依存が作業環境に存在しないため未実施。依存導入や許可語一覧の変更はしていない。PR #28 の過去レビューが報告した aggregate lint の CSpell 223件、whitelist 316件超は、今回作業では再計測・差分帰属できていない。
 - 同一 HEAD `d28e51966a121db278feee122a4fae1d52fe4c95` の公式 GitHub Actions run [45564801005](https://github.com/ssaattww/Devo6.WorkFlow/actions/runs/45564801005) は完了。Restore と Format verification は成功、Test は失敗。`net8.0`: 321 passed / 1 failed / 3 skipped、`net10.0`: 339 passed / 3 skipped。失敗は `external cancellation during sync step returns STEP_CANCELED after completion` で、同期 Step の開始より前に 30 ms timer を設定していた。対象コードとテストはこの run の base と PR SHA で差分なし。従ってタイマー競合を改善候補としたが、base での再現原因までは確定していない。実行結果 artifact の取得は GitHub blob URL の `403 Forbidden` で失敗した。
 - 初回修正 commit `1fb48421c6b3c03dc750947e1747c7253fccad9c` の CI [45574034150](https://github.com/ssaattww/Devo6.WorkFlow/actions/runs/45574034150) は Restore 成功後、Linux 専用 process fixture の `File.SetUnixFileMode` に対する CA1416 警告で Format verification が失敗し、Test は実行されなかった。この呼出しを Windows 判定で囲み、Linux の mock 検査だけを実行するよう修正した。
+- commit `9aaab38c59431b0aa4d20f9c2f030a0dcdadb429` の CI [45574280551](https://github.com/ssaattww/Devo6.WorkFlow/actions/runs/45574280551) は Restore / Format verification 成功。net8.0 は `MSBuildSDKsPath` が CI に設定されているため、builder のテスト数件が `SCRIPT_BUILD_ENVIRONMENT_UNSUPPORTED` となる前提検査バグでコンパイルも一部失敗。net10.0 は 352 passed / 10 failed / 3 skipped。失敗内訳は T31 コメント不足、非公開 Provider を `ENTRY_STEP_NOT_FOUND` とする新契約に沿っていない旧期待値、MSBuildSDKsPath 環境拒否、キャンセル fixture のプロセス自然終了競合。この修正 commit で SDK path を evaluation の実効値として選択 SDK と照合し、テストの TFM 条件・期待値・コメント・キャンセル fixture を修正した。
+- 上記修正差分の C# XML コメント checker を SDK 10.0.404 同梱 Roslyn で一時コンパイルし、全 `src` / `tests` / `tools` を走査して違反 0 を確認した。`git diff --check` も成功。
+- 依存 assets と package cache がチェックアウトおよび既定 NuGet cache に存在しない。net8.0 と net10.0 のテスト project `build --no-restore` はどちらも `NETSDK1004`（`tests/Devo6.WorkFlow.Tests/obj/project.assets.json` 不在）で開始できなかった。公開 NuGet restore は行わず、両 TFM のコンパイル、net10.0 失敗対象だけの focused test は未確認。よって次の長時間全件 CI はまだ開始していない。
 
 ## 現在の状態
 
-実装・焦点テスト・追跡記録は更新済み。修正後の CI による Format verification、焦点 / 全件テストは結果待ち。Markdown lint の依存は導入しておらず未検証。
+実装・テスト・追跡記録を修正した。XML コメント検査と diff check は成功。依存 assets 不在のため両 TFM build と net10.0 focused tests が実行できず、修正後 CI も未検証。Markdown lint の依存は導入しておらず未検証。公開 NuGet restore を許可しない既存制約のため、次の長時間 CI は開始していない。

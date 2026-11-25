@@ -15,10 +15,16 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
     [InlineData("10.0.403", false)]
     [InlineData("10.0.500", false)]
     [InlineData("9.0.404", false)]
+    /// <summary>
+    /// SDK の最低版と許容 feature band を検証します。
+    /// </summary>
     public void SdkVersionHasMinimumAndFeatureBand(string version, bool expected) =>
         Assert.Equal(expected, FileBasedCsWorkflowBuilder.IsSupportedSdkVersion(version));
 
     [Fact(DisplayName = "effective SDK evaluation accepts the exact project contract")]
+    /// <summary>
+    /// 正確な Library、package、SDK path の evaluation を受け入れます。
+    /// </summary>
     public void EffectiveProjectMatchesContract()
     {
         string json = EvaluationJson("net10.0", "[0.1.0]");
@@ -26,6 +32,7 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             json,
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
             ["https://packages.example/v3/index.json"],
+            "10.0.404",
             out string error), error);
     }
 
@@ -33,16 +40,23 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
     [InlineData("net8.0", "[0.1.0]")]
     [InlineData("net10.0", "0.1.0")]
     [InlineData("net10.0", "[0.2.0]")]
+    /// <summary>
+    /// TFM と厳密な PackageReference の不一致を拒否します。
+    /// </summary>
     public void EffectiveProjectRejectsFrameworkAndPackageChanges(string targetFramework, string version)
     {
         Assert.False(FileBasedCsWorkflowBuilder.ValidateEffectiveProjectJson(
             EvaluationJson(targetFramework, version),
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
             ["https://packages.example/v3/index.json"],
+            "10.0.404",
             out _));
     }
 
     [Fact(DisplayName = "C# compiler diagnostics are distinguished from MSBuild failures")]
+    /// <summary>
+    /// C# compiler error と一般 build error を分けます。
+    /// </summary>
     public void BuildFailuresAreClassifiedByCompilerDiagnostic()
     {
         Assert.Equal(WorkflowErrorCodes.ScriptCompileFailed, FileBasedCsWorkflowBuilder.ClassifyBuildFailure(
@@ -54,6 +68,9 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
     [Theory(DisplayName = "SDK runfile artifacts use the SDK root and normalized entry path")]
     [InlineData(true, "/tmp", "/home/user/.local/share")]
     [InlineData(false, "/tmp", "/home/user/.local/share")]
+    /// <summary>
+    /// SDK runfile の root、正規化ハッシュ、排他キーを照合します。
+    /// </summary>
     public void ArtifactPathMatchesSdkRootAndNormalizedHash(bool isWindows, string tempPath, string localPath)
     {
         string root = FileBasedCsWorkflowBuilder.GetSdkRunFileRoot(isWindows, tempPath, localPath);
@@ -67,6 +84,9 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             FileBasedCsWorkflowBuilder.GetFileBasedOutputLockPath(root, second, isWindows: true));
     }
 
+    /// <summary>
+    /// SDK evaluation JSON の契約 fixture を作ります。
+    /// </summary>
     private static string EvaluationJson(string targetFramework, string packageVersion) => $$"""
         {
           "Properties": {
@@ -78,7 +98,8 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             "ManagePackageVersionsCentrally": "false",
             "RestoreAdditionalProjectSources": "",
             "RestoreConfigFile": "",
-            "RestoreSources": "https://packages.example/v3/index.json"
+            "RestoreSources": "https://packages.example/v3/index.json",
+            "MSBuildSDKsPath": "/usr/share/dotnet/sdk/10.0.404/Sdks"
           },
           "Items": {
             "PackageReference": [

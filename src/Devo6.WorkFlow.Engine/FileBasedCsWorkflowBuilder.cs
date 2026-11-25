@@ -17,7 +17,7 @@ namespace Devo6.WorkFlow.Engine;
 public sealed class FileBasedCsWorkflowBuilder
 {
     private const string EffectiveProjectProperties =
-        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally";
+        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath";
     private static readonly IDeserializer LockDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -274,7 +274,7 @@ public sealed class FileBasedCsWorkflowBuilder
 
             string evaluationError = "";
             if (!evaluationResult.Succeeded
-                || !TryValidateEffectiveProject(evaluationResult.StandardOutput, preflight, lockFile!, out evaluationError))
+                || !TryValidateEffectiveProject(evaluationResult.StandardOutput, preflight, lockFile!, selectedSdkVersion, out evaluationError))
             {
                 string detail = evaluationResult.Succeeded
                     ? evaluationError
@@ -559,12 +559,14 @@ public sealed class FileBasedCsWorkflowBuilder
         string evaluationJson,
         CsFileInputPreflight.PreflightResult preflight,
         FileBasedNuGetLock lockFile,
+        string selectedSdkVersion,
         out string error)
     {
         return ValidateEffectiveProjectJson(
             evaluationJson,
             preflight.PackageReferences,
             lockFile.PackageSources,
+            selectedSdkVersion,
             out error);
     }
 
@@ -575,6 +577,7 @@ public sealed class FileBasedCsWorkflowBuilder
         string evaluationJson,
         IReadOnlyDictionary<string, string> expectedPackageReferences,
         IReadOnlyList<string> expectedSources,
+        string expectedSdkVersion,
         out string error)
     {
         error = "";
@@ -593,6 +596,7 @@ public sealed class FileBasedCsWorkflowBuilder
             string additionalSources = GetProperty(properties, "RestoreAdditionalProjectSources");
             string restoreConfigFile = GetProperty(properties, "RestoreConfigFile");
             string restoreSources = GetProperty(properties, "RestoreSources");
+            string msbuildSdksPath = GetProperty(properties, "MSBuildSDKsPath");
 
             if (!string.Equals(targetFramework, "net10.0", StringComparison.OrdinalIgnoreCase)
                 || !string.IsNullOrWhiteSpace(targetFrameworks)
@@ -600,6 +604,13 @@ public sealed class FileBasedCsWorkflowBuilder
                 || !string.Equals(publishAot, "false", StringComparison.OrdinalIgnoreCase))
             {
                 error = "The evaluated project must target only net10.0, produce a Library, and disable AOT.";
+                return false;
+            }
+
+            if (!Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(msbuildSdksPath))!)
+                    .Equals(expectedSdkVersion, StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"The evaluated MSBuild SDK path does not match selected SDK {expectedSdkVersion}: {msbuildSdksPath}";
                 return false;
             }
 

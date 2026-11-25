@@ -126,7 +126,7 @@ internal static class CsFileInputPreflight
             "TargetFramework", "TargetFrameworks", "OutputType", "PublishAot",
             "RestoreSources", "RestoreAdditionalProjectSources", "RestoreConfigFile",
             "RestorePackagesWithLockFile", "RestoreLockedMode", "ManagePackageVersionsCentrally",
-            "MSBuildProjectExtensionsPath", "MSBuildProjectDirectory", "MSBuildSDKsPath",
+            "MSBuildProjectExtensionsPath", "MSBuildProjectDirectory",
             "MSBuildExtensionsPath", "DirectoryBuildPropsPath", "DirectoryBuildTargetsPath",
             "CustomBeforeMicrosoftCommonProps", "CustomAfterMicrosoftCommonProps",
             "CustomBeforeMicrosoftCommonTargets", "CustomAfterMicrosoftCommonTargets",

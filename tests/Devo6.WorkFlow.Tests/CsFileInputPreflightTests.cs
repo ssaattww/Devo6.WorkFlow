@@ -49,10 +49,10 @@ public sealed class CsFileInputPreflightTests
         Assert.Equal(0, provider.ResolveCallCount);
     }
 
+#if NET10_0
     /// <summary>
     /// .cs CLI の validate / run は --allow-nuget の外にある直接依存を SDK 起動前に拒否します。
     /// </summary>
-#if NET10_0
     [Theory(DisplayName = ".cs validate and run enforce the NuGet allow list before SDK restore")]
     [InlineData("validate")]
     [InlineData("run")]
@@ -85,6 +85,7 @@ public sealed class CsFileInputPreflightTests
     }
 #endif
 
+#if NET10_0
     /// <summary>
     /// SDK の基準版未満は evaluation / restore より前に失敗します。
     /// </summary>
@@ -121,6 +122,9 @@ public sealed class CsFileInputPreflightTests
         Assert.Equal(["--version"], Assert.Single(runner.Calls));
     }
 
+    /// <summary>
+    /// 評価済み TFM が契約外なら restore 前に停止します。
+    /// </summary>
     [Fact(DisplayName = "unverified effective project data stops before restore")]
     public void UnsupportedEffectiveTargetDoesNotInvokeRestore()
     {
@@ -146,7 +150,7 @@ public sealed class CsFileInputPreflightTests
             """);
         string evaluationJson = $$"""
             {
-              "Properties": { "TargetFramework": "net8.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "" },
+              "Properties": { "TargetFramework": "net8.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "", "MSBuildSDKsPath": "/usr/share/dotnet/sdk/10.0.404/Sdks" },
               "Items": { "PackageReference": [ { "Identity": "Devo6.WorkFlow.Engine", "Version": "[0.1.0]" } ] }
             }
             """;
@@ -161,18 +165,24 @@ public sealed class CsFileInputPreflightTests
         Assert.DoesNotContain(runner.Calls, call => call.Count > 0 && call[0] == "restore");
     }
 
+    /// <summary>
+    /// カスタム import を指す環境変数を復元前に拒否します。
+    /// </summary>
     [Fact(DisplayName = "MSBuild property environment overrides fail before SDK invocation")]
     public void EnvironmentOverrideDoesNotInvokeSdk()
     {
         string sourcePath = CreateFileBasedSource();
-        var variables = new Hashtable(StringComparer.OrdinalIgnoreCase) { ["TargetFramework"] = "net8.0" };
+        var variables = new Hashtable(StringComparer.OrdinalIgnoreCase) { ["CustomBeforeMicrosoftCommonProps"] = "custom.props" };
 
         bool valid = CsFileInputPreflight.ValidateBuildEnvironment(sourcePath, out string error, variables);
 
         Assert.False(valid);
-        Assert.Contains("TargetFramework", error);
+        Assert.Contains("CustomBeforeMicrosoftCommonProps", error);
     }
 
+    /// <summary>
+    /// 継承した Directory.Build.props は SDK 起動前に拒否します。
+    /// </summary>
     [Fact(DisplayName = "inherited Directory.Build.props is rejected before SDK invocation")]
     public void InheritedMsBuildPropsDoesNotInvokeSdk()
     {
@@ -188,6 +198,7 @@ public sealed class CsFileInputPreflightTests
         Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
         Assert.Empty(runner.Calls);
     }
+#endif
 
     /// <summary>
     /// 不正な directive と可変版を restore 前に拒否します。
@@ -328,11 +339,17 @@ public sealed class CsFileInputPreflightTests
         Assert.Empty(runner.Calls);
     }
 
+    /// <summary>
+    /// SDK command arguments and results for preflight tests.
+    /// </summary>
     private sealed class RecordingSdkRunner : IFileBasedSdkRunner
     {
         private readonly string sdkVersion;
         private readonly string evaluationJson;
 
+        /// <summary>
+        /// SDK version and evaluation-only JSON output を指定します。
+        /// </summary>
         public RecordingSdkRunner(string sdkVersion = "10.0.404", string evaluationJson = "{}")
         {
             this.sdkVersion = sdkVersion;

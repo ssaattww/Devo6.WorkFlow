@@ -35,15 +35,15 @@ public sealed class FileBasedCsMetadataValidatorTests
     }
 
     [Theory(DisplayName = "metadata validation rejects invalid provider shapes without loading them")]
-    [InlineData("internal sealed class MainWorkflow", "public MainWorkflow() { }")]
-    [InlineData("public abstract class MainWorkflow", "public MainWorkflow() { }")]
-    [InlineData("public sealed class MainWorkflow<T>", "public MainWorkflow() { }")]
-    [InlineData("public class MainWorkflow", "public MainWorkflow() { }")]
-    [InlineData("public sealed class MainWorkflow", "private MainWorkflow() { }")]
+    [InlineData("internal sealed class MainWorkflow", "public MainWorkflow() { }", WorkflowErrorCodes.EntryStepNotFound)]
+    [InlineData("public abstract class MainWorkflow", "public MainWorkflow() { }", WorkflowErrorCodes.ScriptEntryProviderInvalid)]
+    [InlineData("public sealed class MainWorkflow<T>", "public MainWorkflow() { }", WorkflowErrorCodes.ScriptEntryProviderInvalid)]
+    [InlineData("public class MainWorkflow", "public MainWorkflow() { }", WorkflowErrorCodes.ScriptEntryProviderInvalid)]
+    [InlineData("public sealed class MainWorkflow", "private MainWorkflow() { }", WorkflowErrorCodes.ScriptEntryProviderInvalid)]
     /// <summary>
     /// 契約外 Provider の型形状が拒否されることを確認します。
     /// </summary>
-    public void InvalidProviderShapeIsRejected(string declaration, string constructor)
+    public void InvalidProviderShapeIsRejected(string declaration, string constructor, string expectedErrorCode)
     {
         string directory = CreateDirectory();
         string source = $$"""
@@ -60,7 +60,7 @@ public sealed class FileBasedCsMetadataValidatorTests
         WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
 
         Assert.False(result.Succeeded);
-        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
+        Assert.Equal(expectedErrorCode, Assert.Single(result.Errors).Code);
     }
 
     [Fact(DisplayName = "metadata validation diagnoses an absent requested entry")]
@@ -99,6 +99,9 @@ public sealed class FileBasedCsMetadataValidatorTests
     }
 
     [Fact(DisplayName = "non-public entry candidates do not collide with public entries")]
+    /// <summary>
+    /// 非公開同名 candidate が公開 Entry の重複判定へ混ざらないことを確認します。
+    /// </summary>
     public void NonPublicCandidateIsIgnoredBeforeDuplicateMatching()
     {
         string directory = CreateDirectory();
@@ -115,6 +118,9 @@ public sealed class FileBasedCsMetadataValidatorTests
     }
 
     [Fact(DisplayName = "provider contract and Create implementation may be inherited")]
+    /// <summary>
+    /// 継承 Provider を metadata-only で受け入れ ctor や Create を動かさないことを確認します。
+    /// </summary>
     public void InheritedProviderContractIsAcceptedWithoutExecutionDuringValidation()
     {
         string directory = CreateDirectory();
