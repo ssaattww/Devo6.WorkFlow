@@ -202,6 +202,11 @@ public sealed class FileBasedSdkRunnerCancellationTests
         Assert.Equal("completed", File.ReadAllText(completedPath).Trim());
     }
 
+    /// <summary>
+    /// 指定ファイルが作成されるまで短い間隔で確認します。
+    /// </summary>
+    /// <param name="path">作成を待つファイルのパス。</param>
+    /// <returns>ファイルを確認した時点で完了するタスク。</returns>
     private static async Task WaitForFile(string path)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -211,6 +216,11 @@ public sealed class FileBasedSdkRunnerCancellationTests
         }
     }
 
+    /// <summary>
+    /// 指定した子プロセスが終了するまで待ちます。
+    /// </summary>
+    /// <param name="processId">終了を待つプロセスの ID。</param>
+    /// <returns>プロセスの終了を確認した時点で完了するタスク。</returns>
     private static async Task WaitForProcessExit(int processId)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -233,6 +243,11 @@ public sealed class FileBasedSdkRunnerCancellationTests
         }
     }
 
+    /// <summary>
+    /// 排他中の出力ロックを開けるまで再試行します。
+    /// </summary>
+    /// <param name="lockPath">取得するロックファイルのパス。</param>
+    /// <returns>排他ロックを取得したファイルストリーム。</returns>
     private static async Task<FileStream> WaitForOutputLock(string lockPath)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -258,6 +273,12 @@ public sealed class FileBasedSdkRunnerCancellationTests
         private readonly bool blockFirstRestore;
         private int restoreCount;
 
+        /// <summary>
+        /// 子プロセス fixture を呼び出す SDK runner のテスト用モックを作成します。
+        /// </summary>
+        /// <param name="scriptPath">SDK 呼出しとして起動する fixture のパス。</param>
+        /// <param name="childCompletedPath">子プロセスが完了時に公開するファイルのパス。</param>
+        /// <param name="blockFirstRestore">最初の restore を fixture に委ねる場合は true。</param>
         public BuilderLockTestSdkRunner(string scriptPath, string childCompletedPath, bool blockFirstRestore)
         {
             processRunner = new DotnetFileBasedSdkRunner(scriptPath);
@@ -265,12 +286,28 @@ public sealed class FileBasedSdkRunnerCancellationTests
             this.blockFirstRestore = blockFirstRestore;
         }
 
+        /// <summary>
+        /// モックへ渡された SDK 引数を呼出し順に保持します。
+        /// </summary>
         public ConcurrentQueue<IReadOnlyList<string>> Calls { get; } = new();
 
+        /// <summary>
+        /// restore の開始を通知する同期用タスクです。
+        /// </summary>
         public TaskCompletionSource RestoreStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        /// <summary>
+        /// restore 開始時に読み取った子プロセス完了ファイルの内容です。
+        /// </summary>
         public string? RestoreObservedContent { get; private set; }
 
+        /// <summary>
+        /// SDK 呼出しを記録し、検査用の応答または fixture の実行結果を返します。
+        /// </summary>
+        /// <param name="arguments">SDK に渡す引数。</param>
+        /// <param name="workingDirectory">SDK の作業ディレクトリ。</param>
+        /// <param name="cancellationToken">SDK 呼出しのキャンセル通知。</param>
+        /// <returns>モックまたは fixture の終了コードと出力を含む結果。</returns>
         public FileBasedSdkProcessResult Run(
             IReadOnlyList<string> arguments,
             string workingDirectory,
