@@ -150,7 +150,7 @@ public sealed class CsFileInputPreflightTests
             """);
         string evaluationJson = $$"""
             {
-              "Properties": { "TargetFramework": "net10.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "", "MSBuildSDKsPath": "/opt/override/sdk/10.0.404/Sdks" },
+              "Properties": { "TargetFramework": "net10.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "", "MSBuildSDKsPath": "/opt/override/sdk/10.0.404/Sdks", "MSBuildExtensionsPath": "/usr/share/dotnet/sdk/10.0.404/" },
               "Items": { "PackageReference": [ { "Identity": "Devo6.WorkFlow.Engine", "Version": "[0.1.0]" } ] }
             }
             """;
@@ -167,6 +167,8 @@ public sealed class CsFileInputPreflightTests
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
         Assert.Equal(3, runner.Calls.Count);
+        Assert.Equal(["--version"], runner.Calls[0]);
+        Assert.Equal(["--info"], runner.Calls[1]);
         Assert.Equal(1, outputRootProviderCalls);
         Assert.DoesNotContain(runner.Calls, call => call.Count > 0 && call[0] == "restore");
     }
@@ -358,7 +360,7 @@ public sealed class CsFileInputPreflightTests
     {
         private readonly string sdkVersion;
         private readonly string evaluationJson;
-        private const string SdkInfo = "Base Path: /usr/share/dotnet/sdk/10.0.404/";
+        private const string SdkInfo = ".NET SDK:\n Version: 10.0.404\n Base Path: /usr/share/dotnet/sdk/10.0.404/";
 
         /// <summary>
         /// SDK version and evaluation-only JSON output を指定します。

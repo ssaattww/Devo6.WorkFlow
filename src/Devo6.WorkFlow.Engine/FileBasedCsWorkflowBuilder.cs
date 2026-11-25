@@ -17,13 +17,14 @@ namespace Devo6.WorkFlow.Engine;
 public sealed class FileBasedCsWorkflowBuilder
 {
     private const string EffectiveProjectProperties =
-        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath";
+        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath";
     private static readonly IDeserializer LockDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
         .Build();
     private readonly IFileBasedSdkRunner sdkRunner;
     private readonly Func<string> sdkRunFileRootProvider;
+    private readonly Action<string>? outputLockContentionObserver;
 
     /// <summary>
     /// .NET 10 file-based C# builder を作成します。
@@ -44,10 +45,14 @@ public sealed class FileBasedCsWorkflowBuilder
     /// <summary>
     /// SDK runner と isolatable artifact root を指定して builder を作成します。
     /// </summary>
-    internal FileBasedCsWorkflowBuilder(IFileBasedSdkRunner sdkRunner, Func<string>? sdkRunFileRootProvider)
+    internal FileBasedCsWorkflowBuilder(
+        IFileBasedSdkRunner sdkRunner,
+        Func<string>? sdkRunFileRootProvider,
+        Action<string>? outputLockContentionObserver = null)
     {
         this.sdkRunner = sdkRunner;
         this.sdkRunFileRootProvider = sdkRunFileRootProvider ?? GetCurrentSdkRunFileRoot;
+        this.outputLockContentionObserver = outputLockContentionObserver;
     }
 
     /// <summary>
@@ -241,7 +246,7 @@ public sealed class FileBasedCsWorkflowBuilder
         FileStream outputLock;
         try
         {
-            outputLock = AcquireFileBasedOutputLock(fullEntryPath, runFileRoot, cancellationToken);
+            outputLock = AcquireFileBasedOutputLock(fullEntryPath, runFileRoot, cancellationToken, outputLockContentionObserver);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException or InvalidOperationException)
         {
@@ -624,6 +629,7 @@ public sealed class FileBasedCsWorkflowBuilder
             string restoreConfigFile = GetProperty(properties, "RestoreConfigFile");
             string restoreSources = GetProperty(properties, "RestoreSources");
             string msbuildSdksPath = GetProperty(properties, "MSBuildSDKsPath");
+            string msbuildExtensionsPath = GetProperty(properties, "MSBuildExtensionsPath");
 
             if (!string.Equals(targetFramework, "net10.0", StringComparison.OrdinalIgnoreCase)
                 || !string.IsNullOrWhiteSpace(targetFrameworks)
@@ -637,6 +643,13 @@ public sealed class FileBasedCsWorkflowBuilder
             if (!PathsEqual(msbuildSdksPath, expectedSdkSdksPath))
             {
                 error = $"The evaluated MSBuild SDK path does not match the selected SDK installation: {msbuildSdksPath}";
+                return false;
+            }
+
+            string expectedMsbuildExtensionsPath = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(expectedSdkSdksPath)) ?? "";
+            if (!PathsEqual(msbuildExtensionsPath, expectedMsbuildExtensionsPath))
+            {
+                error = $"The evaluated MSBuild extensions path does not match the selected SDK installation: {msbuildExtensionsPath}";
                 return false;
             }
 
@@ -738,7 +751,7 @@ public sealed class FileBasedCsWorkflowBuilder
     private static bool IsEnabled(string value) => bool.TryParse(value, out bool enabled) && enabled;
 
     /// <summary>
-    /// `dotnet --info` から選択 SDK の installation path を取得します。
+    /// 固定された CLI 表示言語で得た `dotnet --info` から選択 SDK の installation path を取得します。
     /// </summary>
     internal static bool TryGetSdkSdksPath(string sdkInfo, string selectedSdkVersion, out string sdkSdksPath)
     {
@@ -757,7 +770,6 @@ public sealed class FileBasedCsWorkflowBuilder
             {
                 return false;
             }
-
             string normalizedBasePath;
             try
             {
@@ -790,8 +802,8 @@ public sealed class FileBasedCsWorkflowBuilder
         return Path.IsPathRooted(left)
             && Path.IsPathRooted(right)
             && string.Equals(
-                Path.GetFullPath(left),
-                Path.GetFullPath(right),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     }
 
@@ -901,7 +913,11 @@ public sealed class FileBasedCsWorkflowBuilder
     /// <summary>
     /// 入力パスに対応する SDK 出力 lock を取得します。
     /// </summary>
-    private static FileStream AcquireFileBasedOutputLock(string entryPath, string runFileRoot, CancellationToken cancellationToken)
+    private static FileStream AcquireFileBasedOutputLock(
+        string entryPath,
+        string runFileRoot,
+        CancellationToken cancellationToken,
+        Action<string>? outputLockContentionObserver)
     {
         string artifactsDirectory = GetSdkArtifactsDirectory(entryPath, runFileRoot);
         string lockPath = GetFileBasedOutputLockPath(runFileRoot, artifactsDirectory, OperatingSystem.IsWindows());
@@ -917,6 +933,7 @@ public sealed class FileBasedCsWorkflowBuilder
             }
             catch (IOException) when (DateTime.UtcNow < deadline)
             {
+                outputLockContentionObserver?.Invoke(lockPath);
                 Thread.Sleep(100);
             }
         }
@@ -1090,6 +1107,10 @@ internal sealed class DotnetFileBasedSdkRunner : IFileBasedSdkRunner
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        if (arguments.Count == 1 && arguments[0] == "--info")
+        {
+            startInfo.Environment["DOTNET_CLI_UI_LANGUAGE"] = "en-US";
+        }
         foreach (string argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
@@ -1132,6 +1153,7 @@ internal sealed class DotnetFileBasedSdkRunner : IFileBasedSdkRunner
         }
 
         Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
+        cancellationToken.ThrowIfCancellationRequested();
         return new FileBasedSdkProcessResult(process.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());
     }
 }

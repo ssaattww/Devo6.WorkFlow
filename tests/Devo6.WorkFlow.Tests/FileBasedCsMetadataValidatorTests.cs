@@ -140,11 +140,11 @@ public sealed class FileBasedCsMetadataValidatorTests
         Assert.Equal(WorkflowErrorCodes.EntryStepNotFound, Assert.Single(result.Errors).Code);
     }
 
-    [Fact(DisplayName = "provider contract and Create implementation may be inherited")]
+    [Fact(DisplayName = "provider contract and Create implementation must be declared by the entry type")]
     /// <summary>
-    /// 継承 Provider を metadata-only で受け入れ ctor や Create を動かさないことを確認します。
+    /// 継承 Provider は契約外として拒否し、ctor や Create を動かさないことを確認します。
     /// </summary>
-    public void InheritedProviderContractIsAcceptedWithoutExecutionDuringValidation()
+    public void InheritedProviderContractIsRejectedWithoutExecutionDuringValidation()
     {
         string directory = CreateDirectory();
         string marker = Path.Combine(directory, "provider-created");
@@ -163,8 +163,69 @@ public sealed class FileBasedCsMetadataValidatorTests
 
         WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
 
-        Assert.True(result.Succeeded, FormatErrors(result));
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
         Assert.False(File.Exists(marker));
+    }
+
+    [Fact(DisplayName = "generic provider base types are rejected before execution")]
+    /// <summary>
+    /// generic base から継承した Provider 契約を受け入れません。
+    /// </summary>
+    public void GenericProviderBaseIsRejected()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            public abstract class ProviderBase<T> : IWorkflowEntryProvider
+            {
+                public ProviderBase() { }
+                public IWorkflowEntry Create() => null!;
+            }
+            [WorkflowEntry("Main")] public sealed class InheritedProvider : ProviderBase<int> { public InheritedProvider() { } }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
+    }
+
+    [Fact(DisplayName = "provider contract inherited from a dependency assembly is rejected")]
+    /// <summary>
+    /// dependency DLL の Provider 基底型を候補自動解決せず拒否します。
+    /// </summary>
+    public void DependencyProviderBaseIsRejected()
+    {
+        string directory = CreateDirectory();
+        string dependencyPath = CompileFixture(
+            directory,
+            """
+            using Devo6.WorkFlow.Engine;
+            namespace ProviderDependency;
+            public abstract class ProviderBase : IWorkflowEntryProvider
+            {
+                public ProviderBase() { }
+                public IWorkflowEntry Create() => null!;
+            }
+            """,
+            outputFileName: "provider-dependency.dll");
+        string assemblyPath = CompileFixture(
+            directory,
+            """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class InheritedProvider : ProviderDependency.ProviderBase
+            {
+                public InheritedProvider() { }
+            }
+            """,
+            additionalReferencePaths: [dependencyPath]);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
     }
 
     /// <summary>
@@ -225,9 +286,13 @@ public sealed class FileBasedCsMetadataValidatorTests
     /// <summary>
     /// C# fixture を一時 managed assembly に compile します。
     /// </summary>
-    private static string CompileFixture(string directory, string source)
+    private static string CompileFixture(
+        string directory,
+        string source,
+        string outputFileName = "metadata-fixture.dll",
+        IReadOnlyList<string>? additionalReferencePaths = null)
     {
-        string assemblyPath = Path.Combine(directory, "metadata-fixture.dll");
+        string assemblyPath = Path.Combine(directory, outputFileName);
         var parseOptions = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
         SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
         string trustedAssemblies = (string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")
@@ -236,6 +301,7 @@ public sealed class FileBasedCsMetadataValidatorTests
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
             .Append(typeof(WorkflowEntryAttribute).Assembly.Location)
             .Append(typeof(WorkflowErrorCodes).Assembly.Location)
+            .Concat(additionalReferencePaths ?? [])
             .Distinct(StringComparer.Ordinal)
             .Select(path => MetadataReference.CreateFromFile(path));
         CSharpCompilation compilation = CSharpCompilation.Create(

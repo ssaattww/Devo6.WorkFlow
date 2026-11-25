@@ -54,18 +54,41 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
     }
 
     /// <summary>
-    /// 正規 SDK environment の Base Path を選択した SDK 版と組み合わせて照合します。
+    /// 選択 SDK と異なる MSBuildExtensionsPath override を拒否します。
     /// </summary>
-    [Fact(DisplayName = "selected SDK base path is read from dotnet info")]
-    public void SelectedSdkPathComesFromDotnetInfo()
+    [Fact(DisplayName = "effective SDK evaluation rejects an unapproved MSBuild extensions path override")]
+    public void EffectiveProjectRejectsSdkExtensionsPathOverride()
+    {
+        string json = EvaluationJson(
+            "net10.0",
+            "[0.1.0]",
+            extensionsPath: "/opt/override/sdk/10.0.404/");
+
+        Assert.False(FileBasedCsWorkflowBuilder.ValidateEffectiveProjectJson(
+            json,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
+            ["https://packages.example/v3/index.json"],
+            "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            out _));
+    }
+
+    /// <summary>
+    /// 子 SDK の固定 UI 言語で得た Base Path を選択版と照合します。
+    /// </summary>
+    [Fact(DisplayName = "selected SDK path is read from the fixed-language SDK info")]
+    public void SelectedSdkPathComesFromSdkInfo()
     {
         Assert.True(FileBasedCsWorkflowBuilder.TryGetSdkSdksPath(
-            "Base Path: /usr/share/dotnet/sdk/10.0.404/",
+            ".NET SDK:\n Version: 10.0.404\n Base Path: /opt/secondary/sdk/10.0.404/",
             "10.0.404",
             out string sdksPath));
-        Assert.Equal(Path.GetFullPath("/usr/share/dotnet/sdk/10.0.404/Sdks"), sdksPath);
+        Assert.Equal(Path.GetFullPath("/opt/secondary/sdk/10.0.404/Sdks"), sdksPath);
         Assert.False(FileBasedCsWorkflowBuilder.TryGetSdkSdksPath(
-            "Base Path: /opt/override/sdk/10.0.403/",
+            ".NET SDK:\n Version: 10.0.404\n Base Path: /opt/override/sdk/10.0.403/",
+            "10.0.404",
+            out _));
+        Assert.False(FileBasedCsWorkflowBuilder.TryGetSdkSdksPath(
+            ".NET SDK:\n Version: 10.0.404\n Base Path: relative/sdk/10.0.404/",
             "10.0.404",
             out _));
     }
@@ -147,12 +170,10 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
                 isWindows: false);
 
             Assert.Equal(Path.GetFullPath(assetsPath), foundAssets);
-            Assert.True(assemblyPath.StartsWith(
+            Assert.StartsWith(
                 Path.GetFullPath(artifactsDirectory) + Path.DirectorySeparatorChar,
-                StringComparison.Ordinal));
-            Assert.True(lockPath.StartsWith(
-                Path.GetFullPath(runFileRoot) + Path.DirectorySeparatorChar,
-                StringComparison.Ordinal));
+                assemblyPath);
+            Assert.StartsWith(Path.GetFullPath(runFileRoot) + Path.DirectorySeparatorChar, lockPath);
             Assert.Contains(Path.Combine("dotnet", "runfile"), runFileRoot, StringComparison.Ordinal);
         }
         finally
@@ -167,7 +188,8 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
     private static string EvaluationJson(
         string targetFramework,
         string packageVersion,
-        string sdkSdksPath = "/usr/share/dotnet/sdk/10.0.404/Sdks") => $$"""
+        string sdkSdksPath = "/usr/share/dotnet/sdk/10.0.404/Sdks",
+        string extensionsPath = "/usr/share/dotnet/sdk/10.0.404/") => $$"""
         {
           "Properties": {
             "TargetFramework": "{{targetFramework}}",
@@ -179,7 +201,8 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             "RestoreAdditionalProjectSources": "",
             "RestoreConfigFile": "",
             "RestoreSources": "https://packages.example/v3/index.json",
-            "MSBuildSDKsPath": "{{sdkSdksPath}}"
+            "MSBuildSDKsPath": "{{sdkSdksPath}}",
+            "MSBuildExtensionsPath": "{{extensionsPath}}"
           },
           "Items": {
             "PackageReference": [

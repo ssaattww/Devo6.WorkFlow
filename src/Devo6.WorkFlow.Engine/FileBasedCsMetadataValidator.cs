@@ -135,7 +135,7 @@ internal static class FileBasedCsMetadataValidator
                 return Failure(
                     GetTypeFullName(reader, selected.TypeHandle),
                     WorkflowErrorCodes.ScriptEntryProviderInvalid,
-                    "A workflow entry provider must be a public sealed non-abstract non-generic class with a public parameterless constructor and a public Create() method returning IWorkflowEntry.");
+                    "A workflow entry provider must directly implement IWorkflowEntryProvider and declare a public parameterless constructor and public Create() method returning IWorkflowEntry; inherited or generic provider contracts are not supported.");
             }
 
             providerTypeName = GetTypeFullName(reader, selected.TypeHandle);
@@ -227,85 +227,11 @@ internal static class FileBasedCsMetadataValidator
             }
         }
 
-        var inspectedTypes = new HashSet<TypeDefinitionHandle>();
-        bool implementsProvider = ImplementsProviderContract(reader, typeHandle, inspectedTypes);
-        bool inheritsCreateMethod = HasCreateMethod(reader, typeHandle, new HashSet<TypeDefinitionHandle>(), signatureProvider);
-        return implementsProvider && hasPublicParameterlessConstructor && (hasPublicCreateMethod || inheritsCreateMethod);
-    }
-
-    /// <summary>
-    /// Provider contract を自型または同じ入力 assembly の base / interface からたどります。
-    /// </summary>
-    private static bool ImplementsProviderContract(
-        MetadataReader reader,
-        TypeDefinitionHandle typeHandle,
-        HashSet<TypeDefinitionHandle> visited)
-    {
-        if (typeHandle.IsNil || !visited.Add(typeHandle))
-        {
-            return false;
-        }
-
-        TypeDefinition type = reader.GetTypeDefinition(typeHandle);
-        foreach (InterfaceImplementationHandle implementationHandle in type.GetInterfaceImplementations())
-        {
-            EntityHandle interfaceHandle = reader.GetInterfaceImplementation(implementationHandle).Interface;
-            if (GetTypeFullName(reader, interfaceHandle) == EntryProviderTypeName
-                && IsEngineTypeReference(reader, interfaceHandle))
-            {
-                return true;
-            }
-
-            if (interfaceHandle.Kind == HandleKind.TypeDefinition
-                && ImplementsProviderContract(reader, (TypeDefinitionHandle)interfaceHandle, visited))
-            {
-                return true;
-            }
-        }
-
-        return type.BaseType.Kind == HandleKind.TypeDefinition
-            && ImplementsProviderContract(reader, (TypeDefinitionHandle)type.BaseType, visited);
-    }
-
-    /// <summary>
-    /// Create method implementation を自型と同一 assembly の base chain から探します。
-    /// </summary>
-    private static bool HasCreateMethod(
-        MetadataReader reader,
-        TypeDefinitionHandle typeHandle,
-        HashSet<TypeDefinitionHandle> visited,
-        MetadataSignatureTypeProvider signatureProvider)
-    {
-        if (typeHandle.IsNil || !visited.Add(typeHandle))
-        {
-            return false;
-        }
-
-        TypeDefinition type = reader.GetTypeDefinition(typeHandle);
-        foreach (MethodDefinitionHandle methodHandle in type.GetMethods())
-        {
-            MethodDefinition method = reader.GetMethodDefinition(methodHandle);
-            MethodAttributes attributes = method.Attributes;
-            bool publicInstance = (attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.Public
-                && (attributes & MethodAttributes.Static) == 0;
-            if (reader.GetString(method.Name) == "Create"
-                && publicInstance
-                && IsCreateSignature(method.DecodeSignature(signatureProvider, genericContext: null)))
-            {
-                return true;
-            }
-        }
-
-        bool hasExplicitCreate = type.GetMethodImplementations()
-            .Select(handle => reader.GetMethodImplementation(handle))
-            .Any(implementation => IsCreateInterfaceImplementation(reader, implementation, signatureProvider));
-        if (hasExplicitCreate)
-        {
-            return true;
-        }
-
-        return type.BaseType.Kind == HandleKind.TypeDefinition
-            && HasCreateMethod(reader, (TypeDefinitionHandle)type.BaseType, visited, signatureProvider);
+        bool implementsProvider = type.GetInterfaceImplementations()
+            .Select(handle => reader.GetInterfaceImplementation(handle).Interface)
+            .Any(interfaceHandle => GetTypeFullName(reader, interfaceHandle) == EntryProviderTypeName
+                && IsEngineTypeReference(reader, interfaceHandle));
+        return implementsProvider && hasPublicParameterlessConstructor && hasPublicCreateMethod;
     }
 
     /// <summary>
@@ -317,32 +243,6 @@ internal static class FileBasedCsMetadataValidator
         TypeAttributes visibility = type.Attributes & TypeAttributes.VisibilityMask;
         return visibility == TypeAttributes.Public
             || visibility == TypeAttributes.NestedPublic && IsPublicDeclaringChain(reader, type.GetDeclaringType());
-    }
-
-    /// <summary>
-    /// Provider が必須 Create interface method を持つか確認します。
-    /// </summary>
-    private static bool IsCreateInterfaceImplementation(
-        MetadataReader reader,
-        MethodImplementation implementation,
-        MetadataSignatureTypeProvider signatureProvider)
-    {
-        if (implementation.MethodDeclaration.Kind != HandleKind.MemberReference)
-        {
-            return false;
-        }
-
-        MemberReference declaration = reader.GetMemberReference((MemberReferenceHandle)implementation.MethodDeclaration);
-        if (reader.GetString(declaration.Name) != "Create"
-            || GetTypeFullName(reader, declaration.Parent) != EntryProviderTypeName
-            || !IsEngineTypeReference(reader, declaration.Parent)
-            || implementation.MethodBody.Kind != HandleKind.MethodDefinition)
-        {
-            return false;
-        }
-
-        MethodDefinition body = reader.GetMethodDefinition((MethodDefinitionHandle)implementation.MethodBody);
-        return IsCreateSignature(body.DecodeSignature(signatureProvider, genericContext: null));
     }
 
     /// <summary>
