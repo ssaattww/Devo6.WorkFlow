@@ -126,7 +126,7 @@ public sealed class CompositeStepDefinition
 /// 登録済み Step 列を実行できる composite entry を表します。
 /// </summary>
 /// <typeparam name="TOut">現在の末尾 Step が返す出力型。</typeparam>
-public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>
+public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkflowEntry
 {
     private readonly IReadOnlyList<StepRegistration> steps;
 

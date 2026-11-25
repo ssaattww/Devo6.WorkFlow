@@ -61,6 +61,46 @@ public static class WorkflowErrorCodes
     public const string ScriptApiIdentityMismatch = "SCRIPT_API_IDENTITY_MISMATCH";
 
     /// <summary>
+    /// .NET 10 file-based C# workflow input requires a .NET 10 host.
+    /// </summary>
+    public const string ScriptFileRequiresNet10Host = "SCRIPT_FILE_REQUIRES_NET10_HOST";
+
+    /// <summary>
+    /// File-based C# workflow directives do not meet the supported preflight contract.
+    /// </summary>
+    public const string ScriptFileDirectiveInvalid = "SCRIPT_FILE_DIRECTIVE_INVALID";
+
+    /// <summary>
+    /// File-based C# build or execution failed.
+    /// </summary>
+    public const string ScriptBuildFailed = "SCRIPT_BUILD_FAILED";
+
+    /// <summary>
+    /// The NuGet package version of the running workflow host could not be determined.
+    /// </summary>
+    public const string PackageVersionUnknown = "PACKAGE_VERSION_UNKNOWN";
+
+    /// <summary>
+    /// A compatible .NET SDK could not be selected for a file-based workflow.
+    /// </summary>
+    public const string ScriptSdkUnavailable = "SCRIPT_SDK_UNAVAILABLE";
+
+    /// <summary>
+    /// File-based workflow build succeeded, but provider execution is not implemented yet.
+    /// </summary>
+    public const string ScriptEntryExecutionUnavailable = "SCRIPT_ENTRY_EXECUTION_UNAVAILABLE";
+
+    /// <summary>
+    /// A file-based workflow entry does not meet the supported provider metadata contract.
+    /// </summary>
+    public const string ScriptEntryProviderInvalid = "SCRIPT_ENTRY_PROVIDER_INVALID";
+
+    /// <summary>
+    /// A workflow entry provider constructor or Create() call failed.
+    /// </summary>
+    public const string ScriptEntryProviderFailed = "SCRIPT_ENTRY_PROVIDER_FAILED";
+
+    /// <summary>
     /// 必須の Step 入力が見つからなかったことを示します。
     /// </summary>
     public const string StepInputNotFound = "STEP_INPUT_NOT_FOUND";

@@ -34,7 +34,14 @@ public static class Program
     /// <param name="args">command-line 引数。</param>
     /// <param name="nuGetDependencyGraphProvider">NuGet 依存 graph provider。null の場合は既定 provider を使います。</param>
     /// <returns>成功時は 0。command、validation、または workflow 失敗時は 0 以外。</returns>
-    internal static int Run(string[] args, ICsxNuGetDependencyGraphProvider? nuGetDependencyGraphProvider = null)
+    internal static int Run(
+        string[] args,
+        ICsxNuGetDependencyGraphProvider? nuGetDependencyGraphProvider = null,
+        string? hostTargetFramework = null
+#if NET10_0
+        , string? hostPackageVersion = null
+#endif
+        )
     {
         if (args.Length == 0 || IsHelpCommand(args))
         {
@@ -53,6 +60,71 @@ public static class Program
         string entryPath = Path.GetFullPath(command.EntryPath);
         string workflowConfigPath = ResolveConfigPath(entryPath, command.WorkflowConfigPath);
         string engineConfigPath = ResolveConfigPath(entryPath, command.EngineConfigPath);
+        if (string.Equals(Path.GetExtension(entryPath), ".cs", StringComparison.OrdinalIgnoreCase))
+        {
+            CsFileInputPreflight.PreflightResult preflight = CsFileInputPreflight.Validate(
+                entryPath,
+                hostTargetFramework ?? CsFileInputPreflight.CurrentHostTargetFramework);
+            if (!preflight.Succeeded)
+            {
+                Console.Error.WriteLine($"{preflight.ErrorCode}: {preflight.ErrorMessage}");
+                return 1;
+            }
+
+#if NET10_0
+            string effectivePackageVersion = hostPackageVersion
+                ?? ToolPackageVersionReader.ReadInstalledPackageVersion(AppContext.BaseDirectory)
+                ?? "";
+            var builder = new FileBasedCsWorkflowBuilder();
+            IReadOnlyList<string> configPaths = CollectValidationConfigPaths(
+                string.IsNullOrWhiteSpace(workflowConfigPath) ? null : workflowConfigPath,
+                string.IsNullOrWhiteSpace(engineConfigPath) ? null : engineConfigPath);
+            if (command.Name == "validate")
+            {
+                WorkflowValidationResult validationResult = builder.Validate(
+                    entryPath, effectivePackageVersion, command.EntryName, configPaths);
+                return PrintValidationResult(validationResult);
+            }
+
+            WorkflowExecutionOptions csExecutionOptions = new(
+                engineArguments: new EngineArguments
+                {
+                    EntryPath = entryPath,
+                    WorkflowConfigPath = workflowConfigPath,
+                    EngineConfigPath = engineConfigPath,
+                    WorkflowSettings = command.WorkflowSettings,
+                    EngineSettings = command.EngineSettings,
+                });
+            WorkflowExecutionOptions? csExecutionOptionsWithConfig = ApplyEngineConfigToExecutionOptions(
+                csExecutionOptions,
+                GetEngineDefaultsPath(),
+                string.IsNullOrWhiteSpace(command.EngineConfigPath) ? GetEngineDefaultsPath() : engineConfigPath,
+                command.EngineSettings,
+                out string csFailureCode,
+                out string csFailureMessage);
+            if (csExecutionOptionsWithConfig is null)
+            {
+                Console.Error.WriteLine($"{csFailureCode}: {csFailureMessage}");
+                return 1;
+            }
+
+            WorkflowResult csResult = builder.Run(
+                entryPath, effectivePackageVersion, command.EntryName, csExecutionOptionsWithConfig, configPaths);
+            if (csResult.Succeeded)
+            {
+                Console.WriteLine($"Succeeded: {csResult.EntryName}");
+                return 0;
+            }
+
+            Console.Error.WriteLine($"{csResult.ErrorCode}: {csResult.ErrorMessage}");
+            return 1;
+#else
+            Console.Error.WriteLine(
+                $"{WorkflowErrorCodes.ScriptFileRequiresNet10Host}: a .NET 10 host is required for file-based C# workflow input.");
+            return 1;
+#endif
+        }
+
         string effectiveEngineConfigPath = string.IsNullOrWhiteSpace(command.EngineConfigPath)
             ? GetEngineDefaultsPath()
             : engineConfigPath;
@@ -125,7 +197,7 @@ public static class Program
     private static void PrintHelp()
     {
         Console.WriteLine("Devo6.WorkFlow CLI");
-        Console.WriteLine("Usage: engine run|validate <entry.csx> [--entry Name] [--workflow-config path] [--workflow-set key=value] [--wset key=value] [--engine-config path] [--engine-set key=value] [--eset key=value] [--allow-nuget PackageId,Version] [--locked]");
+        Console.WriteLine("Usage: engine run|validate <entry.csx|entry.cs> [--entry Name] [--workflow-config path] [--workflow-set key=value] [--wset key=value] [--engine-config path] [--engine-set key=value] [--eset key=value] [--allow-nuget PackageId,Version] [--locked]");
         Console.WriteLine($"Engine defaults: {GetEngineDefaultsPath()}");
     }
 
@@ -886,7 +958,7 @@ public static class Program
 
         if (args.Length < 2)
         {
-            errorMessage = "A command and entry .csx path are required.";
+            errorMessage = "A command and workflow entry path are required.";
 
             return false;
         }

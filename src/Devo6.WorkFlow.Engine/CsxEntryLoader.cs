@@ -882,7 +882,7 @@ public sealed class CsxEntryLoader
     /// <param name="entry">実行する CompositeStep instance。</param>
     /// <param name="options">workflow 実行 option。</param>
     /// <returns>Entry 実行結果。</returns>
-    private static WorkflowResult ExecuteEntry(object entry, WorkflowExecutionOptions? options)
+    internal static WorkflowResult ExecuteEntry(object entry, WorkflowExecutionOptions? options)
     {
         MethodInfo? method = entry.GetType().GetMethod(
             nameof(CompositeStep<Unit>.ExecuteWorkflow),
@@ -905,7 +905,7 @@ public sealed class CsxEntryLoader
     /// <param name="options">呼び出し元から渡された workflow 実行 option。</param>
     /// <param name="failure">準備に失敗した場合の workflow 結果。</param>
     /// <returns>Config を反映した workflow 実行 option。失敗時は null。</returns>
-    private static WorkflowExecutionOptions? PrepareExecutionOptions(
+    internal static WorkflowExecutionOptions? PrepareExecutionOptions(
         string entryName,
         object entry,
         WorkflowExecutionOptions? options,
