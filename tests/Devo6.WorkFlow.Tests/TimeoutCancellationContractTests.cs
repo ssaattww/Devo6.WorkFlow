@@ -98,7 +98,8 @@ public sealed class TimeoutCancellationContractTests
     [Fact(DisplayName = "external cancellation during sync step returns STEP_CANCELED after completion")]
     public async Task ExternalCancellationDuringSyncStepReturnsStepCanceledAfterCompletion()
     {
-        ContractTestState.Reset();
+        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        ContractTestState.Reset(testTimeout.Token);
         using var cancellationTokenSource = new CancellationTokenSource();
         CompositeStep<string> step = CompositeStep
             .Define("Main")
@@ -116,14 +117,15 @@ public sealed class TimeoutCancellationContractTests
             () => step.ExecuteWorkflowAsync(cancellationToken: cancellationTokenSource.Token));
         try
         {
-            await ContractTestState.WaitForSyncStepStartAsync(TimeSpan.FromSeconds(1));
-            await cancellationTokenSource.CancelAsync();
+            await ContractTestState.WaitForSyncStepStartAsync();
+            await cancellationTokenSource.CancelAsync().WaitAsync(testTimeout.Token);
         }
         finally
         {
             ContractTestState.ReleaseSyncStep();
+            await workflowTask.WaitAsync(TimeSpan.FromSeconds(2));
         }
-        WorkflowResult result = await workflowTask.WaitAsync(TimeSpan.FromSeconds(10));
+        WorkflowResult result = await workflowTask;
 
         Assert.False(result.Succeeded);
         Assert.Equal("Main", result.EntryName);
@@ -141,7 +143,8 @@ public sealed class TimeoutCancellationContractTests
     [Fact(DisplayName = "external cancellation wins when sync step observes timeout and cancellation")]
     public async Task ExternalCancellationWinsWhenSyncStepObservesTimeoutAndCancellation()
     {
-        ContractTestState.Reset();
+        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        ContractTestState.Reset(testTimeout.Token);
         using var cancellationTokenSource = new CancellationTokenSource();
         CompositeStep<string> step = CompositeStep
             .Define("Main")
@@ -161,14 +164,13 @@ public sealed class TimeoutCancellationContractTests
             timeoutRegistration = token.Register(() => timeoutRequested.TrySetResult());
         Task<WorkflowResult> workflowTask = Task.Run(
             () => step.ExecuteWorkflowAsync(options, cancellationTokenSource.Token));
-        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         try
         {
             try
             {
-                await ContractTestState.WaitForSyncStepStartAsync(testTimeout.Token);
+                await ContractTestState.WaitForSyncStepStartAsync();
                 await timeoutRequested.Task.WaitAsync(testTimeout.Token);
-                await cancellationTokenSource.CancelAsync();
+                await cancellationTokenSource.CancelAsync().WaitAsync(testTimeout.Token);
             }
             finally
             {
@@ -191,7 +193,6 @@ public sealed class TimeoutCancellationContractTests
         {
             timeoutRegistration.Dispose();
         }
-
     }
 
     /// <summary>
@@ -200,7 +201,8 @@ public sealed class TimeoutCancellationContractTests
     [Fact(DisplayName = "sync step timeout waits for completion and stops before following steps")]
     public async Task SyncStepTimeoutWaitsForCompletionAndStopsBeforeFollowingSteps()
     {
-        ContractTestState.Reset();
+        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        ContractTestState.Reset(testTimeout.Token);
         CompositeStep<string> step = CompositeStep
             .Define("Main")
             .Run<SlowSynchronousStep, TimedOutput>()
@@ -218,12 +220,11 @@ public sealed class TimeoutCancellationContractTests
         options.StepTimeoutTokenObserver = token =>
             timeoutRegistration = token.Register(() => timeoutRequested.TrySetResult());
         Task<WorkflowResult> workflowTask = Task.Run(() => step.ExecuteWorkflowAsync(options));
-        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         try
         {
             try
             {
-                await ContractTestState.WaitForSyncStepStartAsync(testTimeout.Token);
+                await ContractTestState.WaitForSyncStepStartAsync();
                 await timeoutRequested.Task.WaitAsync(testTimeout.Token);
             }
             finally
@@ -247,7 +248,39 @@ public sealed class TimeoutCancellationContractTests
         {
             timeoutRegistration.Dispose();
         }
+    }
 
+    /// <summary>
+    /// 前の実行から遅れて戻った worker が次の実行状態を変更しないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "late worker keeps its own timeout test state after reset")]
+    public async Task LateWorkerKeepsItsOwnTestStateAfterReset()
+    {
+        using var testTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        ContractTestState.Reset(testTimeout.Token);
+        var workerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseWorker = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task worker = Task.Run(async () =>
+        {
+            workerStarted.TrySetResult();
+            await releaseWorker.Task.WaitAsync(testTimeout.Token);
+            ContractTestState.Add("late-worker");
+        });
+
+        try
+        {
+            await workerStarted.Task.WaitAsync(testTimeout.Token);
+            ContractTestState.Reset(testTimeout.Token);
+            releaseWorker.TrySetResult();
+            await worker.WaitAsync(testTimeout.Token);
+
+            Assert.Empty(ContractTestState.Snapshot());
+        }
+        finally
+        {
+            releaseWorker.TrySetResult();
+            await worker.WaitAsync(TimeSpan.FromSeconds(1));
+        }
     }
 
     /// <summary>
@@ -435,26 +468,14 @@ public sealed class TimeoutCancellationContractTests
     /// </summary>
     private static class ContractTestState
     {
-        private static readonly object Gate = new();
-        private static List<string> entries = new();
-        private static TaskCompletionSource asyncStepStarted = NewAsyncStepStartedSource();
-        private static TaskCompletionSource syncStepStarted = NewAsyncStepStartedSource();
-        private static ManualResetEventSlim syncStepRelease = new(initialState: false);
-        private static bool? observedTokenCanBeCanceled;
+        private static readonly AsyncLocal<ExecutionState?> Current = new();
 
         /// <summary>
-        /// テスト間で共有する観測状態を初期化します。
+        /// 現在のテスト実行専用の観測状態を作成します。
         /// </summary>
-        public static void Reset()
+        public static void Reset(CancellationToken timeoutToken = default)
         {
-            lock (Gate)
-            {
-                entries = new List<string>();
-                asyncStepStarted = NewAsyncStepStartedSource();
-                syncStepStarted = NewAsyncStepStartedSource();
-                syncStepRelease = new ManualResetEventSlim(initialState: false);
-                observedTokenCanBeCanceled = null;
-            }
+            Current.Value = new ExecutionState(timeoutToken);
         }
 
         /// <summary>
@@ -462,10 +483,7 @@ public sealed class TimeoutCancellationContractTests
         /// </summary>
         public static void Add(string value)
         {
-            lock (Gate)
-            {
-                entries.Add(value);
-            }
+            State.Add(value);
         }
 
         /// <summary>
@@ -473,10 +491,7 @@ public sealed class TimeoutCancellationContractTests
         /// </summary>
         public static void ObserveCancellationToken(CancellationToken cancellationToken)
         {
-            lock (Gate)
-            {
-                observedTokenCanBeCanceled = cancellationToken.CanBeCanceled;
-            }
+            State.ObserveCancellationToken(cancellationToken);
         }
 
         /// <summary>
@@ -484,13 +499,7 @@ public sealed class TimeoutCancellationContractTests
         /// </summary>
         public static void MarkAsyncStepStarted()
         {
-            TaskCompletionSource source;
-            lock (Gate)
-            {
-                source = asyncStepStarted;
-            }
-
-            source.TrySetResult();
+            State.AsyncStepStarted.TrySetResult();
         }
 
         /// <summary>
@@ -498,64 +507,31 @@ public sealed class TimeoutCancellationContractTests
         /// </summary>
         public static async Task WaitForAsyncStepStartAsync(TimeSpan timeout)
         {
-            TaskCompletionSource source;
-            lock (Gate)
-            {
-                source = asyncStepStarted;
-            }
-
-            await source.Task.WaitAsync(timeout);
+            await State.AsyncStepStarted.Task.WaitAsync(timeout);
         }
 
         /// <summary>
         /// sync Step が進入するまで待機します。
         /// </summary>
-        public static async Task WaitForSyncStepStartAsync(TimeSpan timeout)
+        public static async Task WaitForSyncStepStartAsync()
         {
-            TaskCompletionSource source;
-            lock (Gate)
-            {
-                source = syncStepStarted;
-            }
-
-            await source.Task.WaitAsync(timeout);
-        }
-
-        /// <summary>
-        /// sync Step が指定した期限内に進入するまで待機します。
-        /// </summary>
-        /// <param name="cancellationToken">テスト全体の待機期限を制御する token。</param>
-        public static async Task WaitForSyncStepStartAsync(CancellationToken cancellationToken)
-        {
-            TaskCompletionSource source;
-            lock (Gate)
-            {
-                source = syncStepStarted;
-            }
-
-            await source.Task.WaitAsync(cancellationToken);
+            ExecutionState state = State;
+            await state.SyncStepStarted.Task.WaitAsync(state.TimeoutToken);
         }
 
         /// <summary>
         /// sync Step が返却できるように gate を解除します。
         /// </summary>
-        public static void ReleaseSyncStep() => syncStepRelease.Set();
+        public static void ReleaseSyncStep() => State.SyncStepRelease.TrySetResult();
 
         /// <summary>
         /// sync Step の進入を通知し、テストが解除するまで実行中に留まります。
         /// </summary>
         public static void WaitAtSyncStepGate()
         {
-            TaskCompletionSource source;
-            ManualResetEventSlim release;
-            lock (Gate)
-            {
-                source = syncStepStarted;
-                release = syncStepRelease;
-            }
-
-            source.TrySetResult();
-            release.Wait();
+            ExecutionState state = State;
+            state.SyncStepStarted.TrySetResult();
+            state.SyncStepRelease.Task.WaitAsync(state.TimeoutToken).GetAwaiter().GetResult();
         }
 
         /// <summary>
@@ -563,10 +539,7 @@ public sealed class TimeoutCancellationContractTests
         /// </summary>
         public static IReadOnlyList<string> Snapshot()
         {
-            lock (Gate)
-            {
-                return entries.ToArray();
-            }
+            return State.Snapshot();
         }
 
         /// <summary>
@@ -574,18 +547,81 @@ public sealed class TimeoutCancellationContractTests
         /// </summary>
         public static bool? ReadObservedTokenCanBeCanceled()
         {
-            lock (Gate)
-            {
-                return observedTokenCanBeCanceled;
-            }
+            return State.ObservedTokenCanBeCanceled;
         }
 
         /// <summary>
-        /// async Step 開始通知用の TaskCompletionSource を作成します。
+        /// 現在のテスト実行に対応する状態を取得します。
         /// </summary>
-        private static TaskCompletionSource NewAsyncStepStartedSource()
+        private static ExecutionState State => Current.Value
+            ?? throw new InvalidOperationException("Test execution state was not initialized.");
+
+        /// <summary>一回のテスト実行に固有の観測状態を作成します。</summary>
+        /// <param name="timeoutToken">テスト全体の期限を制御する token。</param>
+        private sealed class ExecutionState(CancellationToken timeoutToken)
         {
-            return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly object gate = new();
+            private readonly List<string> entries = new();
+            private bool? observedTokenCanBeCanceled;
+
+            /// <summary>このテスト実行の全体期限を取得します。</summary>
+            public CancellationToken TimeoutToken { get; } = timeoutToken;
+
+            /// <summary>async Step の開始通知を取得します。</summary>
+            public TaskCompletionSource AsyncStepStarted { get; } = NewSource();
+
+            /// <summary>sync Step の開始通知を取得します。</summary>
+            public TaskCompletionSource SyncStepStarted { get; } = NewSource();
+
+            /// <summary>sync Step を解放する通知を取得します。</summary>
+            public TaskCompletionSource SyncStepRelease { get; } = NewSource();
+
+            /// <summary>Step に渡した token の取消可能状態を取得します。</summary>
+            public bool? ObservedTokenCanBeCanceled
+            {
+                get
+                {
+                    lock (gate)
+                    {
+                        return observedTokenCanBeCanceled;
+                    }
+                }
+            }
+
+            /// <summary>Step の実行順序を記録します。</summary>
+            /// <param name="value">記録する実行イベント。</param>
+            public void Add(string value)
+            {
+                lock (gate)
+                {
+                    entries.Add(value);
+                }
+            }
+
+            /// <summary>Step に渡された token の取消可能状態を記録します。</summary>
+            /// <param name="cancellationToken">観測する Step token。</param>
+            public void ObserveCancellationToken(CancellationToken cancellationToken)
+            {
+                lock (gate)
+                {
+                    observedTokenCanBeCanceled = cancellationToken.CanBeCanceled;
+                }
+            }
+
+            /// <summary>記録済みの実行順序を複製して返します。</summary>
+            /// <returns>このテスト実行で記録したイベント。</returns>
+            public IReadOnlyList<string> Snapshot()
+            {
+                lock (gate)
+                {
+                    return entries.ToArray();
+                }
+            }
+
+            /// <summary>非同期通知用の継続非同期な TCS を作成します。</summary>
+            /// <returns>新しい通知用 TCS。</returns>
+            private static TaskCompletionSource NewSource() =>
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
     }
 }
