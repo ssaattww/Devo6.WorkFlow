@@ -14,6 +14,40 @@ namespace Devo6.WorkFlow.Tests;
 /// </summary>
 public sealed class FileBasedWorkflowExecutorTests
 {
+    /// <summary>
+    /// 互換 runtime asset は低い参照版を満たし、上位版や異なる鍵は満たさないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "shared framework assets may satisfy compatible reference versions")]
+    public void SharedFrameworkCompatibilityAllowsLowerRequestedVersion()
+    {
+        AssemblyName available = typeof(object).Assembly.GetName();
+        var lowerVersion = new AssemblyName
+        {
+            Name = available.Name,
+            Version = new Version(Math.Max(0, available.Version!.Major - 1), 0, 0, 0),
+            CultureName = available.CultureName,
+        };
+        lowerVersion.SetPublicKeyToken(available.GetPublicKeyToken() ?? []);
+        var higherVersion = new AssemblyName
+        {
+            Name = available.Name,
+            Version = new Version(available.Version.Major + 1, 0, 0, 0),
+            CultureName = available.CultureName,
+        };
+        higherVersion.SetPublicKeyToken(available.GetPublicKeyToken() ?? []);
+        var differentKey = new AssemblyName
+        {
+            Name = available.Name,
+            Version = lowerVersion.Version,
+            CultureName = available.CultureName,
+        };
+        differentKey.SetPublicKeyToken([1, 2, 3, 4]);
+
+        Assert.True(FileBasedWorkflowLoadContext.IsCompatibleFrameworkAssemblyIdentity(lowerVersion, available));
+        Assert.False(FileBasedWorkflowLoadContext.IsCompatibleFrameworkAssemblyIdentity(higherVersion, available));
+        Assert.False(FileBasedWorkflowLoadContext.IsCompatibleFrameworkAssemblyIdentity(differentKey, available));
+    }
+
     [Fact(DisplayName = "file-based execution calls Create and Step through the host contract")]
     /// <summary>
     /// Provider.Create と Step が host 型を使って一度実行されることを確認します。

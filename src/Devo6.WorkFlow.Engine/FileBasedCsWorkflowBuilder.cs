@@ -24,6 +24,8 @@ public sealed class FileBasedCsWorkflowBuilder
         .Build();
     private readonly IFileBasedSdkRunner sdkRunner;
     private readonly Func<string> sdkRunFileRootProvider;
+    private readonly Func<string>? sdkSessionRootProvider;
+    private readonly bool sessionRootUsesRunFileRoot;
     private readonly Action<string>? outputLockContentionObserver;
 
     /// <summary>
@@ -45,13 +47,20 @@ public sealed class FileBasedCsWorkflowBuilder
     /// <summary>
     /// SDK runner と isolatable artifact root を指定して builder を作成します。
     /// </summary>
+    /// <param name="sdkRunner">SDK process の実行を担当する runner。</param>
+    /// <param name="sdkRunFileRootProvider">SDK runfile 出力の調整用 lock root を返す関数。</param>
+    /// <param name="outputLockContentionObserver">排他の競合を観測する任意 callback。</param>
+    /// <param name="sdkSessionRootProvider">要求専用 SDK session を作る一時 root を返す関数。</param>
     internal FileBasedCsWorkflowBuilder(
         IFileBasedSdkRunner sdkRunner,
         Func<string>? sdkRunFileRootProvider,
-        Action<string>? outputLockContentionObserver = null)
+        Action<string>? outputLockContentionObserver = null,
+        Func<string>? sdkSessionRootProvider = null)
     {
         this.sdkRunner = sdkRunner;
         this.sdkRunFileRootProvider = sdkRunFileRootProvider ?? GetCurrentSdkRunFileRoot;
+        this.sdkSessionRootProvider = sdkSessionRootProvider;
+        sessionRootUsesRunFileRoot = sdkRunFileRootProvider is not null && sdkSessionRootProvider is null;
         this.outputLockContentionObserver = outputLockContentionObserver;
     }
 
@@ -257,10 +266,24 @@ public sealed class FileBasedCsWorkflowBuilder
 
         using (outputLock)
         {
+            FileBasedSdkRunContext sdkRunContext;
+            try
+            {
+                string sdkSessionRoot = sdkSessionRootProvider?.Invoke()
+                    ?? (sessionRootUsesRunFileRoot ? runFileRoot : Path.GetTempPath());
+                sdkRunContext = FileBasedSdkRunContext.Create(sdkSessionRoot);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+            {
+                return FileBasedCsBuildResult.Failure(
+                    WorkflowErrorCodes.ScriptBuildFailed,
+                    $"Could not create an isolated SDK output directory: {exception.Message}");
+            }
+
             FileBasedSdkProcessResult sdkVersionResult;
             try
             {
-                sdkVersionResult = sdkRunner.Run(["--version"], workingDirectory, cancellationToken);
+                sdkVersionResult = sdkRunner.Run(["--version"], workingDirectory, cancellationToken, sdkRunContext);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -277,7 +300,7 @@ public sealed class FileBasedCsWorkflowBuilder
             FileBasedSdkProcessResult sdkInfoResult;
             try
             {
-                sdkInfoResult = sdkRunner.Run(["--info"], workingDirectory, cancellationToken);
+                sdkInfoResult = sdkRunner.Run(["--info"], workingDirectory, cancellationToken, sdkRunContext);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -298,7 +321,8 @@ public sealed class FileBasedCsWorkflowBuilder
                 evaluationResult = sdkRunner.Run(
                     ["build", fullEntryPath, "--no-restore", $"-getProperty:{EffectiveProjectProperties}", "-getItem:PackageReference"],
                     workingDirectory,
-                    cancellationToken);
+                    cancellationToken,
+                    sdkRunContext);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -312,7 +336,7 @@ public sealed class FileBasedCsWorkflowBuilder
                     preflight,
                     lockFile!,
                     expectedSdkSdksPath,
-                    GetSdkArtifactsDirectory(fullEntryPath, runFileRoot),
+                    GetSdkArtifactsDirectory(fullEntryPath, sdkRunContext.RunFileRoot),
                     fullEntryPath,
                     out evaluationError))
             {
@@ -330,7 +354,8 @@ public sealed class FileBasedCsWorkflowBuilder
                 restoreResult = sdkRunner.Run(
                     ["restore", fullEntryPath, "--verbosity", "quiet"],
                     workingDirectory,
-                    cancellationToken);
+                    cancellationToken,
+                    sdkRunContext);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -343,7 +368,7 @@ public sealed class FileBasedCsWorkflowBuilder
                     FormatProcessFailure(restoreResult));
             }
 
-            string? assetsPath = FindAssetsFile(fullEntryPath, runFileRoot);
+            string? assetsPath = FindAssetsFile(fullEntryPath, sdkRunContext.RunFileRoot);
             string assetsError = "";
             if (assetsPath is null || !TryValidateAssets(assetsPath, preflight, lockFile!, out assetsError))
             {
@@ -352,7 +377,19 @@ public sealed class FileBasedCsWorkflowBuilder
                     assetsPath is null ? "The SDK did not produce the expected project.assets.json." : assetsError);
             }
 
-            if (!string.Equals(sourceHash, ComputeFileHash(fullEntryPath), StringComparison.Ordinal))
+            string postRestoreSourceHash;
+            try
+            {
+                postRestoreSourceHash = ComputeFileHash(fullEntryPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+            {
+                return FileBasedCsBuildResult.Failure(
+                    WorkflowErrorCodes.ScriptFileDirectiveInvalid,
+                    $"The workflow source could not be re-read after restore; the restored assets were discarded: {exception.Message}");
+            }
+
+            if (!string.Equals(sourceHash, postRestoreSourceHash, StringComparison.Ordinal))
             {
                 return FileBasedCsBuildResult.Failure(
                     WorkflowErrorCodes.ScriptFileDirectiveInvalid,
@@ -365,7 +402,8 @@ public sealed class FileBasedCsWorkflowBuilder
                 buildResult = sdkRunner.Run(
                     ["build", fullEntryPath, "--no-restore", "--verbosity", "quiet"],
                     workingDirectory,
-                    cancellationToken);
+                    cancellationToken,
+                    sdkRunContext);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -378,14 +416,26 @@ public sealed class FileBasedCsWorkflowBuilder
                     FormatProcessFailure(buildResult));
             }
 
-            if (!string.Equals(sourceHash, ComputeFileHash(fullEntryPath), StringComparison.Ordinal))
+            string postBuildSourceHash;
+            try
+            {
+                postBuildSourceHash = ComputeFileHash(fullEntryPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+            {
+                return FileBasedCsBuildResult.Failure(
+                    WorkflowErrorCodes.ScriptFileDirectiveInvalid,
+                    $"The workflow source could not be re-read after build; the generated assembly was discarded: {exception.Message}");
+            }
+
+            if (!string.Equals(sourceHash, postBuildSourceHash, StringComparison.Ordinal))
             {
                 return FileBasedCsBuildResult.Failure(
                     WorkflowErrorCodes.ScriptFileDirectiveInvalid,
                     "The workflow source changed during build; the generated assembly was discarded.");
             }
 
-            string assemblyPath = GetSdkOutputAssemblyPath(fullEntryPath, runFileRoot);
+            string assemblyPath = GetSdkOutputAssemblyPath(fullEntryPath, sdkRunContext.RunFileRoot);
             if (!File.Exists(assemblyPath) || IsInsideDirectory(assemblyPath, workingDirectory))
             {
                 return FileBasedCsBuildResult.Failure(
@@ -908,10 +958,29 @@ public sealed class FileBasedCsWorkflowBuilder
     {
         if (Uri.TryCreate(source, UriKind.Absolute, out Uri? uri) && !uri.IsFile)
         {
-            string userInfo = uri.UserInfo.Length == 0 ? "" : $"{uri.UserInfo}@";
-            string authority = $"{uri.Scheme.ToLowerInvariant()}://{userInfo}{uri.IdnHost.ToLowerInvariant()}:{uri.Port}";
-            string pathAndQuery = uri.GetComponents(UriComponents.PathAndQuery | UriComponents.Fragment, UriFormat.UriEscaped);
-            return $"uri:{authority}/{pathAndQuery.TrimStart('/')}";
+            int schemeSeparator = source.IndexOf("://", StringComparison.Ordinal);
+            if (schemeSeparator < 0)
+            {
+                int colon = source.IndexOf(':');
+                return $"uri:{uri.Scheme.ToLowerInvariant()}:{source[(colon + 1)..]}";
+            }
+
+            int authorityStart = schemeSeparator + 3;
+            int suffixStart = source.IndexOfAny(['/', '\\', '?', '#'], authorityStart);
+            string rawAuthority = suffixStart < 0 ? source[authorityStart..] : source[authorityStart..suffixStart];
+            int userInfoSeparator = rawAuthority.LastIndexOf('@');
+            string userInfo = userInfoSeparator < 0 ? "" : rawAuthority[..(userInfoSeparator + 1)];
+            string host = uri.HostNameType == UriHostNameType.IPv6
+                ? $"[{uri.IdnHost.ToLowerInvariant()}]"
+                : uri.IdnHost.ToLowerInvariant();
+            string port = uri.IsDefaultPort ? "" : $":{uri.Port}";
+            string suffix = suffixStart < 0 ? "/" : source[suffixStart..];
+            if (suffix[0] is '?' or '#')
+            {
+                suffix = "/" + suffix;
+            }
+
+            return $"uri:{uri.Scheme.ToLowerInvariant()}://{userInfo}{host}{port}{suffix}";
         }
 
         string localPath = Uri.TryCreate(source, UriKind.Absolute, out uri) && uri.IsFile
@@ -1158,7 +1227,111 @@ internal interface IFileBasedSdkRunner
     /// <summary>
     /// SDK の file-based restore または build process を実行します。
     /// </summary>
-    FileBasedSdkProcessResult Run(IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken);
+    /// <param name="arguments">SDK process に渡す引数。</param>
+    /// <param name="workingDirectory">SDK process の作業ディレクトリ。</param>
+    /// <param name="cancellationToken">SDK process の終了を要求する token。</param>
+    /// <param name="runContext">要求ごとに分離した SDK 出力・cache context。</param>
+    /// <returns>SDK process の終了コードと出力。</returns>
+    FileBasedSdkProcessResult Run(
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        CancellationToken cancellationToken,
+        FileBasedSdkRunContext? runContext = null);
+}
+
+/// <summary>
+/// 一回の SDK 要求専用の出力先とキャッシュ先を保持します。
+/// </summary>
+/// <param name="RunFileRoot">SDK の file-based assets と成果物を保存する root。</param>
+/// <param name="CliHomeDirectory">要求専用の .NET CLI home。</param>
+/// <param name="DataDirectory">要求専用の platform data home。</param>
+/// <param name="RuntimeDirectory">要求専用の runtime scratch directory。</param>
+/// <param name="TemporaryDirectory">要求専用の temporary directory。</param>
+/// <param name="NuGetPackagesDirectory">要求専用の NuGet package cache。</param>
+/// <param name="NuGetHttpCacheDirectory">要求専用の NuGet HTTP cache。</param>
+internal sealed record FileBasedSdkRunContext(
+    string RunFileRoot,
+    string CliHomeDirectory,
+    string DataDirectory,
+    string RuntimeDirectory,
+    string TemporaryDirectory,
+    string NuGetPackagesDirectory,
+    string NuGetHttpCacheDirectory)
+{
+    /// <summary>
+    /// SDK runfile、CLI、NuGet、temporary data が要求間で共有されない path を作成します。
+    /// </summary>
+    /// <param name="baseRunFileRoot">隔離 directory を置く application-owned root。</param>
+    /// <returns>今回だけ使用する SDK process context。</returns>
+    internal static FileBasedSdkRunContext Create(string baseRunFileRoot)
+    {
+        string sessionDirectory = Path.Combine(Path.GetFullPath(baseRunFileRoot), $"devo6-sdk-{Guid.NewGuid():N}");
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(sessionDirectory);
+        }
+        else
+        {
+            Directory.CreateDirectory(
+                sessionDirectory,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        string cliHomeDirectory = Path.Combine(sessionDirectory, "cli");
+        string dataDirectory = Path.Combine(sessionDirectory, "data");
+        string runtimeDirectory = Path.Combine(sessionDirectory, "runtime");
+        string temporaryDirectory = Path.Combine(sessionDirectory, "temp");
+        string nugetDirectory = Path.Combine(sessionDirectory, "nuget");
+        string nugetPackagesDirectory = Path.Combine(nugetDirectory, "packages");
+        string nugetHttpCacheDirectory = Path.Combine(nugetDirectory, "http-cache");
+        string runFileRoot = OperatingSystem.IsWindows()
+            ? Path.Combine(temporaryDirectory, "dotnet", "runfile")
+            : Path.Combine(dataDirectory, "dotnet", "runfile");
+
+        foreach (string directory in new[]
+        {
+            cliHomeDirectory,
+            dataDirectory,
+            runtimeDirectory,
+            temporaryDirectory,
+            nugetPackagesDirectory,
+            nugetHttpCacheDirectory,
+        })
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        return new FileBasedSdkRunContext(
+            runFileRoot,
+            cliHomeDirectory,
+            dataDirectory,
+            runtimeDirectory,
+            temporaryDirectory,
+            nugetPackagesDirectory,
+            nugetHttpCacheDirectory);
+    }
+
+    /// <summary>
+    /// SDK 子 process に要求専用のデータ領域を適用します。
+    /// </summary>
+    /// <param name="environment">起動する process の環境変数。</param>
+    internal void ApplyTo(IDictionary<string, string?> environment)
+    {
+        environment["DOTNET_CLI_HOME"] = CliHomeDirectory;
+        environment["NUGET_PACKAGES"] = NuGetPackagesDirectory;
+        environment["NUGET_HTTP_CACHE_PATH"] = NuGetHttpCacheDirectory;
+        if (OperatingSystem.IsWindows())
+        {
+            environment["TEMP"] = TemporaryDirectory;
+            environment["TMP"] = TemporaryDirectory;
+        }
+        else
+        {
+            environment["XDG_DATA_HOME"] = DataDirectory;
+            environment["XDG_RUNTIME_DIR"] = RuntimeDirectory;
+            environment["TMPDIR"] = TemporaryDirectory;
+        }
+    }
 }
 
 /// <summary>
@@ -1187,10 +1360,16 @@ internal sealed class DotnetFileBasedSdkRunner : IFileBasedSdkRunner
     /// <summary>
     /// SDK の file-based restore または build process を実行します。
     /// </summary>
+    /// <param name="arguments">SDK process に渡す引数。</param>
+    /// <param name="workingDirectory">SDK process の作業ディレクトリ。</param>
+    /// <param name="cancellationToken">SDK process の終了を要求する token。</param>
+    /// <param name="runContext">要求ごとに分離した SDK 出力・cache context。</param>
+    /// <returns>SDK process の終了コードと標準出力・標準エラー。</returns>
     public FileBasedSdkProcessResult Run(
         IReadOnlyList<string> arguments,
         string workingDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FileBasedSdkRunContext? runContext = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -1201,6 +1380,7 @@ internal sealed class DotnetFileBasedSdkRunner : IFileBasedSdkRunner
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        runContext?.ApplyTo(startInfo.Environment);
         if (arguments.Count == 1 && arguments[0] == "--info")
         {
             startInfo.Environment["DOTNET_CLI_UI_LANGUAGE"] = "en-US";

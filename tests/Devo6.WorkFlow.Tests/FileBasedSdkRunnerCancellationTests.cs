@@ -123,6 +123,128 @@ public sealed class FileBasedSdkRunnerCancellationTests
         }
     }
 
+    /// <summary>
+    /// pipe を継承せず残った子 process の遅延書込みが後続 build の成果物へ届かないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "a detached SDK writer remains inside its request output after cancellation")]
+    public async Task DetachedWriterCannotReachTheNextBuildOutput()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string directory = Path.Combine(Path.GetTempPath(), "devo6-isolated-sdk-writer", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string sourcePath = Path.Combine(directory, "workflow.cs");
+        string feedPath = Path.Combine(directory, "feed");
+        string scriptPath = Path.Combine(directory, "sdk-mock.sh");
+        string childStartedPath = Path.Combine(directory, "child-started");
+        string childCompletedPath = Path.Combine(directory, "child-completed");
+        string releasePath = Path.Combine(directory, "release-child");
+        string outputRoot = Path.Combine(Path.GetTempPath(), "devo6-isolated-sdk-output", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(feedPath);
+        File.WriteAllText(sourcePath, string.Join(Environment.NewLine,
+        [
+            "#:property OutputType=Library",
+            "#:property TargetFramework=net10.0",
+            "#:property PublishAot=false",
+            "#:package Devo6.WorkFlow.Engine@[0.1.0]",
+            "public sealed class MainWorkflow { }",
+        ]));
+        File.WriteAllText(Path.Combine(directory, "NuGet.Config"),
+            $"<configuration><packageSources><clear/><add key=\"local\" value=\"{feedPath}\" /></packageSources></configuration>");
+        File.WriteAllText(Path.Combine(directory, "devo6.nuget.lock.yaml"), $$"""
+            version: 1
+            targetFramework: net10.0
+            verifyPackageSources: true
+            packageSources:
+              - "{{feedPath}}"
+            directReferences:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            resolvedDependencies:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            """);
+        string artifactsName = Path.GetFileName(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(sourcePath, outputRoot));
+        string lateMarkerPath = Path.Combine("$XDG_DATA_HOME", "dotnet", "runfile", artifactsName, "bin", "debug", "late-writer.marker");
+        File.WriteAllText(scriptPath, $$"""
+            #!/bin/sh
+            setsid sh -c 'echo started > "{{childStartedPath}}"; while [ ! -f "{{releasePath}}" ]; do sleep 0.01; done; mkdir -p "$(dirname "{{lateMarkerPath}}")"; printf old-run > "{{lateMarkerPath}}"; echo completed > "{{childCompletedPath}}"' </dev/null >/dev/null 2>&1 &
+            while [ ! -f "{{childStartedPath}}" ]; do sleep 0.01; done
+            echo $$
+            exit 0
+            """);
+        File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        using var cancellation = new CancellationTokenSource();
+        var detachedChildReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRunner = new BuilderLockTestSdkRunner(
+            scriptPath,
+            childCompletedPath,
+            outputRoot,
+            blockFirstRestore: true,
+            afterFirstRestoreProcess: () =>
+            {
+                detachedChildReady.TrySetResult();
+                cancellation.Cancel();
+            });
+        var firstBuilder = new FileBasedCsWorkflowBuilder(firstRunner, () => outputRoot);
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Task.Run(
+                () => firstBuilder.Build(sourcePath, "0.1.0", cancellation.Token)));
+            await detachedChildReady.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            string firstRunRoot = Assert.Single(firstRunner.RunContexts.Values).RunFileRoot;
+
+            var secondRunner = new BuilderLockTestSdkRunner(
+                scriptPath,
+                childCompletedPath,
+                outputRoot,
+                blockFirstRestore: false,
+                succeedBuild: true);
+            var secondBuilder = new FileBasedCsWorkflowBuilder(secondRunner, () => outputRoot);
+            FileBasedCsBuildResult secondResult = secondBuilder.Build(sourcePath, "0.1.0");
+
+            Assert.True(secondResult.Succeeded, $"{secondResult.ErrorCode}: {secondResult.ErrorMessage}");
+            Assert.NotNull(secondResult.AssemblyPath);
+            string secondRunRoot = Assert.Single(secondRunner.RunContexts.Values).RunFileRoot;
+            string secondOutput = Path.Combine(secondRunRoot, "second-build-marker");
+            Assert.NotEqual(firstRunRoot, secondRunRoot);
+            Assert.False(File.Exists(childCompletedPath));
+            Assert.Equal("new-run", File.ReadAllText(secondOutput));
+            Assert.False(File.Exists(Path.Combine(secondRunRoot, "bin", "debug", "late-writer.marker")));
+
+            File.WriteAllText(releasePath, "release");
+            await WaitForFile(childCompletedPath);
+            Assert.Equal("old-run", File.ReadAllText(Path.Combine(
+                firstRunRoot,
+                artifactsName,
+                "bin",
+                "debug",
+                "late-writer.marker")));
+            Assert.Equal("new-run", File.ReadAllText(secondOutput));
+        }
+        finally
+        {
+            File.WriteAllText(releasePath, "release");
+            if (File.Exists(childCompletedPath))
+            {
+                await WaitForFile(childCompletedPath);
+            }
+
+            Directory.Delete(directory, recursive: true);
+            if (Directory.Exists(outputRoot))
+            {
+                Directory.Delete(outputRoot, recursive: true);
+            }
+        }
+    }
+
     [Fact(DisplayName = "SDK child receives fixed CLI UI language without changing the caller")]
     /// <summary>
     /// SDK の表示言語だけを子 process に固定し、親の環境変数を変更しません。
@@ -273,6 +395,8 @@ public sealed class FileBasedSdkRunnerCancellationTests
         private readonly string childCompletedPath;
         private readonly string outputRoot;
         private readonly bool blockFirstRestore;
+        private readonly bool succeedBuild;
+        private readonly Action? afterFirstRestoreProcess;
         private int restoreCount;
 
         /// <summary>
@@ -281,18 +405,31 @@ public sealed class FileBasedSdkRunnerCancellationTests
         /// <param name="scriptPath">SDK 呼出しとして起動する fixture のパス。</param>
         /// <param name="childCompletedPath">子プロセスが完了時に公開するファイルのパス。</param>
         /// <param name="blockFirstRestore">最初の restore を fixture に委ねる場合は true。</param>
-        public BuilderLockTestSdkRunner(string scriptPath, string childCompletedPath, string outputRoot, bool blockFirstRestore)
+        public BuilderLockTestSdkRunner(
+            string scriptPath,
+            string childCompletedPath,
+            string outputRoot,
+            bool blockFirstRestore,
+            bool succeedBuild = false,
+            Action? afterFirstRestoreProcess = null)
         {
             processRunner = new DotnetFileBasedSdkRunner(scriptPath);
             this.childCompletedPath = childCompletedPath;
             this.outputRoot = outputRoot;
             this.blockFirstRestore = blockFirstRestore;
+            this.succeedBuild = succeedBuild;
+            this.afterFirstRestoreProcess = afterFirstRestoreProcess;
         }
 
         /// <summary>
         /// モックへ渡された SDK 引数を呼出し順に保持します。
         /// </summary>
         public ConcurrentQueue<IReadOnlyList<string>> Calls { get; } = new();
+
+        /// <summary>
+        /// SDK 要求間で異なる専用 runfile root を保持します。
+        /// </summary>
+        public ConcurrentDictionary<string, FileBasedSdkRunContext> RunContexts { get; } = new(StringComparer.Ordinal);
 
         /// <summary>
         /// restore の開始を通知する同期用タスクです。
@@ -314,9 +451,14 @@ public sealed class FileBasedSdkRunnerCancellationTests
         public FileBasedSdkProcessResult Run(
             IReadOnlyList<string> arguments,
             string workingDirectory,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            FileBasedSdkRunContext? runContext = null)
         {
             Calls.Enqueue(arguments.ToArray());
+            if (runContext is not null)
+            {
+                RunContexts.TryAdd(runContext.RunFileRoot, runContext);
+            }
             if (arguments.Count == 1 && arguments[0] == "--version")
             {
                 return new FileBasedSdkProcessResult(0, "10.0.404", "");
@@ -329,7 +471,7 @@ public sealed class FileBasedSdkRunnerCancellationTests
 
             if (arguments.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
             {
-                return new FileBasedSdkProcessResult(0, CreateEvaluationJson(arguments[1]), "");
+                return new FileBasedSdkProcessResult(0, CreateEvaluationJson(arguments[1], runContext?.RunFileRoot ?? outputRoot), "");
             }
 
             if (arguments.Count > 0 && arguments[0] == "restore")
@@ -337,7 +479,20 @@ public sealed class FileBasedSdkRunnerCancellationTests
                 int currentRestore = Interlocked.Increment(ref restoreCount);
                 if (blockFirstRestore && currentRestore == 1)
                 {
-                    return processRunner.Run(arguments, workingDirectory, cancellationToken);
+                    FileBasedSdkProcessResult processResult = processRunner.Run(arguments, workingDirectory, cancellationToken, runContext);
+                    afterFirstRestoreProcess?.Invoke();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return processResult;
+                }
+
+                if (succeedBuild)
+                {
+                    string artifacts = FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(arguments[1], runContext!.RunFileRoot);
+                    string assetsPath = Path.Combine(artifacts, "obj", "project.assets.json");
+                    Directory.CreateDirectory(Path.GetDirectoryName(assetsPath)!);
+                    File.WriteAllText(assetsPath, CreateAssetsJson(arguments[1], Path.Combine(workingDirectory, "feed")));
+                    RestoreStarted.TrySetResult();
+                    return new FileBasedSdkProcessResult(0, "", "");
                 }
 
                 try
@@ -352,6 +507,15 @@ public sealed class FileBasedSdkRunnerCancellationTests
                 return new FileBasedSdkProcessResult(1, "controlled restore failure", "");
             }
 
+            if (arguments.Count > 0 && arguments[0] == "build" && succeedBuild)
+            {
+                string assemblyPath = FileBasedCsWorkflowBuilder.GetSdkOutputAssemblyPath(arguments[1], runContext!.RunFileRoot);
+                Directory.CreateDirectory(Path.GetDirectoryName(assemblyPath)!);
+                File.WriteAllText(assemblyPath, "new-run");
+                File.WriteAllText(Path.Combine(runContext.RunFileRoot, "second-build-marker"), "new-run");
+                return new FileBasedSdkProcessResult(0, "", "");
+            }
+
             return new FileBasedSdkProcessResult(0, "", "");
         }
 
@@ -360,9 +524,11 @@ public sealed class FileBasedSdkRunnerCancellationTests
         /// </summary>
         /// <param name="entryPath">SDK が評価する file-based source path。</param>
         /// <returns>評価した project property と package reference の JSON。</returns>
-        private string CreateEvaluationJson(string entryPath)
+        private string CreateEvaluationJson(string entryPath, string sdkRunFileRoot)
         {
-            string artifacts = Path.GetFullPath(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, outputRoot));
+            string artifacts = Path.GetFullPath(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(
+                entryPath,
+                sdkRunFileRoot));
             string bin = Path.Combine(artifacts, "bin");
             string output = Path.Combine(bin, "debug");
             string obj = Path.Combine(artifacts, "obj");
@@ -402,6 +568,36 @@ public sealed class FileBasedSdkRunnerCancellationTests
                 },
             });
         }
+
+        /// <summary>
+        /// 一点版 Engine dependency を含む restore assets fixture を生成します。
+        /// </summary>
+        /// <param name="entryPath">assets の対象となる file-based source。</param>
+        /// <param name="feedPath">lock に記録したローカル feed。</param>
+        /// <returns>SDK restore 後に出力する assets JSON。</returns>
+        private static string CreateAssetsJson(string entryPath, string feedPath) => JsonSerializer.Serialize(new
+        {
+            targets = new Dictionary<string, object> { ["net10.0"] = new Dictionary<string, object>() },
+            libraries = new Dictionary<string, object> { ["Devo6.WorkFlow.Engine/0.1.0"] = new { type = "package" } },
+            project = new
+            {
+                frameworks = new Dictionary<string, object>
+                {
+                    ["net10.0"] = new
+                    {
+                        dependencies = new Dictionary<string, object>
+                        {
+                            ["Devo6.WorkFlow.Engine"] = new { target = "Package", version = "[0.1.0, 0.1.0]" },
+                        },
+                    },
+                },
+                restore = new
+                {
+                    projectPath = Path.GetFullPath(entryPath) + ".csproj",
+                    sources = new Dictionary<string, object> { [feedPath] = new { } },
+                },
+            },
+        });
     }
 }
 #endif

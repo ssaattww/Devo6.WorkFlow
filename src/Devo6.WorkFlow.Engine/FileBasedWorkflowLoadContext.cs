@@ -221,11 +221,27 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
     /// <param name="source">診断に使う asset の種類。</param>
     private static void EnsureCompatibleIdentity(AssemblyName requested, AssemblyName available, string source)
     {
-        if (!AssemblyIdentityEquals(requested, available))
+        if (!IsCompatibleFrameworkAssemblyIdentity(requested, available))
         {
             throw new FileLoadException(
                 $"A declared dependency does not match the installed {source} asset: requested {requested.FullName}; available {available.FullName}.");
         }
+    }
+
+    /// <summary>
+    /// 実在する共有 runtime asset が要求された CLR reference version を満たすか確認します。
+    /// </summary>
+    /// <param name="requested">workflow metadata の assembly reference。</param>
+    /// <param name="available">現在の runtime directory にある assembly。</param>
+    /// <returns>名前、文化、公開鍵 token が一致し、runtime version が要求版以上の場合は true。</returns>
+    internal static bool IsCompatibleFrameworkAssemblyIdentity(AssemblyName requested, AssemblyName available)
+    {
+        return string.Equals(requested.Name, available.Name, StringComparison.Ordinal)
+            && requested.Version is not null
+            && available.Version is not null
+            && requested.Version.CompareTo(available.Version) <= 0
+            && string.Equals(requested.CultureName ?? "", available.CultureName ?? "", StringComparison.OrdinalIgnoreCase)
+            && (requested.GetPublicKeyToken() ?? []).SequenceEqual(available.GetPublicKeyToken() ?? []);
     }
 }
 #endif

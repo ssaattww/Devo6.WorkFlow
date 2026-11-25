@@ -188,9 +188,51 @@ public sealed class CsFileInputPreflightTests
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.ScriptFileDirectiveInvalid, result.ErrorCode);
         Assert.Null(result.AssemblyPath);
-        Assert.True(File.Exists(FileBasedCsWorkflowBuilder.GetSdkOutputAssemblyPath(sourcePath, outputRoot)));
+        Assert.NotNull(runner.GeneratedAssemblyPath);
+        Assert.True(File.Exists(runner.GeneratedAssemblyPath));
         Assert.Contains(runner.Calls, call => call.Contains("restore", StringComparer.Ordinal));
         Assert.Contains(runner.Calls, call => call.Contains("--no-restore", StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// build 後に入力を再読込できない場合は診断し、既存 DLL を返しません。
+    /// </summary>
+    [Fact(DisplayName = "builder discards the assembly when the input cannot be reread after build")]
+    public void BuilderDiscardsAssemblyWhenSourceDisappearsDuringBuild()
+    {
+        string sourcePath = CreateFileBasedSource();
+        string directory = Path.GetDirectoryName(sourcePath)!;
+        string feedPath = Path.Combine(directory, "feed");
+        Directory.CreateDirectory(feedPath);
+        File.WriteAllText(Path.Combine(directory, "NuGet.Config"),
+            $"<configuration><packageSources><clear/><add key=\"local\" value=\"{feedPath}\" /></packageSources></configuration>");
+        File.WriteAllText(Path.Combine(directory, "devo6.nuget.lock.yaml"), $$"""
+            version: 1
+            targetFramework: net10.0
+            verifyPackageSources: true
+            packageSources:
+              - "{{feedPath}}"
+            directReferences:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            resolvedDependencies:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            """);
+        string outputRoot = Path.Combine(directory, "sdk-output");
+        var runner = new InputChangingSdkRunner(sourcePath, feedPath, outputRoot, deleteSourceDuringBuild: true);
+        var builder = new FileBasedCsWorkflowBuilder(runner, () => outputRoot);
+
+        FileBasedCsBuildResult result = builder.Build(sourcePath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptFileDirectiveInvalid, result.ErrorCode);
+        Assert.Null(result.AssemblyPath);
+        Assert.NotNull(runner.GeneratedAssemblyPath);
+        Assert.True(File.Exists(runner.GeneratedAssemblyPath));
+        Assert.False(File.Exists(sourcePath));
     }
 #endif
 
@@ -490,7 +532,8 @@ public sealed class CsFileInputPreflightTests
         public FileBasedSdkProcessResult Run(
             IReadOnlyList<string> arguments,
             string workingDirectory,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            FileBasedSdkRunContext? runContext = null)
         {
             Calls.Add(arguments);
             if (arguments.Count == 1 && arguments[0] == "--version")
@@ -513,7 +556,11 @@ public sealed class CsFileInputPreflightTests
     /// <param name="entryPath">検査対象の workflow source。</param>
     /// <param name="feedPath">SDK fixture の package source。</param>
     /// <param name="outputRoot">SDK runfile の分離 output root。</param>
-    private sealed class InputChangingSdkRunner(string entryPath, string feedPath, string outputRoot) : IFileBasedSdkRunner
+    private sealed class InputChangingSdkRunner(
+        string entryPath,
+        string feedPath,
+        string outputRoot,
+        bool deleteSourceDuringBuild = false) : IFileBasedSdkRunner
     {
         private const string SdkVersion = "10.0.404";
         /// <summary>
@@ -522,12 +569,18 @@ public sealed class CsFileInputPreflightTests
         public List<IReadOnlyList<string>> Calls { get; } = [];
 
         /// <summary>
+        /// SDK が build 時に出力した fixture assembly path。
+        /// </summary>
+        public string? GeneratedAssemblyPath { get; private set; }
+
+        /// <summary>
         /// SDK の復元・評価・生成を模擬し、生成中の入力変更を発生させます。
         /// </summary>
         public FileBasedSdkProcessResult Run(
             IReadOnlyList<string> arguments,
             string workingDirectory,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            FileBasedSdkRunContext? runContext = null)
         {
             Calls.Add(arguments.ToArray());
             if (arguments.SequenceEqual(["--version"], StringComparer.Ordinal))
@@ -540,10 +593,10 @@ public sealed class CsFileInputPreflightTests
                 return new FileBasedSdkProcessResult(0, ".NET SDK:\n Version: 10.0.404\n Base Path: /usr/share/dotnet/sdk/10.0.404/", "");
             }
 
-            string artifactsDirectory = FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, outputRoot);
+            string artifactsDirectory = FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, runContext?.RunFileRoot ?? outputRoot);
             if (arguments.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
             {
-                return new FileBasedSdkProcessResult(0, EvaluationJson(), "");
+                return new FileBasedSdkProcessResult(0, EvaluationJson(runContext?.RunFileRoot ?? outputRoot), "");
             }
 
             if (arguments.FirstOrDefault() == "restore")
@@ -581,10 +634,18 @@ public sealed class CsFileInputPreflightTests
 
             if (arguments.FirstOrDefault() == "build")
             {
-                string assemblyPath = FileBasedCsWorkflowBuilder.GetSdkOutputAssemblyPath(entryPath, outputRoot);
+                string assemblyPath = FileBasedCsWorkflowBuilder.GetSdkOutputAssemblyPath(entryPath, runContext?.RunFileRoot ?? outputRoot);
+                GeneratedAssemblyPath = assemblyPath;
                 Directory.CreateDirectory(Path.GetDirectoryName(assemblyPath)!);
                 File.WriteAllText(assemblyPath, "stale fixture assembly");
-                File.AppendAllText(entryPath, Environment.NewLine + "// changed while building");
+                if (deleteSourceDuringBuild)
+                {
+                    File.Delete(entryPath);
+                }
+                else
+                {
+                    File.AppendAllText(entryPath, Environment.NewLine + "// changed while building");
+                }
                 return new FileBasedSdkProcessResult(0, "", "");
             }
 
@@ -595,9 +656,9 @@ public sealed class CsFileInputPreflightTests
         /// SDK が返す実効 build path と PackageReference を表す JSON を作成します。
         /// </summary>
         /// <returns>有効な file-based project evaluation JSON。</returns>
-        private string EvaluationJson()
+        private string EvaluationJson(string sdkRunFileRoot)
         {
-            string artifacts = Path.GetFullPath(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, outputRoot));
+            string artifacts = Path.GetFullPath(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, sdkRunFileRoot));
             string bin = Path.Combine(artifacts, "bin");
             string output = Path.Combine(bin, "debug");
             string obj = Path.Combine(artifacts, "obj");

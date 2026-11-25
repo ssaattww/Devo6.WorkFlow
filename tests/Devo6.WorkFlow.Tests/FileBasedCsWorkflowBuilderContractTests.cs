@@ -154,6 +154,10 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             ["https://packages.example/v3/index.json"],
             ["https://packages.example/V3/index.json"],
             "/tmp"));
+        Assert.False(FileBasedCsWorkflowBuilder.PackageSourcesEqual(
+            ["https://packages.example/v3\\index.json"],
+            ["https://packages.example/v3/index.json"],
+            "/tmp"));
         Assert.True(FileBasedCsWorkflowBuilder.PackageSourcesEqual(
             ["../feed"],
             ["/tmp/feed"],
@@ -172,6 +176,49 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             ["/tmp/localfeed"],
             "/tmp",
             isWindows: false));
+    }
+
+    /// <summary>
+    /// SDK 要求ごとに異なる data、temporary、NuGet、runfile directory を割り当てます。
+    /// </summary>
+    [Fact(DisplayName = "SDK requests receive isolated output and cache roots")]
+    public void SdkRunContextsUseDistinctOutputAndCacheRoots()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "devo6-sdk-run-context", Guid.NewGuid().ToString("N"));
+        try
+        {
+            FileBasedSdkRunContext first = FileBasedSdkRunContext.Create(root);
+            FileBasedSdkRunContext second = FileBasedSdkRunContext.Create(root);
+            var environment = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+            first.ApplyTo(environment);
+
+            Assert.NotEqual(first.RunFileRoot, second.RunFileRoot);
+            Assert.NotEqual(first.NuGetPackagesDirectory, second.NuGetPackagesDirectory);
+            Assert.NotEqual(first.NuGetHttpCacheDirectory, second.NuGetHttpCacheDirectory);
+            Assert.Equal(first.CliHomeDirectory, environment["DOTNET_CLI_HOME"]);
+            Assert.Equal(first.NuGetPackagesDirectory, environment["NUGET_PACKAGES"]);
+            Assert.Equal(first.NuGetHttpCacheDirectory, environment["NUGET_HTTP_CACHE_PATH"]);
+            if (OperatingSystem.IsWindows())
+            {
+                Assert.Equal(first.TemporaryDirectory, environment["TEMP"]);
+                Assert.Equal(first.TemporaryDirectory, environment["TMP"]);
+            }
+            else
+            {
+                Assert.Equal(first.DataDirectory, environment["XDG_DATA_HOME"]);
+                Assert.Equal(first.RuntimeDirectory, environment["XDG_RUNTIME_DIR"]);
+                Assert.Equal(first.TemporaryDirectory, environment["TMPDIR"]);
+                Assert.Equal(Path.Combine(first.DataDirectory, "dotnet", "runfile"), first.RunFileRoot);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     [Fact(DisplayName = "C# compiler diagnostics are distinguished from MSBuild failures")]
