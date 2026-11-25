@@ -100,7 +100,7 @@ engine run ./main.cs --entry Main --workflow-config ./appsettings.yaml
 - コマンド実行側の `.cs` 経路では、実行中のツールが配布されている実際の NuGet 版を、ツール格納先の該当 `.nuspec` の `<metadata><version>` から取得する。`.cs` を選んだ後にこの値を読めない場合は `PACKAGE_VERSION_UNKNOWN` で停止し、CLR アセンブリ版や製品表示版で代用しない。現行の配布処理ではコマンド実行部と実行エンジンを同じ `PackageVersion` で梱包するため、これを実行エンジンの配布版として扱う。
 - 公開埋め込み API の版照合も、新しい `.cs` 用の呼出し形式だけに適用する。既存 `.csx` 用の引数と実行は維持し、入力形式を選ぶ前に `hostPackageVersion` を要求しない。新しい `.cs` 用の呼出しは `hostPackageVersion` を必須引数とする。例は `Validate(input, hostPackageVersion: "1.2.3", ...)` と `Run(input, hostPackageVersion: "1.2.3", ...)`。呼出し側は、ホストが実際に配布した NuGet パッケージの 版情報から得た NuGet 版を渡す。パッケージ ID 文字列は渡さない。引数なし、空、不正な NuGet 版は `PACKAGE_VERSION_UNKNOWN` で停止し、アセンブリ版から補完しない。
 - 両経路ともファイル単位入力の復元後、生成された `project.assets.json` の `libraries` にある `Devo6.WorkFlow.Engine/<resolved-version>` を読む。コマンド実行側はツール配布版、埋め込み API は必須引数の版と照合する。異なる場合は CLR アセンブリの版や識別情報が一致していても `SCRIPT_API_IDENTITY_MISMATCH` とし、提供型の生成前に拒否する。`Devo6.WorkFlow.Abstractions` も、ホストに含まれる同じ API と CLR 上の識別情報が一致することを調べる。
-- 実行時の `AssemblyLoadContext` は、ホスト API、生成物の依存情報から選ぶ private asset、実在する共有 framework asset の順に照合する。metadata による Provider 前依存検査も同じ順序を使う。ホストの `Devo6.WorkFlow.Engine` と `Devo6.WorkFlow.Abstractions` は厳密な型同一性で共有し、別の読込み領域に複製しない。private asset は完全な CLR identity を一致させ、framework asset は名前・文化・公開鍵 token が一致し、実行時 asset の版が参照版以上なら互換として扱う。コマンド実行側と公開埋め込み API は同一の選択結果と型契約を共有し、呼出し側が独自に読み込んだ実行エンジン型は受け入れない。
+- 実行時の `AssemblyLoadContext` は、ホスト API、生成物の依存情報から選ぶ依存ライブラリ、共通実行環境にある実ファイルの順に照合する。提供型を作る前の依存検査も同じ順序を使う。ホストの `Devo6.WorkFlow.Engine` と `Devo6.WorkFlow.Abstractions` は同じ型として共有し、別に読み込まない。依存ライブラリは CLR の完全な識別情報が一致するものを選ぶ。共通実行環境のファイルは名前・文化・公開鍵が一致し、実行環境にある版が参照版以上なら互換として扱う。コマンド実行側と公開埋め込み API は同じ選択結果と型契約を使い、呼出し側が独自に読み込んだ実行エンジン型は受け入れない。
 - `validate` は生成物を実行用の `AssemblyLoadContext` に読み込まない。`System.Reflection.PortableExecutable.PEReader` と `System.Reflection.Metadata.MetadataReader` で成果物と参照のメタデータを読み、入口属性の引数と公開提供型の形を調べる。属性の生成処理を呼ばず、型初期化子、提供型、処理を一切読み込み・実行しない。読込み単位の初期化処理も定義方法を問わず実行しない。C# の `ModuleInitializerAttribute` はその指定方法の一例である。
 - 実行しないメタデータ検査には `PEReader` を使う。追加 NuGet パッケージとして `MetadataLoadContext` を導入せず、.NET 10 ホストから参照できる `System.Reflection.Metadata` を使う。参照できない環境は開発基盤またはホスト構成のエラーとして明示し、別方式へ暗黙に切り替えない。
 
@@ -164,7 +164,7 @@ validate と同じ復元前検査・復元・固定情報照合・生成
 
 - 開発基盤のファイル単位入力が使う標準の一時出力を用い、入力ファイルの親ディレクトリとワークフローを定義するコード一式を置く最上位ディレクトリのどちらにも `bin/obj`、依存ライブラリ、生成された `.dll` を作らない。
 - キャッシュキーには入力のハッシュ、許可した指定、開発基盤の版、実効対象実行環境、ワークフロー基準ディレクトリの構築・NuGet 設定、復元済み依存固定情報を含める。入力や設定が変わった場合に古い成果物を再利用しない。
-- 入力パスごとの調整用排他を復元前に取得し、同じ入力の通常要求は順に処理する。各要求は OS の一時領域に利用者専用の session directory を作り、SDK runfile、一時領域、CLI home、NuGet package / HTTP cache を分離する。SDK へ `NUGET_PACKAGES` と `RestorePackagesPath` の両方を同じ session 内の package directory に固定し、復元前の実効 property と復元後の assets に記録された package path / folders を照合する。assets、DLL、中間出力も同じ session の runfile root に置き、実効 MSBuild 出力先を復元前に照合する。SDK 子プロセスや出力 pipe の終了だけでは書込み完了とみなさない。中止時または失敗時の session は診断用に残し、SDK 失敗を返す `run` / `validate` は診断 directory を示す。後続要求は別 session だけを照合・使用する。`run` / `validate` は成功して成果物利用を終えた後に、自ら作成した session だけを削除する。公開 `Build` の成功結果は呼出し側が利用後に `Dispose()` して回収する。取消後の不確かな session や他者のファイルは削除しない。
+- 同じ入力の処理が重ならないよう、復元前に入力ごとの排他を取る。要求ごとに OS の一時領域へ専用ディレクトリを作り、開発基盤の出力、コマンド設定、一時ファイル、NuGet の保存先を分ける。NuGet の保存先を `NUGET_PACKAGES` と `RestorePackagesPath` に同じ値で設定し、復元前後で一致を確認する。復元情報、生成物、中間ファイルも専用領域に置き、生成先を復元前に照合する。子プロセスや出力経路の終了だけで書込み完了とはみなさない。検証失敗、処理失敗、取消では専用領域を診断用に残し、`run` / `validate` の結果に保存場所を示す。後続要求は別領域だけを照合・使用する。成功時は処理が終わってから自分の領域だけを削除する。公開 API で生成した成功結果は呼出し側が成果物を使い終えてから `Dispose()` して回収する。取消後に書込みが続くおそれのある領域や他者のファイルは削除しない。
 - 検証から実行までの間に入力のハッシュが変わった場合、成果物は使わず、入力を再度解決する。
 
 ## 10. 受入試験表
@@ -182,7 +182,7 @@ validate と同じ復元前検査・復元・固定情報照合・生成
 | I | 固定情報と配布版 | 実行エンジンだけを直接参照する最小例で、固定情報なし、追加依存の固定漏れ、`--locked` 固定漏れ、上位版しかない取得元、直接・推移依存の不一致、正しい固定情報を試す | 実行エンジンだけの最小例も `SCRIPT_NUGET_LOCK_MISSING` で初回復元前に失敗し、復元を一度も始めない。追加依存の固定漏れ、不正指定、直接版の不一致も初回復元前に拒否する。要求版が取得元にない場合は初回復元で失敗し、上位版へ置き換えず生成に進まない。推移依存の不一致は復元後・生成前に失敗し、正しい固定情報では生成を `--no-restore` で行う |
 | J | 実行 | 正常な提供型と処理、提供型・入口の例外、同じ入力の連続実行 | 選択した提供型を一度だけ生成し、`Create()` も一度だけ呼ぶ。処理は `run` だけで実行する。結果、実行記録、設定、ログは既存契約と一致する |
 | K | 既存コマンドの回帰 | .NET 8 のみで `engine run` と `engine validate` に `.csx`、`#load`、NuGet の許可・固定、設定の相対パス、既存の不正入力を渡す。ツール保管場所や `.nuspec`、配布版のメタデータが読めない条件も含める | コマンド実行部と埋め込み API の既存 `.csx` 経路は、版照合のために入力形式を選ぶ前に停止せず実行する。結果、診断、終了コード、相対パスの基準を維持する |
-| L | 出力と並行実行 | 同じ入力パスに異なる取得元・固定情報を指定して並行起動し、一方の SDK 要求を中止後も専用出力へ遅れて書き込ませる | 各要求の runfile、temporary、CLI、NuGet cache directory が分離され、実効 `RestorePackagesPath` と復元後 assets の package root が要求所有領域に一致する。後続要求が旧要求の遅延書込みを読み取らず、通常完了した成果物の利用後は自分の一時領域だけを回収する。失敗・取消の診断領域と他者のファイルを保持する。調整用排他は通常要求の順序を保ち、入力側のファイルを汚さない |
+| L | 出力と並行実行 | 同じ入力パスで異なる取得元・固定情報を指定して同時に起動し、一方の要求を取り消した後も専用の出力先へ書き込ませる | 要求ごとに生成物と一時保存先、NuGet の保存先を分け、`RestorePackagesPath` と復元後の保存先を照合する。後続処理は先行要求の遅延書込みを読まず、成功時は利用後に自分の領域だけを回収する。失敗・取消時は診断領域を残し、その保存先を結果に示す。他の利用者のファイルを消さず、同じ入力の処理順を保ち、入力ファイルを変更しない |
 | M | 失敗診断 | 不正な C#、復元失敗、生成失敗、依存ライブラリ欠落 | 構文・型検査は `SCRIPT_COMPILE_FAILED`、復元は `SCRIPT_NUGET_RESTORE_FAILED`、構築・生成は `SCRIPT_BUILD_FAILED`、依存ライブラリ欠落は `SCRIPT_LOAD_FAILED` 相当とする。診断と原因位置を保ち、全て非 `0` で終了し、提供型・処理を実行しない |
 
 ## 11. 対象外

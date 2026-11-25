@@ -114,7 +114,7 @@ public sealed class FileBasedCsWorkflowBuilder
         }
 
         WorkflowValidationResult? metadataResult = null;
-        using FileBasedCsBuildResult buildResult = BuildCore(
+        FileBasedCsBuildResult buildResult = BuildCore(
             entryPath,
             hostPackageVersion,
             cancellationToken,
@@ -125,10 +125,18 @@ public sealed class FileBasedCsWorkflowBuilder
             return Failure(entryPath, buildResult.ErrorCode, FormatBuildFailure(buildResult));
         }
 
-        return metadataResult ?? Failure(
+        if (metadataResult?.Succeeded == true)
+        {
+            buildResult.Dispose();
+        }
+
+        WorkflowValidationResult result = metadataResult ?? Failure(
             entryPath,
             WorkflowErrorCodes.ScriptLoadFailed,
             "Metadata validation did not produce a result.");
+        return result.Succeeded
+            ? result
+            : WithDiagnosticDirectory(result, buildResult.TemporaryDirectory);
     }
 
     /// <summary>
@@ -158,7 +166,7 @@ public sealed class FileBasedCsWorkflowBuilder
         }
 
         WorkflowResult? executionResult = null;
-        using FileBasedCsBuildResult buildResult = BuildCore(
+        FileBasedCsBuildResult buildResult = BuildCore(
             entryPath,
             hostPackageVersion,
             cancellationToken,
@@ -184,8 +192,16 @@ public sealed class FileBasedCsWorkflowBuilder
             return ExecutionFailure(entryPath, buildResult.ErrorCode, FormatBuildFailure(buildResult));
         }
 
-        return executionResult ?? ExecutionFailure(entryPath, WorkflowErrorCodes.ScriptLoadFailed,
+        if (executionResult?.Succeeded == true)
+        {
+            buildResult.Dispose();
+        }
+
+        WorkflowResult result = executionResult ?? ExecutionFailure(entryPath, WorkflowErrorCodes.ScriptLoadFailed,
             "Provider execution did not produce a result.");
+        return result.Succeeded
+            ? result
+            : WithDiagnosticDirectory(result, buildResult.TemporaryDirectory);
     }
 
     /// <summary>
@@ -207,6 +223,38 @@ public sealed class FileBasedCsWorkflowBuilder
         string.IsNullOrWhiteSpace(buildResult.TemporaryDirectory)
             ? buildResult.ErrorMessage
             : $"{buildResult.ErrorMessage}{Environment.NewLine}Diagnostic state retained at: {buildResult.TemporaryDirectory}";
+
+    /// <summary>
+    /// metadata validation failure が残した SDK session の場所を各診断へ追加します。
+    /// </summary>
+    private static WorkflowValidationResult WithDiagnosticDirectory(
+        WorkflowValidationResult result,
+        string? diagnosticDirectory) => string.IsNullOrWhiteSpace(diagnosticDirectory)
+        ? result
+        : new WorkflowValidationResult
+        {
+            Errors = result.Errors.Select(error => new ValidationError
+            {
+                Path = error.Path,
+                Code = error.Code,
+                Message = $"{error.Message}{Environment.NewLine}Diagnostic state retained at: {diagnosticDirectory}",
+            }).ToArray(),
+        };
+
+    /// <summary>
+    /// workflow 実行失敗が残した SDK session の場所を error message に追加します。
+    /// </summary>
+    private static WorkflowResult WithDiagnosticDirectory(WorkflowResult result, string? diagnosticDirectory) =>
+        string.IsNullOrWhiteSpace(diagnosticDirectory)
+            ? result
+            : new WorkflowResult
+            {
+                EntryName = result.EntryName,
+                Succeeded = result.Succeeded,
+                ErrorCode = result.ErrorCode,
+                ErrorMessage = $"{result.ErrorMessage}{Environment.NewLine}Diagnostic state retained at: {diagnosticDirectory}",
+                Trace = result.Trace,
+            };
 
     /// <summary>
     /// 入力を前提検査し、SDK restore と build を行って callback を実行します。
