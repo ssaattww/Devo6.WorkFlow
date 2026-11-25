@@ -2,6 +2,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Emit;
+using Microsoft.Extensions.Logging;
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
 
@@ -94,6 +95,18 @@ public sealed class FileBasedWorkflowExecutorTests
         string markers = Path.Combine(directory, "markers");
         Directory.CreateDirectory(markers);
         string assemblyPath = CompileFixture(directory, CreateFixture(markers, "Main", usesLogger: true));
+
+        var loadContext = new FileBasedWorkflowLoadContext(assemblyPath);
+        try
+        {
+            Assembly loggerAssembly = loadContext.LoadFromAssemblyName(typeof(ILogger).Assembly.GetName());
+            Assert.Same(typeof(ILogger).Assembly, loggerAssembly);
+        }
+        finally
+        {
+            loadContext.Unload();
+        }
+
         WorkflowValidationResult validation = FileBasedCsMetadataValidator.Validate(
             assemblyPath, "Main", out string? providerTypeName, out string? qualifiedEntryName);
         Assert.True(validation.Succeeded, FormatErrors(validation));

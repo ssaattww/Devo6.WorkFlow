@@ -1,6 +1,7 @@
 #if NET10_0
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Engine;
+using System.Text.Json;
 
 namespace Devo6.WorkFlow.Tests;
 
@@ -32,8 +33,41 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             json,
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
             ["https://packages.example/v3/index.json"],
-            "10.0.404",
+            "/usr/share/dotnet/sdk/10.0.404/Sdks",
             out string error), error);
+    }
+
+    /// <summary>
+    /// 正規 SDK installation から離れた MSBuildSDKsPath override を拒否します。
+    /// </summary>
+    [Fact(DisplayName = "effective SDK evaluation rejects an unapproved MSBuild SDK path override")]
+    public void EffectiveProjectRejectsSdkPathOverride()
+    {
+        string json = EvaluationJson("net10.0", "[0.1.0]", "/opt/override/sdk/10.0.404/Sdks");
+
+        Assert.False(FileBasedCsWorkflowBuilder.ValidateEffectiveProjectJson(
+            json,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
+            ["https://packages.example/v3/index.json"],
+            "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            out _));
+    }
+
+    /// <summary>
+    /// 正規 SDK environment の Base Path を選択した SDK 版と組み合わせて照合します。
+    /// </summary>
+    [Fact(DisplayName = "selected SDK base path is read from dotnet info")]
+    public void SelectedSdkPathComesFromDotnetInfo()
+    {
+        Assert.True(FileBasedCsWorkflowBuilder.TryGetSdkSdksPath(
+            "Base Path: /usr/share/dotnet/sdk/10.0.404/",
+            "10.0.404",
+            out string sdksPath));
+        Assert.Equal(Path.GetFullPath("/usr/share/dotnet/sdk/10.0.404/Sdks"), sdksPath);
+        Assert.False(FileBasedCsWorkflowBuilder.TryGetSdkSdksPath(
+            "Base Path: /opt/override/sdk/10.0.403/",
+            "10.0.404",
+            out _));
     }
 
     [Theory(DisplayName = "effective SDK evaluation rejects inherited changes before restore")]
@@ -49,7 +83,7 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             EvaluationJson(targetFramework, version),
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Devo6.WorkFlow.Engine"] = "0.1.0" },
             ["https://packages.example/v3/index.json"],
-            "10.0.404",
+            "/usr/share/dotnet/sdk/10.0.404/Sdks",
             out _));
     }
 
@@ -85,9 +119,55 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
     }
 
     /// <summary>
+    /// restore assets、build DLL、排他 lock が同じ SDK runfile output root を使うことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "assets, assembly, and lock paths share one SDK output root")]
+    public void AssetsAssemblyAndLockShareSdkOutputRoot()
+    {
+        string tempDirectory = Path.Combine(Path.GetTempPath(), $"devo6-workflow-output-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        string entryPath = Path.Combine(tempDirectory, "Workflow.cs");
+        string runFileRoot = Path.Combine(tempDirectory, "sdk", "dotnet", "runfile");
+        string artifactsDirectory = FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, runFileRoot);
+        string assetsPath = Path.Combine(artifactsDirectory, "obj", "project.assets.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(assetsPath)!);
+        File.WriteAllText(entryPath, "// fixture");
+        File.WriteAllText(assetsPath, JsonSerializer.Serialize(new
+        {
+            project = new { restore = new { projectPath = Path.GetFullPath(entryPath) + ".csproj" } },
+        }));
+
+        try
+        {
+            string? foundAssets = FileBasedCsWorkflowBuilder.FindAssetsFile(entryPath, runFileRoot);
+            string assemblyPath = FileBasedCsWorkflowBuilder.GetSdkOutputAssemblyPath(entryPath, runFileRoot);
+            string lockPath = FileBasedCsWorkflowBuilder.GetFileBasedOutputLockPath(
+                runFileRoot,
+                artifactsDirectory,
+                isWindows: false);
+
+            Assert.Equal(Path.GetFullPath(assetsPath), foundAssets);
+            Assert.True(assemblyPath.StartsWith(
+                Path.GetFullPath(artifactsDirectory) + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal));
+            Assert.True(lockPath.StartsWith(
+                Path.GetFullPath(runFileRoot) + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal));
+            Assert.Contains(Path.Combine("dotnet", "runfile"), runFileRoot, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// SDK evaluation JSON の契約 fixture を作ります。
     /// </summary>
-    private static string EvaluationJson(string targetFramework, string packageVersion) => $$"""
+    private static string EvaluationJson(
+        string targetFramework,
+        string packageVersion,
+        string sdkSdksPath = "/usr/share/dotnet/sdk/10.0.404/Sdks") => $$"""
         {
           "Properties": {
             "TargetFramework": "{{targetFramework}}",
@@ -99,7 +179,7 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             "RestoreAdditionalProjectSources": "",
             "RestoreConfigFile": "",
             "RestoreSources": "https://packages.example/v3/index.json",
-            "MSBuildSDKsPath": "/usr/share/dotnet/sdk/10.0.404/Sdks"
+            "MSBuildSDKsPath": "{{sdkSdksPath}}"
           },
           "Items": {
             "PackageReference": [

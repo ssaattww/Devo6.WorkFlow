@@ -30,7 +30,9 @@
 - commit `9aaab38c59431b0aa4d20f9c2f030a0dcdadb429` の CI [45574280551](https://github.com/ssaattww/Devo6.WorkFlow/actions/runs/45574280551) は Restore / Format verification 成功。net8.0 は `MSBuildSDKsPath` が CI に設定されているため、builder のテスト数件が `SCRIPT_BUILD_ENVIRONMENT_UNSUPPORTED` となる前提検査バグでコンパイルも一部失敗。net10.0 は 352 passed / 10 failed / 3 skipped。失敗内訳は T31 コメント不足、非公開 Provider を `ENTRY_STEP_NOT_FOUND` とする新契約に沿っていない旧期待値、MSBuildSDKsPath 環境拒否、キャンセル fixture のプロセス自然終了競合。この修正 commit で SDK path を evaluation の実効値として選択 SDK と照合し、テストの TFM 条件・期待値・コメント・キャンセル fixture を修正した。
 - 上記修正差分の C# XML コメント checker を SDK 10.0.404 同梱 Roslyn で一時コンパイルし、全 `src` / `tests` / `tools` を走査して違反 0 を確認した。`git diff --check` も成功。
 - 依存 assets と package cache がチェックアウトおよび既定 NuGet cache に存在しない。net8.0 と net10.0 のテスト project `build --no-restore` はどちらも `NETSDK1004`（`tests/Devo6.WorkFlow.Tests/obj/project.assets.json` 不在）で開始できなかった。公開 NuGet restore は行わず、両 TFM のコンパイル、net10.0 失敗対象だけの focused test は未確認。よって次の長時間全件 CI はまだ開始していない。
+- 再レビュー [7157650770](https://github.com/ssaattww/Devo6.WorkFlow/pull/28#issuecomment-7157650770) の追加対象に対応。F02 は `dotnet --info` の SDK Base Path と評価後 `MSBuildSDKsPath` の完全 path を比較し、通常選択 SDK を受け入れ、選択 root 外の同版 override を restore 前に拒否する。F03 は SDK runfile root を一度だけ取得し、同じ値を lock、assets 探索、DLL path に渡す。F05 は欠落 DLL で Provider ctor marker が残らない既存テストに加え、Logger assembly が host と同一であることを load context と実 Step で確認する。F07 は非公開 candidate のみなら `ENTRY_STEP_NOT_FOUND`、公開の継承 Provider は metadata-only で受け入れ、既存の副作用なし確認を維持する。
+- 今回の C# 差分は SDK 同梱 Roslyn parser で構文 error 0、XML comment checker 全対象の違反 0、`git diff --check` 成功。両 TFM の test-project build は再試行して `NETSDK1004`。焦点テストは assets がないため開始できず、公開 NuGet restore と次の全件 CI は行っていない。
 
 ## 現在の状態
 
-実装・テスト・追跡記録を修正した。XML コメント検査と diff check は成功。依存 assets 不在のため両 TFM build と net10.0 focused tests が実行できず、修正後 CI も未検証。Markdown lint の依存は導入しておらず未検証。公開 NuGet restore を許可しない既存制約のため、次の長時間 CI は開始していない。
+F02/F03/F05/F07 の追加修正とテストを作成した。Roslyn 構文検査、XML コメント checker、diff check は成功。依存 assets 不在により両 TFM build と focused tests は未実行。次の長時間 CI と Markdown lint は未実施。修正はまだ既存 PR branch に push していない。

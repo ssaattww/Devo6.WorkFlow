@@ -228,10 +228,20 @@ public sealed class FileBasedCsWorkflowBuilder
 
         string sourceHash = ComputeFileHash(fullEntryPath);
         string workingDirectory = Path.GetDirectoryName(fullEntryPath)!;
+        string runFileRoot;
+        try
+        {
+            runFileRoot = sdkRunFileRootProvider();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptBuildFailed, exception.Message);
+        }
+
         FileStream outputLock;
         try
         {
-            outputLock = AcquireFileBasedOutputLock(fullEntryPath, sdkRunFileRootProvider(), cancellationToken);
+            outputLock = AcquireFileBasedOutputLock(fullEntryPath, runFileRoot, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException or InvalidOperationException)
         {
@@ -259,6 +269,24 @@ public sealed class FileBasedCsWorkflowBuilder
                     $".NET SDK 10.0.404 or later in feature band 10.0.4xx is required. Selected SDK: {selectedSdkVersion}. {FormatProcessFailure(sdkVersionResult)}");
             }
 
+            FileBasedSdkProcessResult sdkInfoResult;
+            try
+            {
+                sdkInfoResult = sdkRunner.Run(["--info"], workingDirectory, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptSdkUnavailable, exception.Message);
+            }
+
+            if (!sdkInfoResult.Succeeded
+                || !TryGetSdkSdksPath(sdkInfoResult.StandardOutput, selectedSdkVersion, out string expectedSdkSdksPath))
+            {
+                return FileBasedCsBuildResult.Failure(
+                    WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported,
+                    "The selected SDK installation path could not be verified before restore.");
+            }
+
             FileBasedSdkProcessResult evaluationResult;
             try
             {
@@ -274,7 +302,7 @@ public sealed class FileBasedCsWorkflowBuilder
 
             string evaluationError = "";
             if (!evaluationResult.Succeeded
-                || !TryValidateEffectiveProject(evaluationResult.StandardOutput, preflight, lockFile!, selectedSdkVersion, out evaluationError))
+                || !TryValidateEffectiveProject(evaluationResult.StandardOutput, preflight, lockFile!, expectedSdkSdksPath, out evaluationError))
             {
                 string detail = evaluationResult.Succeeded
                     ? evaluationError
@@ -303,7 +331,7 @@ public sealed class FileBasedCsWorkflowBuilder
                     FormatProcessFailure(restoreResult));
             }
 
-            string? assetsPath = FindAssetsFile(fullEntryPath, sdkRunFileRootProvider());
+            string? assetsPath = FindAssetsFile(fullEntryPath, runFileRoot);
             string assetsError = "";
             if (assetsPath is null || !TryValidateAssets(assetsPath, preflight, lockFile!, out assetsError))
             {
@@ -338,8 +366,7 @@ public sealed class FileBasedCsWorkflowBuilder
                     FormatProcessFailure(buildResult));
             }
 
-            string outputDirectory = Path.Combine(GetSdkArtifactsDirectory(fullEntryPath), "bin", "debug");
-            string assemblyPath = Path.Combine(outputDirectory, Path.GetFileNameWithoutExtension(fullEntryPath) + ".dll");
+            string assemblyPath = GetSdkOutputAssemblyPath(fullEntryPath, runFileRoot);
             if (!File.Exists(assemblyPath) || IsInsideDirectory(assemblyPath, workingDirectory))
             {
                 return FileBasedCsBuildResult.Failure(
@@ -559,14 +586,14 @@ public sealed class FileBasedCsWorkflowBuilder
         string evaluationJson,
         CsFileInputPreflight.PreflightResult preflight,
         FileBasedNuGetLock lockFile,
-        string selectedSdkVersion,
+        string expectedSdkSdksPath,
         out string error)
     {
         return ValidateEffectiveProjectJson(
             evaluationJson,
             preflight.PackageReferences,
             lockFile.PackageSources,
-            selectedSdkVersion,
+            expectedSdkSdksPath,
             out error);
     }
 
@@ -577,7 +604,7 @@ public sealed class FileBasedCsWorkflowBuilder
         string evaluationJson,
         IReadOnlyDictionary<string, string> expectedPackageReferences,
         IReadOnlyList<string> expectedSources,
-        string expectedSdkVersion,
+        string expectedSdkSdksPath,
         out string error)
     {
         error = "";
@@ -607,10 +634,9 @@ public sealed class FileBasedCsWorkflowBuilder
                 return false;
             }
 
-            if (!Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(msbuildSdksPath))!)
-                    .Equals(expectedSdkVersion, StringComparison.OrdinalIgnoreCase))
+            if (!PathsEqual(msbuildSdksPath, expectedSdkSdksPath))
             {
-                error = $"The evaluated MSBuild SDK path does not match selected SDK {expectedSdkVersion}: {msbuildSdksPath}";
+                error = $"The evaluated MSBuild SDK path does not match the selected SDK installation: {msbuildSdksPath}";
                 return false;
             }
 
@@ -667,7 +693,7 @@ public sealed class FileBasedCsWorkflowBuilder
 
             return true;
         }
-        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException or ArgumentException or NotSupportedException or IOException)
         {
             error = $"The SDK did not return verifiable effective project data: {exception.Message}";
             return false;
@@ -712,6 +738,64 @@ public sealed class FileBasedCsWorkflowBuilder
     private static bool IsEnabled(string value) => bool.TryParse(value, out bool enabled) && enabled;
 
     /// <summary>
+    /// `dotnet --info` から選択 SDK の installation path を取得します。
+    /// </summary>
+    internal static bool TryGetSdkSdksPath(string sdkInfo, string selectedSdkVersion, out string sdkSdksPath)
+    {
+        sdkSdksPath = "";
+        foreach (string line in sdkInfo.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            string trimmed = line.Trim();
+            const string prefix = "Base Path:";
+            if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string basePath = trimmed[prefix.Length..].Trim();
+            if (!Path.IsPathRooted(basePath))
+            {
+                return false;
+            }
+
+            string normalizedBasePath;
+            try
+            {
+                normalizedBasePath = Path.GetFullPath(basePath);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or IOException)
+            {
+                return false;
+            }
+            if (!string.Equals(
+                    Path.GetFileName(Path.TrimEndingDirectorySeparator(normalizedBasePath)),
+                    selectedSdkVersion,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            sdkSdksPath = Path.GetFullPath(Path.Combine(normalizedBasePath, "Sdks"));
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// SDK paths を OS の file-system comparison で比較します。
+    /// </summary>
+    private static bool PathsEqual(string left, string right)
+    {
+        return Path.IsPathRooted(left)
+            && Path.IsPathRooted(right)
+            && string.Equals(
+                Path.GetFullPath(left),
+                Path.GetFullPath(right),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 有効な NuGet package source を読み取ります。
     /// </summary>
     private static IReadOnlyList<string> ReadPackageSources(string workingDirectory)
@@ -737,7 +821,7 @@ public sealed class FileBasedCsWorkflowBuilder
     /// <summary>
     /// 入力 file に対応する SDK runfile assets file を探します。
     /// </summary>
-    private static string? FindAssetsFile(string entryPath, string runFileRoot)
+    internal static string? FindAssetsFile(string entryPath, string runFileRoot)
     {
         string artifactsDirectory = GetSdkArtifactsDirectory(entryPath, runFileRoot);
         if (!Directory.Exists(artifactsDirectory))
@@ -799,6 +883,19 @@ public sealed class FileBasedCsWorkflowBuilder
         byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedPath));
         string hash = Convert.ToHexString(hashBytes).ToLowerInvariant();
         return Path.Combine(runFileRoot ?? GetCurrentSdkRunFileRoot(), $"{fileName}-{hash}");
+    }
+
+    /// <summary>
+    /// file-based SDK output root 内の workflow assembly path を返します。
+    /// </summary>
+    internal static string GetSdkOutputAssemblyPath(string entryPath, string runFileRoot)
+    {
+        string artifactsDirectory = GetSdkArtifactsDirectory(entryPath, runFileRoot);
+        return Path.Combine(
+            artifactsDirectory,
+            "bin",
+            "debug",
+            Path.GetFileNameWithoutExtension(entryPath) + ".dll");
     }
 
     /// <summary>

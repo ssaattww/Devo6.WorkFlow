@@ -125,8 +125,8 @@ public sealed class CsFileInputPreflightTests
     /// <summary>
     /// 評価済み TFM が契約外なら restore 前に停止します。
     /// </summary>
-    [Fact(DisplayName = "unverified effective project data stops before restore")]
-    public void UnsupportedEffectiveTargetDoesNotInvokeRestore()
+    [Fact(DisplayName = "an unapproved MSBuild SDK path stops before restore")]
+    public void UnapprovedSdkPathDoesNotInvokeRestore()
     {
         string sourcePath = CreateFileBasedSource();
         string directory = Path.GetDirectoryName(sourcePath)!;
@@ -150,18 +150,24 @@ public sealed class CsFileInputPreflightTests
             """);
         string evaluationJson = $$"""
             {
-              "Properties": { "TargetFramework": "net8.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "", "MSBuildSDKsPath": "/usr/share/dotnet/sdk/10.0.404/Sdks" },
+              "Properties": { "TargetFramework": "net10.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "", "MSBuildSDKsPath": "/opt/override/sdk/10.0.404/Sdks" },
               "Items": { "PackageReference": [ { "Identity": "Devo6.WorkFlow.Engine", "Version": "[0.1.0]" } ] }
             }
             """;
         var runner = new RecordingSdkRunner("10.0.404", evaluationJson);
-        var builder = new FileBasedCsWorkflowBuilder(runner, () => Path.Combine(directory, "sdk-output"));
+        int outputRootProviderCalls = 0;
+        var builder = new FileBasedCsWorkflowBuilder(runner, () =>
+        {
+            outputRootProviderCalls++;
+            return Path.Combine(directory, "sdk-output");
+        });
 
         FileBasedCsBuildResult result = builder.Build(sourcePath, "0.1.0");
 
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
-        Assert.Equal(2, runner.Calls.Count);
+        Assert.Equal(3, runner.Calls.Count);
+        Assert.Equal(1, outputRootProviderCalls);
         Assert.DoesNotContain(runner.Calls, call => call.Count > 0 && call[0] == "restore");
     }
 
@@ -178,6 +184,12 @@ public sealed class CsFileInputPreflightTests
 
         Assert.False(valid);
         Assert.Contains("CustomBeforeMicrosoftCommonProps", error);
+
+        var selectedSdkEnvironment = new Hashtable(StringComparer.OrdinalIgnoreCase)
+        {
+            ["MSBuildSDKsPath"] = "/usr/share/dotnet/sdk/10.0.404/Sdks",
+        };
+        Assert.True(CsFileInputPreflight.ValidateBuildEnvironment(sourcePath, out _, selectedSdkEnvironment));
     }
 
     /// <summary>
@@ -346,6 +358,7 @@ public sealed class CsFileInputPreflightTests
     {
         private readonly string sdkVersion;
         private readonly string evaluationJson;
+        private const string SdkInfo = "Base Path: /usr/share/dotnet/sdk/10.0.404/";
 
         /// <summary>
         /// SDK version and evaluation-only JSON output を指定します。
@@ -372,6 +385,11 @@ public sealed class CsFileInputPreflightTests
             if (arguments.Count == 1 && arguments[0] == "--version")
             {
                 return new FileBasedSdkProcessResult(0, sdkVersion, "");
+            }
+
+            if (arguments.Count == 1 && arguments[0] == "--info")
+            {
+                return new FileBasedSdkProcessResult(0, SdkInfo, "");
             }
 
             return new FileBasedSdkProcessResult(0, evaluationJson, "");

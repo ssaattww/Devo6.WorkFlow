@@ -117,6 +117,29 @@ public sealed class FileBasedCsMetadataValidatorTests
         Assert.True(result.Succeeded, FormatErrors(result));
     }
 
+    /// <summary>
+    /// 非公開 Entry だけでは公開 candidate が存在しない診断になります。
+    /// </summary>
+    [Fact(DisplayName = "a non-public-only entry is diagnosed as not found")]
+    public void NonPublicOnlyEntryIsNotFound()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] internal sealed class Hidden : IWorkflowEntryProvider
+            {
+                public Hidden() { }
+                public IWorkflowEntry Create() => null!;
+            }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.EntryStepNotFound, Assert.Single(result.Errors).Code);
+    }
+
     [Fact(DisplayName = "provider contract and Create implementation may be inherited")]
     /// <summary>
     /// 継承 Provider を metadata-only で受け入れ ctor や Create を動かさないことを確認します。
