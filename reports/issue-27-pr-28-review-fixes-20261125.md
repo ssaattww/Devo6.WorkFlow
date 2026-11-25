@@ -26,7 +26,8 @@
 - solution build は `--no-restore` で試みたが、`project.assets.json` がないため `NETSDK1004` で停止した。公開 NuGet 復元は実施していない。型チェック、焦点テスト、全件テストは未実施。
 - Markdown lint は Node 依存が作業環境に存在しないため未実施。依存導入や許可語一覧の変更はしていない。PR #28 の過去レビューが報告した aggregate lint の CSpell 223件、whitelist 316件超は、今回作業では再計測・差分帰属できていない。
 - 同一 HEAD `d28e51966a121db278feee122a4fae1d52fe4c95` の公式 GitHub Actions run [45564801005](https://github.com/ssaattww/Devo6.WorkFlow/actions/runs/45564801005) は完了。Restore と Format verification は成功、Test は失敗。`net8.0`: 321 passed / 1 failed / 3 skipped、`net10.0`: 339 passed / 3 skipped。失敗は `external cancellation during sync step returns STEP_CANCELED after completion` で、同期 Step の開始より前に 30 ms timer を設定していた。対象コードとテストはこの run の base と PR SHA で差分なし。従ってタイマー競合を改善候補としたが、base での再現原因までは確定していない。実行結果 artifact の取得は GitHub blob URL の `403 Forbidden` で失敗した。
+- 初回修正 commit `1fb48421c6b3c03dc750947e1747c7253fccad9c` の CI [45574034150](https://github.com/ssaattww/Devo6.WorkFlow/actions/runs/45574034150) は Restore 成功後、Linux 専用 process fixture の `File.SetUnixFileMode` に対する CA1416 警告で Format verification が失敗し、Test は実行されなかった。この呼出しを Windows 判定で囲み、Linux の mock 検査だけを実行するよう修正した。
 
 ## 現在の状態
 
-実装と焦点テスト案は作業ツリーにあり、ビルド、焦点・全件テスト、Markdown lint による検証が残る。レビュー修正後の commit / push と新しい CI は未実施。
+実装・焦点テスト・追跡記録は更新済み。修正後の CI による Format verification、焦点 / 全件テストは結果待ち。Markdown lint の依存は導入しておらず未検証。

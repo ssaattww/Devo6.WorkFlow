@@ -11,6 +11,11 @@ public sealed class FileBasedSdkRunnerCancellationTests
     [Fact(DisplayName = "cancelling an SDK mock terminates its child before the runner returns")]
     public async Task CancellationWaitsForProcessTreeAndOutputPipes()
     {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         string directory = Path.Combine(Path.GetTempPath(), "devo6-sdk-runner-cancel", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         string scriptPath = Path.Combine(directory, "sdk-mock.sh");
