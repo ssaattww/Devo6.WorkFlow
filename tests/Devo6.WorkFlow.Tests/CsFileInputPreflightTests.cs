@@ -192,6 +192,12 @@ public sealed class CsFileInputPreflightTests
         Assert.True(File.Exists(runner.GeneratedAssemblyPath));
         Assert.Contains(runner.Calls, call => call.Contains("restore", StringComparer.Ordinal));
         Assert.Contains(runner.Calls, call => call.Contains("--no-restore", StringComparer.Ordinal));
+        Assert.NotNull(runner.RunContext);
+        Assert.Contains(runner.Calls, call => call.Contains(
+            $"-p:RestorePackagesPath={runner.RunContext.NuGetPackagesDirectory}", StringComparer.Ordinal));
+        Assert.Equal(runner.RunContext.SessionDirectory, result.TemporaryDirectory);
+        Assert.True(Directory.Exists(result.TemporaryDirectory));
+        Directory.Delete(directory, recursive: true);
     }
 
     /// <summary>
@@ -233,6 +239,51 @@ public sealed class CsFileInputPreflightTests
         Assert.NotNull(runner.GeneratedAssemblyPath);
         Assert.True(File.Exists(runner.GeneratedAssemblyPath));
         Assert.False(File.Exists(sourcePath));
+        Assert.NotNull(result.TemporaryDirectory);
+        Assert.True(Directory.Exists(result.TemporaryDirectory));
+        Directory.Delete(directory, recursive: true);
+    }
+
+    /// <summary>
+    /// 復元 assets が別の package cache を記録している場合は生成前に拒否します。
+    /// </summary>
+    [Fact(DisplayName = "builder rejects restore assets outside the request-owned NuGet cache")]
+    public void BuilderRejectsAssetsUsingDifferentNuGetCache()
+    {
+        string sourcePath = CreateFileBasedSource();
+        string directory = Path.GetDirectoryName(sourcePath)!;
+        string feedPath = Path.Combine(directory, "feed");
+        Directory.CreateDirectory(feedPath);
+        File.WriteAllText(Path.Combine(directory, "NuGet.Config"),
+            $"<configuration><packageSources><clear/><add key=\"local\" value=\"{feedPath}\" /></packageSources></configuration>");
+        File.WriteAllText(Path.Combine(directory, "devo6.nuget.lock.yaml"), $$"""
+            version: 1
+            targetFramework: net10.0
+            verifyPackageSources: true
+            packageSources:
+              - "{{feedPath}}"
+            directReferences:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            resolvedDependencies:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            """);
+        string outputRoot = Path.Combine(directory, "sdk-output");
+        var runner = new InputChangingSdkRunner(sourcePath, feedPath, outputRoot, useForeignNuGetCacheInAssets: true);
+        var builder = new FileBasedCsWorkflowBuilder(runner, () => outputRoot);
+
+        FileBasedCsBuildResult result = builder.Build(sourcePath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMismatch, result.ErrorCode);
+        Assert.DoesNotContain(runner.Calls, call => call.FirstOrDefault() == "build"
+            && !call.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)));
+        Assert.NotNull(result.TemporaryDirectory);
+        Assert.True(Directory.Exists(result.TemporaryDirectory));
+        Directory.Delete(directory, recursive: true);
     }
 #endif
 
@@ -560,7 +611,8 @@ public sealed class CsFileInputPreflightTests
         string entryPath,
         string feedPath,
         string outputRoot,
-        bool deleteSourceDuringBuild = false) : IFileBasedSdkRunner
+        bool deleteSourceDuringBuild = false,
+        bool useForeignNuGetCacheInAssets = false) : IFileBasedSdkRunner
     {
         private const string SdkVersion = "10.0.404";
         /// <summary>
@@ -574,6 +626,11 @@ public sealed class CsFileInputPreflightTests
         public string? GeneratedAssemblyPath { get; private set; }
 
         /// <summary>
+        /// SDK process に渡された要求専用 cache context。
+        /// </summary>
+        public FileBasedSdkRunContext? RunContext { get; private set; }
+
+        /// <summary>
         /// SDK の復元・評価・生成を模擬し、生成中の入力変更を発生させます。
         /// </summary>
         public FileBasedSdkProcessResult Run(
@@ -583,6 +640,7 @@ public sealed class CsFileInputPreflightTests
             FileBasedSdkRunContext? runContext = null)
         {
             Calls.Add(arguments.ToArray());
+            RunContext = runContext;
             if (arguments.SequenceEqual(["--version"], StringComparer.Ordinal))
             {
                 return new FileBasedSdkProcessResult(0, SdkVersion, "");
@@ -596,16 +654,27 @@ public sealed class CsFileInputPreflightTests
             string artifactsDirectory = FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, runContext?.RunFileRoot ?? outputRoot);
             if (arguments.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
             {
-                return new FileBasedSdkProcessResult(0, EvaluationJson(runContext?.RunFileRoot ?? outputRoot), "");
+                return new FileBasedSdkProcessResult(0, EvaluationJson(
+                    runContext?.RunFileRoot ?? outputRoot,
+                    runContext?.NuGetPackagesDirectory ?? Path.Combine(outputRoot, "nuget-packages")), "");
             }
 
             if (arguments.FirstOrDefault() == "restore")
             {
+                string packagesDirectory = runContext!.NuGetPackagesDirectory;
+                if (useForeignNuGetCacheInAssets)
+                {
+                    packagesDirectory = Path.Combine(Path.GetDirectoryName(packagesDirectory)!, "other-packages");
+                }
                 string assetsPath = Path.Combine(artifactsDirectory, "obj", "project.assets.json");
                 Directory.CreateDirectory(Path.GetDirectoryName(assetsPath)!);
                 File.WriteAllText(assetsPath, JsonSerializer.Serialize(new
                 {
                     targets = new Dictionary<string, object> { ["net10.0"] = new Dictionary<string, object>() },
+                    packageFolders = new Dictionary<string, object>
+                    {
+                        [packagesDirectory] = new { },
+                    },
                     libraries = new Dictionary<string, object>
                     {
                         ["Devo6.WorkFlow.Engine/0.1.0"] = new { type = "package" },
@@ -625,6 +694,7 @@ public sealed class CsFileInputPreflightTests
                         restore = new
                         {
                             projectPath = Path.GetFullPath(entryPath) + ".csproj",
+                            packagesPath = packagesDirectory,
                             sources = new Dictionary<string, object> { [feedPath] = new { } },
                         },
                     },
@@ -656,7 +726,7 @@ public sealed class CsFileInputPreflightTests
         /// SDK が返す実効 build path と PackageReference を表す JSON を作成します。
         /// </summary>
         /// <returns>有効な file-based project evaluation JSON。</returns>
-        private string EvaluationJson(string sdkRunFileRoot)
+        private string EvaluationJson(string sdkRunFileRoot, string nugetPackagesDirectory)
         {
             string artifacts = Path.GetFullPath(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, sdkRunFileRoot));
             string bin = Path.Combine(artifacts, "bin");
@@ -676,6 +746,7 @@ public sealed class CsFileInputPreflightTests
                     ["RestoreAdditionalProjectSources"] = "",
                     ["RestoreConfigFile"] = "",
                     ["RestoreSources"] = feedPath,
+                    ["RestorePackagesPath"] = nugetPackagesDirectory,
                     ["MSBuildSDKsPath"] = "/usr/share/dotnet/sdk/10.0.404/Sdks",
                     ["MSBuildExtensionsPath"] = "/usr/share/dotnet/sdk/10.0.404/",
                     ["BaseOutputPath"] = bin + Path.DirectorySeparatorChar,

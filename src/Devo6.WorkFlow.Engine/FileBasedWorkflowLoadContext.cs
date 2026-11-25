@@ -69,29 +69,22 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
                     continue;
                 }
 
+                string? dependencyPath = ResolvePrivateDependencyPath(requested);
+                if (dependencyPath is not null)
+                {
+                    LoadFromAssemblyPath(dependencyPath);
+                    pendingPaths.Enqueue(dependencyPath);
+                    continue;
+                }
+
                 if (sharedFrameworkAssemblies.TryGetValue(requested.Name ?? "", out AssemblyName? frameworkAssembly))
                 {
                     EnsureCompatibleIdentity(requested, frameworkAssembly, "shared framework");
                     continue;
                 }
 
-                string? dependencyPath = dependencyResolver.ResolveAssemblyToPath(requested);
-                if (dependencyPath is null || !File.Exists(dependencyPath))
-                {
-                    throw new FileNotFoundException(
-                        $"A declared workflow dependency could not be resolved before Provider creation: {requested.FullName}",
-                        dependencyPath);
-                }
-
-                AssemblyName resolvedIdentity = AssemblyName.GetAssemblyName(dependencyPath);
-                if (!AssemblyIdentityEquals(requested, resolvedIdentity))
-                {
-                    throw new FileLoadException(
-                        $"A declared workflow dependency has a different assembly identity: requested {requested.FullName}; resolved {resolvedIdentity.FullName}.");
-                }
-
-                LoadFromAssemblyPath(Path.GetFullPath(dependencyPath));
-                pendingPaths.Enqueue(Path.GetFullPath(dependencyPath));
+                throw new FileNotFoundException(
+                    $"A declared workflow dependency could not be resolved before Provider creation: {requested.FullName}");
             }
         }
     }
@@ -106,14 +99,9 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
             return ResolveSharedAssembly(assemblyName, hostAssembly.GetName(), hostAssembly);
         }
 
-        string? dependencyPath = dependencyResolver.ResolveAssemblyToPath(assemblyName);
+        string? dependencyPath = ResolvePrivateDependencyPath(assemblyName);
         if (dependencyPath is not null)
         {
-            if (!File.Exists(dependencyPath))
-            {
-                throw new FileNotFoundException($"Workflow dependency was missing: {dependencyPath}", dependencyPath);
-            }
-
             return LoadFromAssemblyPath(dependencyPath);
         }
 
@@ -124,6 +112,35 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
         }
 
         throw new FileNotFoundException($"Workflow dependency could not be resolved: {assemblyName.FullName}");
+    }
+
+    /// <summary>
+    /// AssemblyDependencyResolver が選んだ private asset を存在と CLR identity で検証します。
+    /// </summary>
+    /// <param name="requested">workflow または private dependency の metadata が要求する assembly。</param>
+    /// <returns>検証済み private asset。該当 asset がない場合は null。</returns>
+    private string? ResolvePrivateDependencyPath(AssemblyName requested)
+    {
+        string? dependencyPath = dependencyResolver.ResolveAssemblyToPath(requested);
+        if (dependencyPath is null)
+        {
+            return null;
+        }
+
+        if (!File.Exists(dependencyPath))
+        {
+            throw new FileNotFoundException($"Workflow dependency was missing: {dependencyPath}", dependencyPath);
+        }
+
+        string fullPath = Path.GetFullPath(dependencyPath);
+        AssemblyName resolvedIdentity = AssemblyName.GetAssemblyName(fullPath);
+        if (!AssemblyIdentityEquals(requested, resolvedIdentity))
+        {
+            throw new FileLoadException(
+                $"A declared workflow dependency has a different assembly identity: requested {requested.FullName}; resolved {resolvedIdentity.FullName}.");
+        }
+
+        return fullPath;
     }
 
     /// <summary>

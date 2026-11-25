@@ -470,7 +470,10 @@ exit 0
 
             if (arguments.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
             {
-                return new FileBasedSdkProcessResult(0, CreateEvaluationJson(arguments[1], runContext?.RunFileRoot ?? outputRoot), "");
+                return new FileBasedSdkProcessResult(0, CreateEvaluationJson(
+                    arguments[1],
+                    runContext?.RunFileRoot ?? outputRoot,
+                    runContext?.NuGetPackagesDirectory ?? Path.Combine(outputRoot, "nuget-packages")), "");
             }
 
             if (arguments.Count > 0 && arguments[0] == "restore")
@@ -489,7 +492,10 @@ exit 0
                     string artifacts = FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(arguments[1], runContext!.RunFileRoot);
                     string assetsPath = Path.Combine(artifacts, "obj", "project.assets.json");
                     Directory.CreateDirectory(Path.GetDirectoryName(assetsPath)!);
-                    File.WriteAllText(assetsPath, CreateAssetsJson(arguments[1], Path.Combine(workingDirectory, "feed")));
+                    File.WriteAllText(assetsPath, CreateAssetsJson(
+                        arguments[1],
+                        Path.Combine(workingDirectory, "feed"),
+                        runContext.NuGetPackagesDirectory));
                     RestoreStarted.TrySetResult();
                     return new FileBasedSdkProcessResult(0, "", "");
                 }
@@ -523,7 +529,7 @@ exit 0
         /// </summary>
         /// <param name="entryPath">SDK が評価する file-based source path。</param>
         /// <returns>評価した project property と package reference の JSON。</returns>
-        private string CreateEvaluationJson(string entryPath, string sdkRunFileRoot)
+        private string CreateEvaluationJson(string entryPath, string sdkRunFileRoot, string nugetPackagesDirectory)
         {
             string artifacts = Path.GetFullPath(FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(
                 entryPath,
@@ -545,6 +551,7 @@ exit 0
                     ["RestoreAdditionalProjectSources"] = "",
                     ["RestoreConfigFile"] = "",
                     ["RestoreSources"] = Path.Combine(Path.GetDirectoryName(entryPath)!, "feed"),
+                    ["RestorePackagesPath"] = nugetPackagesDirectory,
                     ["MSBuildSDKsPath"] = "/usr/share/dotnet/sdk/10.0.404/Sdks",
                     ["MSBuildExtensionsPath"] = "/usr/share/dotnet/sdk/10.0.404/",
                     ["BaseOutputPath"] = bin + Path.DirectorySeparatorChar,
@@ -574,9 +581,10 @@ exit 0
         /// <param name="entryPath">assets の対象となる file-based source。</param>
         /// <param name="feedPath">lock に記録したローカル feed。</param>
         /// <returns>SDK restore 後に出力する assets JSON。</returns>
-        private static string CreateAssetsJson(string entryPath, string feedPath) => JsonSerializer.Serialize(new
+        private static string CreateAssetsJson(string entryPath, string feedPath, string nugetPackagesDirectory) => JsonSerializer.Serialize(new
         {
             targets = new Dictionary<string, object> { ["net10.0"] = new Dictionary<string, object>() },
+            packageFolders = new Dictionary<string, object> { [nugetPackagesDirectory] = new { } },
             libraries = new Dictionary<string, object> { ["Devo6.WorkFlow.Engine/0.1.0"] = new { type = "package" } },
             project = new
             {
@@ -593,6 +601,7 @@ exit 0
                 restore = new
                 {
                     projectPath = Path.GetFullPath(entryPath) + ".csproj",
+                    packagesPath = nugetPackagesDirectory,
                     sources = new Dictionary<string, object> { [feedPath] = new { } },
                 },
             },

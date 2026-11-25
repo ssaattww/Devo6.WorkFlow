@@ -17,7 +17,7 @@ namespace Devo6.WorkFlow.Engine;
 public sealed class FileBasedCsWorkflowBuilder
 {
     private const string EffectiveProjectProperties =
-        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath,BaseOutputPath,OutputPath,OutDir,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath,TargetPath,ArtifactsPath,RuntimeIdentifier,RuntimeIdentifiers";
+        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestorePackagesPath,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath,BaseOutputPath,OutputPath,OutDir,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath,TargetPath,ArtifactsPath,RuntimeIdentifier,RuntimeIdentifiers";
     private static readonly IDeserializer LockDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -70,7 +70,7 @@ public sealed class FileBasedCsWorkflowBuilder
     /// <param name="entryPath">class-only file-based workflow source。</param>
     /// <param name="hostPackageVersion">呼出元が実際に配布する Engine / CLI の NuGet package version。</param>
     /// <param name="cancellationToken">処理のキャンセル。</param>
-    /// <returns>build 結果と SDK が生成した分離成果物 path。</returns>
+    /// <returns>build 結果と SDK が生成した分離成果物 path。成功結果は成果物利用後に <see cref="FileBasedCsBuildResult.Dispose"/> して一時資材を回収します。</returns>
     public FileBasedCsBuildResult Build(
         string entryPath,
         string hostPackageVersion,
@@ -114,7 +114,7 @@ public sealed class FileBasedCsWorkflowBuilder
         }
 
         WorkflowValidationResult? metadataResult = null;
-        FileBasedCsBuildResult buildResult = BuildCore(
+        using FileBasedCsBuildResult buildResult = BuildCore(
             entryPath,
             hostPackageVersion,
             cancellationToken,
@@ -158,7 +158,7 @@ public sealed class FileBasedCsWorkflowBuilder
         }
 
         WorkflowResult? executionResult = null;
-        FileBasedCsBuildResult buildResult = BuildCore(
+        using FileBasedCsBuildResult buildResult = BuildCore(
             entryPath,
             hostPackageVersion,
             cancellationToken,
@@ -209,6 +209,9 @@ public sealed class FileBasedCsWorkflowBuilder
         IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
+        FileBasedSdkRunContext? sdkRunContext = null;
+        FileBasedCsBuildResult Failure(string code, string message) =>
+            FileBasedCsBuildResult.Failure(code, message, sdkRunContext?.SessionDirectory);
 
         string fullEntryPath = Path.GetFullPath(entryPath);
         CsFileInputPreflight.PreflightResult preflight = CsFileInputPreflight.Validate(
@@ -217,12 +220,12 @@ public sealed class FileBasedCsWorkflowBuilder
             allowedNuGetReferences);
         if (!preflight.Succeeded)
         {
-            return FileBasedCsBuildResult.Failure(preflight.ErrorCode, preflight.ErrorMessage);
+            return Failure(preflight.ErrorCode, preflight.ErrorMessage);
         }
 
         if (!IsExactPackageVersion(hostPackageVersion))
         {
-            return FileBasedCsBuildResult.Failure(
+            return Failure(
                 WorkflowErrorCodes.PackageVersionUnknown,
                 "The host NuGet package version is missing or invalid.");
         }
@@ -230,14 +233,14 @@ public sealed class FileBasedCsWorkflowBuilder
         if (!preflight.PackageReferences.TryGetValue("Devo6.WorkFlow.Engine", out string? requestedEngineVersion)
             || !string.Equals(requestedEngineVersion, hostPackageVersion, StringComparison.OrdinalIgnoreCase))
         {
-            return FileBasedCsBuildResult.Failure(
+            return Failure(
                 WorkflowErrorCodes.ScriptApiIdentityMismatch,
                 $"The Devo6.WorkFlow.Engine package version must exactly match the host package version {hostPackageVersion}.");
         }
 
         if (!TryReadAndValidateLock(preflight, fullEntryPath, out FileBasedNuGetLock? lockFile, out string lockError))
         {
-            return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptNugetLockMismatch, lockError);
+            return Failure(WorkflowErrorCodes.ScriptNugetLockMismatch, lockError);
         }
 
         string sourceHash = ComputeFileHash(fullEntryPath);
@@ -249,7 +252,7 @@ public sealed class FileBasedCsWorkflowBuilder
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptBuildFailed, exception.Message);
+            return Failure(WorkflowErrorCodes.ScriptBuildFailed, exception.Message);
         }
 
         FileStream outputLock;
@@ -266,7 +269,6 @@ public sealed class FileBasedCsWorkflowBuilder
 
         using (outputLock)
         {
-            FileBasedSdkRunContext sdkRunContext;
             try
             {
                 string sdkSessionRoot = sdkSessionRootProvider?.Invoke()
@@ -275,7 +277,7 @@ public sealed class FileBasedCsWorkflowBuilder
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptBuildFailed,
                     $"Could not create an isolated SDK output directory: {exception.Message}");
             }
@@ -287,12 +289,12 @@ public sealed class FileBasedCsWorkflowBuilder
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptSdkUnavailable, exception.Message);
+                return Failure(WorkflowErrorCodes.ScriptSdkUnavailable, exception.Message);
             }
             string selectedSdkVersion = sdkVersionResult.StandardOutput.Trim();
             if (!sdkVersionResult.Succeeded || !IsSupportedSdkVersion(selectedSdkVersion))
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptSdkUnavailable,
                     $".NET SDK 10.0.404 or later in feature band 10.0.4xx is required. Selected SDK: {selectedSdkVersion}. {FormatProcessFailure(sdkVersionResult)}");
             }
@@ -304,13 +306,13 @@ public sealed class FileBasedCsWorkflowBuilder
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptSdkUnavailable, exception.Message);
+                return Failure(WorkflowErrorCodes.ScriptSdkUnavailable, exception.Message);
             }
 
             if (!sdkInfoResult.Succeeded
                 || !TryGetSdkSdksPath(sdkInfoResult.StandardOutput, selectedSdkVersion, out string expectedSdkSdksPath))
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported,
                     "The selected SDK installation path could not be verified before restore.");
             }
@@ -319,14 +321,14 @@ public sealed class FileBasedCsWorkflowBuilder
             try
             {
                 evaluationResult = sdkRunner.Run(
-                    ["build", fullEntryPath, "--no-restore", $"-getProperty:{EffectiveProjectProperties}", "-getItem:PackageReference"],
+                    ["build", fullEntryPath, "--no-restore", RestorePackagesPathArgument(sdkRunContext), $"-getProperty:{EffectiveProjectProperties}", "-getItem:PackageReference"],
                     workingDirectory,
                     cancellationToken,
                     sdkRunContext);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, exception.Message);
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, exception.Message);
             }
 
             string evaluationError = "";
@@ -337,13 +339,14 @@ public sealed class FileBasedCsWorkflowBuilder
                     lockFile!,
                     expectedSdkSdksPath,
                     GetSdkArtifactsDirectory(fullEntryPath, sdkRunContext.RunFileRoot),
+                    sdkRunContext.NuGetPackagesDirectory,
                     fullEntryPath,
                     out evaluationError))
             {
                 string detail = evaluationResult.Succeeded
                     ? evaluationError
                     : FormatProcessFailure(evaluationResult);
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported,
                     $"The effective file-based project could not be verified before restore: {detail}");
             }
@@ -352,27 +355,32 @@ public sealed class FileBasedCsWorkflowBuilder
             try
             {
                 restoreResult = sdkRunner.Run(
-                    ["restore", fullEntryPath, "--verbosity", "quiet"],
+                    ["restore", fullEntryPath, "--verbosity", "quiet", RestorePackagesPathArgument(sdkRunContext)],
                     workingDirectory,
                     cancellationToken,
                     sdkRunContext);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptNugetRestoreFailed, exception.Message);
+                return Failure(WorkflowErrorCodes.ScriptNugetRestoreFailed, exception.Message);
             }
             if (!restoreResult.Succeeded)
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptNugetRestoreFailed,
                     FormatProcessFailure(restoreResult));
             }
 
             string? assetsPath = FindAssetsFile(fullEntryPath, sdkRunContext.RunFileRoot);
             string assetsError = "";
-            if (assetsPath is null || !TryValidateAssets(assetsPath, preflight, lockFile!, out assetsError))
+            if (assetsPath is null || !TryValidateAssets(
+                    assetsPath,
+                    preflight,
+                    lockFile!,
+                    sdkRunContext.NuGetPackagesDirectory,
+                    out assetsError))
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptNugetLockMismatch,
                     assetsPath is null ? "The SDK did not produce the expected project.assets.json." : assetsError);
             }
@@ -384,14 +392,14 @@ public sealed class FileBasedCsWorkflowBuilder
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptFileDirectiveInvalid,
                     $"The workflow source could not be re-read after restore; the restored assets were discarded: {exception.Message}");
             }
 
             if (!string.Equals(sourceHash, postRestoreSourceHash, StringComparison.Ordinal))
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptFileDirectiveInvalid,
                     "The workflow source changed during restore; the restored assets were discarded.");
             }
@@ -400,18 +408,18 @@ public sealed class FileBasedCsWorkflowBuilder
             try
             {
                 buildResult = sdkRunner.Run(
-                    ["build", fullEntryPath, "--no-restore", "--verbosity", "quiet"],
+                    ["build", fullEntryPath, "--no-restore", "--verbosity", "quiet", RestorePackagesPathArgument(sdkRunContext)],
                     workingDirectory,
                     cancellationToken,
                     sdkRunContext);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptBuildFailed, exception.Message);
+                return Failure(WorkflowErrorCodes.ScriptBuildFailed, exception.Message);
             }
             if (!buildResult.Succeeded)
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     ClassifyBuildFailure(buildResult),
                     FormatProcessFailure(buildResult));
             }
@@ -423,14 +431,14 @@ public sealed class FileBasedCsWorkflowBuilder
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptFileDirectiveInvalid,
                     $"The workflow source could not be re-read after build; the generated assembly was discarded: {exception.Message}");
             }
 
             if (!string.Equals(sourceHash, postBuildSourceHash, StringComparison.Ordinal))
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptFileDirectiveInvalid,
                     "The workflow source changed during build; the generated assembly was discarded.");
             }
@@ -438,13 +446,13 @@ public sealed class FileBasedCsWorkflowBuilder
             string assemblyPath = GetSdkOutputAssemblyPath(fullEntryPath, sdkRunContext.RunFileRoot);
             if (!File.Exists(assemblyPath) || IsInsideDirectory(assemblyPath, workingDirectory))
             {
-                return FileBasedCsBuildResult.Failure(
+                return Failure(
                     WorkflowErrorCodes.ScriptBuildFailed,
                     "The SDK output was missing or was not isolated from the workflow source directory.");
             }
 
             afterBuild?.Invoke(assemblyPath);
-            return FileBasedCsBuildResult.Success(assemblyPath, assetsPath, selectedSdkVersion);
+            return FileBasedCsBuildResult.Success(assemblyPath, assetsPath, selectedSdkVersion, sdkRunContext);
         }
     }
 
@@ -552,6 +560,7 @@ public sealed class FileBasedCsWorkflowBuilder
         string assetsPath,
         CsFileInputPreflight.PreflightResult preflight,
         FileBasedNuGetLock lockFile,
+        string expectedNuGetPackagesDirectory,
         out string error)
     {
         error = "";
@@ -625,6 +634,18 @@ public sealed class FileBasedCsWorkflowBuilder
             }
 
             JsonElement restore = root.GetProperty("project").GetProperty("restore");
+            if (!PathsEqual(
+                    restore.GetProperty("packagesPath").GetString() ?? "",
+                    expectedNuGetPackagesDirectory)
+                || !root.TryGetProperty("packageFolders", out JsonElement packageFolders)
+                || packageFolders.ValueKind != JsonValueKind.Object
+                || packageFolders.EnumerateObject().Count() != 1
+                || !PathsEqual(packageFolders.EnumerateObject().First().Name, expectedNuGetPackagesDirectory))
+            {
+                error = "Restored assets use a NuGet package cache outside the request-owned directory.";
+                return false;
+            }
+
             IReadOnlyList<string> restoredSources = restore.GetProperty("sources").EnumerateObject().Select(item => item.Name).ToArray();
             if (!PackageSourcesEqual(restoredSources, lockFile.PackageSources, Path.GetDirectoryName(preflight.LockFilePath)!))
             {
@@ -657,6 +678,7 @@ public sealed class FileBasedCsWorkflowBuilder
         FileBasedNuGetLock lockFile,
         string expectedSdkSdksPath,
         string expectedArtifactsDirectory,
+        string expectedRestorePackagesPath,
         string entryPath,
         out string error)
     {
@@ -667,7 +689,8 @@ public sealed class FileBasedCsWorkflowBuilder
             expectedSdkSdksPath,
             expectedArtifactsDirectory,
             entryPath,
-            out error);
+            out error,
+            expectedRestorePackagesPath);
     }
 
     /// <summary>
@@ -680,7 +703,8 @@ public sealed class FileBasedCsWorkflowBuilder
         string expectedSdkSdksPath,
         string expectedArtifactsDirectory,
         string entryPath,
-        out string error)
+        out string error,
+        string? expectedRestorePackagesPath = null)
     {
         error = "";
         try
@@ -698,6 +722,7 @@ public sealed class FileBasedCsWorkflowBuilder
             string additionalSources = GetProperty(properties, "RestoreAdditionalProjectSources");
             string restoreConfigFile = GetProperty(properties, "RestoreConfigFile");
             string restoreSources = GetProperty(properties, "RestoreSources");
+            string restorePackagesPath = GetProperty(properties, "RestorePackagesPath");
             string msbuildSdksPath = GetProperty(properties, "MSBuildSDKsPath");
             string msbuildExtensionsPath = GetProperty(properties, "MSBuildExtensionsPath");
             string baseOutputPath = GetProperty(properties, "BaseOutputPath");
@@ -723,6 +748,13 @@ public sealed class FileBasedCsWorkflowBuilder
             if (!PathsEqual(msbuildSdksPath, expectedSdkSdksPath))
             {
                 error = $"The evaluated MSBuild SDK path does not match the selected SDK installation: {msbuildSdksPath}";
+                return false;
+            }
+
+            if (expectedRestorePackagesPath is not null
+                && !PathsEqual(restorePackagesPath, expectedRestorePackagesPath))
+            {
+                error = $"The effective NuGet package cache does not match the request-owned directory: {restorePackagesPath}";
                 return false;
             }
 
@@ -844,6 +876,14 @@ public sealed class FileBasedCsWorkflowBuilder
             ? value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.ToString()
             : "";
     }
+
+    /// <summary>
+    /// SDK restore と build に要求専用 NuGet package cache を指定します。
+    /// </summary>
+    /// <param name="runContext">現在の SDK 要求の所有領域。</param>
+    /// <returns>MSBuild の RestorePackagesPath 指定。</returns>
+    private static string RestorePackagesPathArgument(FileBasedSdkRunContext runContext) =>
+        $"-p:RestorePackagesPath={runContext.NuGetPackagesDirectory}";
 
     /// <summary>
     /// project property が true として指定されているか判定します。
@@ -1207,19 +1247,49 @@ public sealed record FileBasedCsBuildResult(
     string ErrorMessage,
     string? AssemblyPath,
     string? AssetsPath,
-    string? SdkVersion)
+    string? SdkVersion) : IDisposable
 {
+    private FileBasedSdkRunContext? ownedRunContext;
+
+    /// <summary>
+    /// 正常完了後に成果物を所有する一時 directory。失敗時は診断用 directory です。
+    /// </summary>
+    public string? TemporaryDirectory { get; private init; }
+
     /// <summary>
     /// SDK build の成功結果を作成します。
     /// </summary>
-    internal static FileBasedCsBuildResult Success(string assemblyPath, string assetsPath, string sdkVersion) =>
-        new(true, "", "", assemblyPath, assetsPath, sdkVersion);
+    internal static FileBasedCsBuildResult Success(
+        string assemblyPath,
+        string assetsPath,
+        string sdkVersion,
+        FileBasedSdkRunContext runContext) =>
+        new(true, "", "", assemblyPath, assetsPath, sdkVersion)
+        {
+            TemporaryDirectory = runContext.SessionDirectory,
+            ownedRunContext = runContext,
+        };
 
     /// <summary>
     /// workflow 検証または実行の失敗結果を作成します。
     /// </summary>
-    internal static FileBasedCsBuildResult Failure(string code, string message) =>
-        new(false, code, message, null, null, null);
+    internal static FileBasedCsBuildResult Failure(string code, string message, string? diagnosticDirectory = null) =>
+        new(false, code, message, null, null, null)
+        {
+            TemporaryDirectory = diagnosticDirectory,
+        };
+
+    /// <summary>
+    /// 成功した Build の利用後に、この要求が所有する一時資材を回収します。
+    /// 失敗・取消の診断領域は保持します。
+    /// </summary>
+    public void Dispose()
+    {
+        if (Succeeded)
+        {
+            ownedRunContext?.CleanupAfterSuccessfulUse();
+        }
+    }
 }
 
 internal interface IFileBasedSdkRunner
@@ -1242,6 +1312,8 @@ internal interface IFileBasedSdkRunner
 /// <summary>
 /// 一回の SDK 要求専用の出力先とキャッシュ先を保持します。
 /// </summary>
+/// <param name="SessionDirectory">この要求だけが所有する一時 directory。</param>
+/// <param name="SessionParentDirectory">要求専用 directory を作成した root。</param>
 /// <param name="RunFileRoot">SDK の file-based assets と成果物を保存する root。</param>
 /// <param name="CliHomeDirectory">要求専用の .NET CLI home。</param>
 /// <param name="DataDirectory">要求専用の platform data home。</param>
@@ -1250,6 +1322,8 @@ internal interface IFileBasedSdkRunner
 /// <param name="NuGetPackagesDirectory">要求専用の NuGet package cache。</param>
 /// <param name="NuGetHttpCacheDirectory">要求専用の NuGet HTTP cache。</param>
 internal sealed record FileBasedSdkRunContext(
+    string SessionDirectory,
+    string SessionParentDirectory,
     string RunFileRoot,
     string CliHomeDirectory,
     string DataDirectory,
@@ -1258,6 +1332,8 @@ internal sealed record FileBasedSdkRunContext(
     string NuGetPackagesDirectory,
     string NuGetHttpCacheDirectory)
 {
+    private int cleanupStarted;
+
     /// <summary>
     /// SDK runfile、CLI、NuGet、temporary data が要求間で共有されない path を作成します。
     /// </summary>
@@ -1302,6 +1378,8 @@ internal sealed record FileBasedSdkRunContext(
         }
 
         return new FileBasedSdkRunContext(
+            sessionDirectory,
+            Path.GetFullPath(baseRunFileRoot),
             runFileRoot,
             cliHomeDirectory,
             dataDirectory,
@@ -1310,6 +1388,45 @@ internal sealed record FileBasedSdkRunContext(
             nugetPackagesDirectory,
             nugetHttpCacheDirectory);
     }
+
+    /// <summary>
+    /// 要求専用 directory だけを、正常な成果物利用完了後に削除します。
+    /// </summary>
+    internal void CleanupAfterSuccessfulUse()
+    {
+        if (Interlocked.Exchange(ref cleanupStarted, 1) != 0)
+        {
+            return;
+        }
+
+        string fullSessionDirectory = Path.GetFullPath(SessionDirectory);
+        string fullParentDirectory = Path.GetFullPath(SessionParentDirectory);
+        string sessionName = Path.GetFileName(fullSessionDirectory);
+        if (!string.Equals(Path.GetDirectoryName(fullSessionDirectory), fullParentDirectory, PathComparison)
+            || !sessionName.StartsWith("devo6-sdk-", StringComparison.Ordinal)
+            || !Guid.TryParseExact(sessionName["devo6-sdk-".Length..], "N", out _)
+            || !Directory.Exists(fullSessionDirectory))
+        {
+            return;
+        }
+
+        try
+        {
+            FileAttributes attributes = File.GetAttributes(fullSessionDirectory);
+            if ((attributes & FileAttributes.ReparsePoint) == 0)
+            {
+                Directory.Delete(fullSessionDirectory, recursive: true);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            // Preserve a session that could not be safely removed for later diagnostics.
+        }
+    }
+
+    private static StringComparison PathComparison => OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
 
     /// <summary>
     /// SDK 子 process に要求専用のデータ領域を適用します。

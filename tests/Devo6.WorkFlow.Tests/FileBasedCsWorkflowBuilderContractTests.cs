@@ -40,6 +40,38 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
     }
 
     /// <summary>
+    /// restore の実効 NuGet package path が要求専用 cache と一致する場合だけ許可します。
+    /// </summary>
+    [Fact(DisplayName = "effective NuGet cache path must match the SDK request-owned directory")]
+    public void EffectiveProjectRequiresRequestOwnedNuGetCache()
+    {
+        string json = EvaluationJson("net10.0", "[0.1.0]");
+        var references = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Devo6.WorkFlow.Engine"] = "0.1.0",
+        };
+
+        Assert.True(FileBasedCsWorkflowBuilder.ValidateEffectiveProjectJson(
+            json,
+            references,
+            ["https://packages.example/v3/index.json"],
+            "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            "/tmp/workflow-artifacts",
+            "/tmp/workflow.cs",
+            out string correctCacheError,
+            expectedRestorePackagesPath: "/tmp/request-nuget-packages"), correctCacheError);
+        Assert.False(FileBasedCsWorkflowBuilder.ValidateEffectiveProjectJson(
+            json,
+            references,
+            ["https://packages.example/v3/index.json"],
+            "/usr/share/dotnet/sdk/10.0.404/Sdks",
+            "/tmp/workflow-artifacts",
+            "/tmp/workflow.cs",
+            out _,
+            expectedRestorePackagesPath: "/tmp/other-nuget-packages"));
+    }
+
+    /// <summary>
     /// 正規 SDK installation から離れた MSBuildSDKsPath override を拒否します。
     /// </summary>
     [Fact(DisplayName = "effective SDK evaluation rejects an unapproved MSBuild SDK path override")]
@@ -221,6 +253,49 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
         }
     }
 
+    /// <summary>
+    /// 成功結果の利用終了後だけ所有 session を回収し、失敗時は診断 session を残します。
+    /// </summary>
+    [Fact(DisplayName = "successful result disposal removes only its owned SDK session")]
+    public void BuildResultDisposalHonorsSdkSessionOwnership()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "devo6-sdk-result-lifetime", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string sibling = Path.Combine(root, "unowned.txt");
+        File.WriteAllText(sibling, "keep");
+
+        try
+        {
+            FileBasedSdkRunContext successfulContext = FileBasedSdkRunContext.Create(root);
+            FileBasedCsBuildResult successfulResult = FileBasedCsBuildResult.Success(
+                Path.Combine(successfulContext.RunFileRoot, "workflow.dll"),
+                Path.Combine(successfulContext.RunFileRoot, "obj", "project.assets.json"),
+                "10.0.404",
+                successfulContext);
+            Assert.True(Directory.Exists(successfulContext.SessionDirectory));
+
+            successfulResult.Dispose();
+
+            Assert.False(Directory.Exists(successfulContext.SessionDirectory));
+            Assert.Equal("keep", File.ReadAllText(sibling));
+
+            FileBasedSdkRunContext failedContext = FileBasedSdkRunContext.Create(root);
+            FileBasedCsBuildResult failedResult = FileBasedCsBuildResult.Failure(
+                WorkflowErrorCodes.ScriptBuildFailed,
+                "fixture failure",
+                failedContext.SessionDirectory);
+            failedResult.Dispose();
+
+            Assert.Equal(failedContext.SessionDirectory, failedResult.TemporaryDirectory);
+            Assert.True(Directory.Exists(failedContext.SessionDirectory));
+            Assert.Equal("keep", File.ReadAllText(sibling));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact(DisplayName = "C# compiler diagnostics are distinguished from MSBuild failures")]
     /// <summary>
     /// C# compiler error と一般 build error を分けます。
@@ -300,7 +375,8 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
         string targetFramework,
         string packageVersion,
         string sdkSdksPath = "/usr/share/dotnet/sdk/10.0.404/Sdks",
-        string extensionsPath = "/usr/share/dotnet/sdk/10.0.404/") => $$"""
+        string extensionsPath = "/usr/share/dotnet/sdk/10.0.404/",
+        string restorePackagesPath = "/tmp/request-nuget-packages") => $$"""
         {
           "Properties": {
             "TargetFramework": "{{targetFramework}}",
@@ -312,6 +388,7 @@ public sealed class FileBasedCsWorkflowBuilderContractTests
             "RestoreAdditionalProjectSources": "",
             "RestoreConfigFile": "",
             "RestoreSources": "https://packages.example/v3/index.json",
+            "RestorePackagesPath": "{{restorePackagesPath}}",
             "MSBuildSDKsPath": "{{sdkSdksPath}}",
             "MSBuildExtensionsPath": "{{extensionsPath}}",
             "BaseOutputPath": "/tmp/workflow-artifacts/bin/",

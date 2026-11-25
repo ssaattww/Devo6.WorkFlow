@@ -48,6 +48,48 @@ public sealed class FileBasedWorkflowExecutorTests
         Assert.False(FileBasedWorkflowLoadContext.IsCompatibleFrameworkAssemblyIdentity(differentKey, available));
     }
 
+    /// <summary>
+    /// 実在する private asset を shared framework 名の asset より先に選びます。
+    /// </summary>
+    [Fact(DisplayName = "private dependency resolution precedes shared framework fallback in preflight and execution")]
+    public void PrivateDependencyWithSharedFrameworkNameUsesTheSameAssetDuringPreloadAndExecution()
+    {
+        string directory = CreateDirectory();
+        string marker = Path.Combine(directory, "private-framework-name-loaded");
+        string dependencyPath = Path.Combine(directory, "System.Private.Uri.dll");
+        CompileFixture(
+            directory,
+            "namespace LocalDependency; public static class Hook { public static void Touch(string path) => System.IO.File.WriteAllText(path, \"private\"); }",
+            dependencyPath,
+            excludedPlatformAssemblyNames: ["System.Private.Uri"]);
+        string escapedMarker = marker.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal);
+        string source = $$"""
+            using Devo6.WorkFlow.Engine;
+            using LocalDependency;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider() => Hook.Touch("{{escapedMarker}}");
+                public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<int>("step", _ => 1);
+            }
+            """;
+        string assemblyPath = CompileFixture(
+            directory,
+            source,
+            Path.Combine(directory, "workflow-private-framework-name.dll"),
+            [dependencyPath],
+            ["System.Private.Uri"]);
+        WorkflowValidationResult validation = FileBasedCsMetadataValidator.Validate(
+            assemblyPath, "Main", out string? providerTypeName, out string? qualifiedEntryName);
+        Assert.True(validation.Succeeded, FormatErrors(validation));
+
+        WorkflowResult result = FileBasedWorkflowExecutor.Execute(
+            assemblyPath, providerTypeName!, qualifiedEntryName!, options: null);
+
+        Assert.True(result.Succeeded, $"{result.ErrorCode}: {result.ErrorMessage}");
+        Assert.Equal("private", File.ReadAllText(marker));
+    }
+
     [Fact(DisplayName = "file-based execution calls Create and Step through the host contract")]
     /// <summary>
     /// Provider.Create と Step が host 型を使って一度実行されることを確認します。
@@ -313,7 +355,12 @@ public sealed class FileBasedWorkflowExecutorTests
     /// <summary>
     /// C# fixture を一時 managed assembly に compile します。
     /// </summary>
-    private static string CompileFixture(string directory, string source, string? outputPath = null, IReadOnlyList<string>? additionalReferences = null)
+    private static string CompileFixture(
+        string directory,
+        string source,
+        string? outputPath = null,
+        IReadOnlyList<string>? additionalReferences = null,
+        IReadOnlyList<string>? excludedPlatformAssemblyNames = null)
     {
         string assemblyPath = outputPath ?? Path.Combine(directory, "workflow-fixture.dll");
         SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(source,
@@ -322,6 +369,9 @@ public sealed class FileBasedWorkflowExecutorTests
             ?? throw new InvalidOperationException("Trusted platform assemblies are unavailable.");
         IEnumerable<MetadataReference> references = trustedAssemblies
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Where(path => !(excludedPlatformAssemblyNames ?? []).Contains(
+                Path.GetFileNameWithoutExtension(path),
+                StringComparer.OrdinalIgnoreCase))
             .Append(typeof(WorkflowEntryAttribute).Assembly.Location)
             .Append(typeof(WorkflowErrorCodes).Assembly.Location)
             .Concat(additionalReferences ?? [])
