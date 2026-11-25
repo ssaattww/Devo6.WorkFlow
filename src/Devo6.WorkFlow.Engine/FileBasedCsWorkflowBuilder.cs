@@ -1,6 +1,7 @@
 #if NET10_0
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Devo6.WorkFlow.Abstractions;
@@ -15,14 +16,14 @@ namespace Devo6.WorkFlow.Engine;
 /// </summary>
 public sealed class FileBasedCsWorkflowBuilder
 {
-    private static readonly Regex SupportedSdkVersion = new(
-        @"^10\.0\.4\d{2}$",
-        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private const string EffectiveProjectProperties =
+        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally";
     private static readonly IDeserializer LockDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
         .Build();
     private readonly IFileBasedSdkRunner sdkRunner;
+    private readonly Func<string> sdkRunFileRootProvider;
 
     /// <summary>
     /// .NET 10 file-based C# builder を作成します。
@@ -36,8 +37,17 @@ public sealed class FileBasedCsWorkflowBuilder
     /// file-based C# workflow の restore、build、検証、実行を構成します。
     /// </summary>
     internal FileBasedCsWorkflowBuilder(IFileBasedSdkRunner sdkRunner)
+        : this(sdkRunner, sdkRunFileRootProvider: null)
+    {
+    }
+
+    /// <summary>
+    /// SDK runner と isolatable artifact root を指定して builder を作成します。
+    /// </summary>
+    internal FileBasedCsWorkflowBuilder(IFileBasedSdkRunner sdkRunner, Func<string>? sdkRunFileRootProvider)
     {
         this.sdkRunner = sdkRunner;
+        this.sdkRunFileRootProvider = sdkRunFileRootProvider ?? GetCurrentSdkRunFileRoot;
     }
 
     /// <summary>
@@ -50,9 +60,10 @@ public sealed class FileBasedCsWorkflowBuilder
     public FileBasedCsBuildResult Build(
         string entryPath,
         string hostPackageVersion,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null)
     {
-        return BuildCore(entryPath, hostPackageVersion, cancellationToken, afterBuild: null);
+        return BuildCore(entryPath, hostPackageVersion, cancellationToken, afterBuild: null, allowedNuGetReferences);
     }
 
     /// <summary>
@@ -69,7 +80,8 @@ public sealed class FileBasedCsWorkflowBuilder
         string hostPackageVersion,
         string? entryName = null,
         IReadOnlyList<string>? configPaths = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
         string entryDirectory = Path.GetDirectoryName(Path.GetFullPath(entryPath))!;
@@ -92,7 +104,8 @@ public sealed class FileBasedCsWorkflowBuilder
             entryPath,
             hostPackageVersion,
             cancellationToken,
-            assemblyPath => metadataResult = FileBasedCsMetadataValidator.Validate(assemblyPath, entryName));
+            assemblyPath => metadataResult = FileBasedCsMetadataValidator.Validate(assemblyPath, entryName),
+            allowedNuGetReferences);
         if (!buildResult.Succeeded)
         {
             return Failure(entryPath, buildResult.ErrorCode, buildResult.ErrorMessage);
@@ -113,7 +126,8 @@ public sealed class FileBasedCsWorkflowBuilder
         string? entryName = null,
         WorkflowExecutionOptions? options = null,
         IReadOnlyList<string>? configPaths = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
         string entryDirectory = Path.GetDirectoryName(Path.GetFullPath(entryPath))!;
@@ -149,7 +163,8 @@ public sealed class FileBasedCsWorkflowBuilder
 
                 executionResult = FileBasedWorkflowExecutor.Execute(
                     assemblyPath, providerTypeName, qualifiedEntryName, options);
-            });
+            },
+            allowedNuGetReferences);
         if (!buildResult.Succeeded)
         {
             return ExecutionFailure(entryPath, buildResult.ErrorCode, buildResult.ErrorMessage);
@@ -176,14 +191,16 @@ public sealed class FileBasedCsWorkflowBuilder
         string entryPath,
         string hostPackageVersion,
         CancellationToken cancellationToken,
-        Action<string>? afterBuild)
+        Action<string>? afterBuild,
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
 
         string fullEntryPath = Path.GetFullPath(entryPath);
         CsFileInputPreflight.PreflightResult preflight = CsFileInputPreflight.Validate(
             fullEntryPath,
-            CsFileInputPreflight.CurrentHostTargetFramework);
+            CsFileInputPreflight.CurrentHostTargetFramework,
+            allowedNuGetReferences);
         if (!preflight.Succeeded)
         {
             return FileBasedCsBuildResult.Failure(preflight.ErrorCode, preflight.ErrorMessage);
@@ -214,9 +231,9 @@ public sealed class FileBasedCsWorkflowBuilder
         FileStream outputLock;
         try
         {
-            outputLock = AcquireFileBasedOutputLock(fullEntryPath, cancellationToken);
+            outputLock = AcquireFileBasedOutputLock(fullEntryPath, sdkRunFileRootProvider(), cancellationToken);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException or InvalidOperationException)
         {
             return FileBasedCsBuildResult.Failure(
                 WorkflowErrorCodes.ScriptBuildFailed,
@@ -235,11 +252,36 @@ public sealed class FileBasedCsWorkflowBuilder
                 return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptSdkUnavailable, exception.Message);
             }
             string selectedSdkVersion = sdkVersionResult.StandardOutput.Trim();
-            if (!sdkVersionResult.Succeeded || !SupportedSdkVersion.IsMatch(selectedSdkVersion))
+            if (!sdkVersionResult.Succeeded || !IsSupportedSdkVersion(selectedSdkVersion))
             {
                 return FileBasedCsBuildResult.Failure(
                     WorkflowErrorCodes.ScriptSdkUnavailable,
-                    $"A .NET SDK from feature band 10.0.4xx is required. Selected SDK: {selectedSdkVersion}. {FormatProcessFailure(sdkVersionResult)}");
+                    $".NET SDK 10.0.404 or later in feature band 10.0.4xx is required. Selected SDK: {selectedSdkVersion}. {FormatProcessFailure(sdkVersionResult)}");
+            }
+
+            FileBasedSdkProcessResult evaluationResult;
+            try
+            {
+                evaluationResult = sdkRunner.Run(
+                    ["build", fullEntryPath, "--no-restore", $"-getProperty:{EffectiveProjectProperties}", "-getItem:PackageReference"],
+                    workingDirectory,
+                    cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return FileBasedCsBuildResult.Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, exception.Message);
+            }
+
+            string evaluationError = "";
+            if (!evaluationResult.Succeeded
+                || !TryValidateEffectiveProject(evaluationResult.StandardOutput, preflight, lockFile!, out evaluationError))
+            {
+                string detail = evaluationResult.Succeeded
+                    ? evaluationError
+                    : FormatProcessFailure(evaluationResult);
+                return FileBasedCsBuildResult.Failure(
+                    WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported,
+                    $"The effective file-based project could not be verified before restore: {detail}");
             }
 
             FileBasedSdkProcessResult restoreResult;
@@ -261,7 +303,7 @@ public sealed class FileBasedCsWorkflowBuilder
                     FormatProcessFailure(restoreResult));
             }
 
-            string? assetsPath = FindAssetsFile(fullEntryPath);
+            string? assetsPath = FindAssetsFile(fullEntryPath, sdkRunFileRootProvider());
             string assetsError = "";
             if (assetsPath is null || !TryValidateAssets(assetsPath, preflight, lockFile!, out assetsError))
             {
@@ -292,11 +334,11 @@ public sealed class FileBasedCsWorkflowBuilder
             if (!buildResult.Succeeded)
             {
                 return FileBasedCsBuildResult.Failure(
-                    WorkflowErrorCodes.ScriptBuildFailed,
+                    ClassifyBuildFailure(buildResult),
                     FormatProcessFailure(buildResult));
             }
 
-            string outputDirectory = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(assetsPath)!, "..", "bin", "debug"));
+            string outputDirectory = Path.Combine(GetSdkArtifactsDirectory(fullEntryPath), "bin", "debug");
             string assemblyPath = Path.Combine(outputDirectory, Path.GetFileNameWithoutExtension(fullEntryPath) + ".dll");
             if (!File.Exists(assemblyPath) || IsInsideDirectory(assemblyPath, workingDirectory))
             {
@@ -511,6 +553,154 @@ public sealed class FileBasedCsWorkflowBuilder
     }
 
     /// <summary>
+    /// SDK の evaluation-only 出力から実効 project properties と直接参照を確認します。
+    /// </summary>
+    private static bool TryValidateEffectiveProject(
+        string evaluationJson,
+        CsFileInputPreflight.PreflightResult preflight,
+        FileBasedNuGetLock lockFile,
+        out string error)
+    {
+        return ValidateEffectiveProjectJson(
+            evaluationJson,
+            preflight.PackageReferences,
+            lockFile.PackageSources,
+            out error);
+    }
+
+    /// <summary>
+    /// Evaluation-only JSON の TFM、build properties、source、直接参照を照合します。
+    /// </summary>
+    internal static bool ValidateEffectiveProjectJson(
+        string evaluationJson,
+        IReadOnlyDictionary<string, string> expectedPackageReferences,
+        IReadOnlyList<string> expectedSources,
+        out string error)
+    {
+        error = "";
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(evaluationJson);
+            JsonElement root = document.RootElement;
+            JsonElement properties = root.GetProperty("Properties");
+            string targetFramework = GetProperty(properties, "TargetFramework");
+            string targetFrameworks = GetProperty(properties, "TargetFrameworks");
+            string outputType = GetProperty(properties, "OutputType");
+            string publishAot = GetProperty(properties, "PublishAot");
+            string packageLockEnabled = GetProperty(properties, "RestorePackagesWithLockFile");
+            string restoreLockedMode = GetProperty(properties, "RestoreLockedMode");
+            string centralVersionsEnabled = GetProperty(properties, "ManagePackageVersionsCentrally");
+            string additionalSources = GetProperty(properties, "RestoreAdditionalProjectSources");
+            string restoreConfigFile = GetProperty(properties, "RestoreConfigFile");
+            string restoreSources = GetProperty(properties, "RestoreSources");
+
+            if (!string.Equals(targetFramework, "net10.0", StringComparison.OrdinalIgnoreCase)
+                || !string.IsNullOrWhiteSpace(targetFrameworks)
+                || !string.Equals(outputType, "Library", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(publishAot, "false", StringComparison.OrdinalIgnoreCase))
+            {
+                error = "The evaluated project must target only net10.0, produce a Library, and disable AOT.";
+                return false;
+            }
+
+            if (IsEnabled(packageLockEnabled) || IsEnabled(restoreLockedMode) || IsEnabled(centralVersionsEnabled)
+                || !string.IsNullOrWhiteSpace(additionalSources)
+                || !string.IsNullOrWhiteSpace(restoreConfigFile))
+            {
+                error = "The evaluated project uses an unsupported lock, central package version, or NuGet source override.";
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(restoreSources))
+            {
+                string[] sources = restoreSources.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (!StringSetEquals(sources, expectedSources))
+                {
+                    error = "The evaluated NuGet source override does not match the required lock sources.";
+                    return false;
+                }
+            }
+
+            if (!root.TryGetProperty("Items", out JsonElement items)
+                || !items.TryGetProperty("PackageReference", out JsonElement packageReferences)
+                || packageReferences.ValueKind != JsonValueKind.Array
+                || packageReferences.GetArrayLength() != expectedPackageReferences.Count)
+            {
+                error = "The evaluated PackageReference set differs from the input directives.";
+                return false;
+            }
+
+            foreach (JsonElement packageReference in packageReferences.EnumerateArray())
+            {
+                string packageId = GetProperty(packageReference, "Identity");
+                string version = GetProperty(packageReference, "Version");
+                if (!expectedPackageReferences.TryGetValue(packageId, out string? requestedVersion)
+                    || !string.Equals(version, $"[{requestedVersion}]", StringComparison.OrdinalIgnoreCase))
+                {
+                    error = $"The evaluated PackageReference is not an exact input directive: {packageId} {version}";
+                    return false;
+                }
+
+                HashSet<string> expectedMetadata = new(StringComparer.Ordinal)
+                {
+                    "Identity", "Version", "FullPath", "RootDir", "Filename", "Extension", "RelativeDir",
+                    "Directory", "RecursiveDir", "ModifiedTime", "CreatedTime", "AccessedTime",
+                    "DefiningProjectFullPath", "DefiningProjectDirectory", "DefiningProjectName", "DefiningProjectExtension",
+                };
+                if (packageReference.EnumerateObject().Any(property => !expectedMetadata.Contains(property.Name)))
+                {
+                    error = $"The evaluated PackageReference contains unsupported metadata: {packageId}";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            error = $"The SDK did not return verifiable effective project data: {exception.Message}";
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// build failure が C# compiler diagnostic を含む場合は専用診断へ分類します。
+    /// </summary>
+    internal static string ClassifyBuildFailure(FileBasedSdkProcessResult result)
+    {
+        string output = result.StandardError + Environment.NewLine + result.StandardOutput;
+        return Regex.IsMatch(output, @"\berror\s+CS\d{4,6}\s*:", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            ? WorkflowErrorCodes.ScriptCompileFailed
+            : WorkflowErrorCodes.ScriptBuildFailed;
+    }
+
+    /// <summary>
+    /// SDK 10.0.404 以上かつ同じ 10.0.4xx feature band か判定します。
+    /// </summary>
+    internal static bool IsSupportedSdkVersion(string value)
+    {
+        return Version.TryParse(value, out Version? version)
+            && version.Major == 10
+            && version.Minor == 0
+            && version.Build is >= 404 and <= 499;
+    }
+
+    /// <summary>
+    /// SDK metadata の property 値を string として取得します。
+    /// </summary>
+    private static string GetProperty(JsonElement container, string name)
+    {
+        return container.TryGetProperty(name, out JsonElement value)
+            ? value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.ToString()
+            : "";
+    }
+
+    /// <summary>
+    /// project property が true として指定されているか判定します。
+    /// </summary>
+    private static bool IsEnabled(string value) => bool.TryParse(value, out bool enabled) && enabled;
+
+    /// <summary>
     /// 有効な NuGet package source を読み取ります。
     /// </summary>
     private static IReadOnlyList<string> ReadPackageSources(string workingDirectory)
@@ -536,22 +726,23 @@ public sealed class FileBasedCsWorkflowBuilder
     /// <summary>
     /// 入力 file に対応する SDK runfile assets file を探します。
     /// </summary>
-    private static string? FindAssetsFile(string entryPath)
+    private static string? FindAssetsFile(string entryPath, string runFileRoot)
     {
-        string runFileRoot = GetRunFileRoot();
-        if (!Directory.Exists(runFileRoot))
+        string artifactsDirectory = GetSdkArtifactsDirectory(entryPath, runFileRoot);
+        if (!Directory.Exists(artifactsDirectory))
         {
             return null;
         }
 
         string expectedProjectPath = Path.GetFullPath(entryPath) + ".csproj";
-        foreach (string candidate in Directory.EnumerateFiles(runFileRoot, "project.assets.json", SearchOption.AllDirectories))
+        StringComparison pathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (string candidate in Directory.EnumerateFiles(artifactsDirectory, "project.assets.json", SearchOption.AllDirectories))
         {
             try
             {
                 using JsonDocument document = JsonDocument.Parse(File.ReadAllText(candidate));
                 string projectPath = document.RootElement.GetProperty("project").GetProperty("restore").GetProperty("projectPath").GetString() ?? "";
-                if (string.Equals(Path.GetFullPath(projectPath), expectedProjectPath, StringComparison.Ordinal))
+                if (string.Equals(Path.GetFullPath(projectPath), expectedProjectPath, pathComparison))
                 {
                     return Path.GetFullPath(candidate);
                 }
@@ -567,25 +758,47 @@ public sealed class FileBasedCsWorkflowBuilder
     /// <summary>
     /// SDK runfile のデータ root を取得します。
     /// </summary>
-    private static string GetRunFileRoot()
+    internal static string GetSdkRunFileRoot(bool isWindows, string tempPath, string localApplicationDataPath)
     {
-        string? xdgDataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
-        string localDataRoot = string.IsNullOrWhiteSpace(xdgDataHome)
-            ? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
-            : xdgDataHome;
-        return Path.GetFullPath(Path.Combine(localDataRoot, "dotnet", "runfile"));
+        string root = isWindows ? tempPath : localApplicationDataPath;
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            throw new InvalidOperationException("The platform did not provide an SDK file-based artifact root.");
+        }
+
+        return Path.GetFullPath(Path.Combine(root, "dotnet", "runfile"));
+    }
+
+    /// <summary>
+    /// Current process platform に対応する SDK runfile root を取得します。
+    /// </summary>
+    private static string GetCurrentSdkRunFileRoot() => GetSdkRunFileRoot(
+        OperatingSystem.IsWindows(),
+        Path.GetTempPath(),
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
+    /// <summary>
+    /// SDK と同じ path casing normalization を適用した runfile artifact directory を返します。
+    /// </summary>
+    internal static string GetSdkArtifactsDirectory(string entryPath, string? runFileRoot = null)
+    {
+        string fullEntryPath = Path.GetFullPath(entryPath);
+        string fileName = Path.GetFileNameWithoutExtension(fullEntryPath);
+        string normalizedPath = fullEntryPath.ToUpperInvariant();
+        byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedPath));
+        string hash = Convert.ToHexString(hashBytes).ToLowerInvariant();
+        return Path.Combine(runFileRoot ?? GetCurrentSdkRunFileRoot(), $"{fileName}-{hash}");
     }
 
     /// <summary>
     /// 入力パスに対応する SDK 出力 lock を取得します。
     /// </summary>
-    private static FileStream AcquireFileBasedOutputLock(string entryPath, CancellationToken cancellationToken)
+    private static FileStream AcquireFileBasedOutputLock(string entryPath, string runFileRoot, CancellationToken cancellationToken)
     {
-        string runFileRoot = GetRunFileRoot();
-        string lockRoot = Path.Combine(runFileRoot, ".devo6-locks");
+        string artifactsDirectory = GetSdkArtifactsDirectory(entryPath, runFileRoot);
+        string lockPath = GetFileBasedOutputLockPath(runFileRoot, artifactsDirectory, OperatingSystem.IsWindows());
+        string lockRoot = Path.GetDirectoryName(lockPath)!;
         Directory.CreateDirectory(lockRoot);
-        string lockName = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(entryPath)))) + ".lock";
-        string lockPath = Path.Combine(lockRoot, lockName);
         DateTime deadline = DateTime.UtcNow.AddMinutes(2);
         while (true)
         {
@@ -599,6 +812,16 @@ public sealed class FileBasedCsWorkflowBuilder
                 Thread.Sleep(100);
             }
         }
+    }
+
+    /// <summary>
+    /// SDK artifact directory と同じ platform path identity に対応する排他 lock path を返します。
+    /// </summary>
+    internal static string GetFileBasedOutputLockPath(string runFileRoot, string artifactsDirectory, bool isWindows)
+    {
+        string lockKey = isWindows ? artifactsDirectory.ToUpperInvariant() : artifactsDirectory;
+        string lockName = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(lockKey))).ToLowerInvariant() + ".lock";
+        return Path.Combine(runFileRoot, ".devo6-locks", lockName);
     }
 
     /// <summary>
@@ -732,6 +955,16 @@ internal sealed record FileBasedSdkProcessResult(int ExitCode, string StandardOu
 
 internal sealed class DotnetFileBasedSdkRunner : IFileBasedSdkRunner
 {
+    private readonly string? executablePath;
+
+    /// <summary>
+    /// SDK process host を指定して runner を作成します。
+    /// </summary>
+    internal DotnetFileBasedSdkRunner(string? executablePath = null)
+    {
+        this.executablePath = executablePath;
+    }
+
     /// <summary>
     /// SDK の file-based restore または build process を実行します。
     /// </summary>
@@ -742,7 +975,7 @@ internal sealed class DotnetFileBasedSdkRunner : IFileBasedSdkRunner
     {
         var startInfo = new ProcessStartInfo
         {
-            FileName = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
+            FileName = executablePath ?? Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -755,9 +988,42 @@ internal sealed class DotnetFileBasedSdkRunner : IFileBasedSdkRunner
         }
 
         using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("Could not start dotnet SDK process.");
-        Task<string> stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> stderr = process.StandardError.ReadToEndAsync(cancellationToken);
-        process.WaitForExitAsync(cancellationToken).GetAwaiter().GetResult();
+        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+        Task<string> stderr = process.StandardError.ReadToEndAsync();
+        try
+        {
+            process.WaitForExitAsync(cancellationToken).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Exception? killFailure = null;
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException) when (process.HasExited)
+            {
+            }
+            catch (Exception exception)
+            {
+                killFailure = exception;
+            }
+
+            // Keep the caller's output lock until the SDK process and inherited output pipes have closed.
+            process.WaitForExitAsync().GetAwaiter().GetResult();
+            Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
+            if (killFailure is not null)
+            {
+                throw new InvalidOperationException("The cancelled SDK process tree could not be stopped safely.", killFailure);
+            }
+
+            throw;
+        }
+
+        Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
         return new FileBasedSdkProcessResult(process.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());
     }
 }

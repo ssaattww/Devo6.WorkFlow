@@ -24,6 +24,7 @@ internal static class FileBasedWorkflowExecutor
         try
         {
             loadContext = new FileBasedWorkflowLoadContext(assemblyPath);
+            loadContext.PreloadDeclaredDependencies(assemblyPath);
             assembly = loadContext.LoadFromAssemblyPath(Path.GetFullPath(assemblyPath));
             providerType = assembly.GetType(providerTypeName, throwOnError: true, ignoreCase: false)!;
         }

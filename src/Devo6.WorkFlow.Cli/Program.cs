@@ -39,7 +39,8 @@ public static class Program
         ICsxNuGetDependencyGraphProvider? nuGetDependencyGraphProvider = null,
         string? hostTargetFramework = null
 #if NET10_0
-        , string? hostPackageVersion = null
+        , string? hostPackageVersion = null,
+        Func<FileBasedCsWorkflowBuilder>? fileBasedBuilderFactory = null
 #endif
         )
     {
@@ -64,7 +65,8 @@ public static class Program
         {
             CsFileInputPreflight.PreflightResult preflight = CsFileInputPreflight.Validate(
                 entryPath,
-                hostTargetFramework ?? CsFileInputPreflight.CurrentHostTargetFramework);
+                hostTargetFramework ?? CsFileInputPreflight.CurrentHostTargetFramework,
+                command.AllowedNuGetReferences);
             if (!preflight.Succeeded)
             {
                 Console.Error.WriteLine($"{preflight.ErrorCode}: {preflight.ErrorMessage}");
@@ -75,14 +77,18 @@ public static class Program
             string effectivePackageVersion = hostPackageVersion
                 ?? ToolPackageVersionReader.ReadInstalledPackageVersion(AppContext.BaseDirectory)
                 ?? "";
-            var builder = new FileBasedCsWorkflowBuilder();
+            var builder = fileBasedBuilderFactory?.Invoke() ?? new FileBasedCsWorkflowBuilder();
             IReadOnlyList<string> configPaths = CollectValidationConfigPaths(
                 string.IsNullOrWhiteSpace(workflowConfigPath) ? null : workflowConfigPath,
                 string.IsNullOrWhiteSpace(engineConfigPath) ? null : engineConfigPath);
             if (command.Name == "validate")
             {
                 WorkflowValidationResult validationResult = builder.Validate(
-                    entryPath, effectivePackageVersion, command.EntryName, configPaths);
+                    entryPath,
+                    effectivePackageVersion,
+                    command.EntryName,
+                    configPaths,
+                    allowedNuGetReferences: command.AllowedNuGetReferences);
                 return PrintValidationResult(validationResult);
             }
 
@@ -109,7 +115,12 @@ public static class Program
             }
 
             WorkflowResult csResult = builder.Run(
-                entryPath, effectivePackageVersion, command.EntryName, csExecutionOptionsWithConfig, configPaths);
+                entryPath,
+                effectivePackageVersion,
+                command.EntryName,
+                csExecutionOptionsWithConfig,
+                configPaths,
+                allowedNuGetReferences: command.AllowedNuGetReferences);
             if (csResult.Succeeded)
             {
                 Console.WriteLine($"Succeeded: {csResult.EntryName}");

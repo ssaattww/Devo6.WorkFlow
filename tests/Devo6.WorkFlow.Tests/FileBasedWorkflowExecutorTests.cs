@@ -84,19 +84,69 @@ public sealed class FileBasedWorkflowExecutorTests
         Assert.DoesNotContain("step", Directory.GetFiles(markers).Select(Path.GetFileName));
     }
 
+    [Fact(DisplayName = "file-based steps can use the host ILogger contract")]
+    public void StepCanUseSharedHostLoggerType()
+    {
+        string directory = CreateDirectory();
+        string markers = Path.Combine(directory, "markers");
+        Directory.CreateDirectory(markers);
+        string assemblyPath = CompileFixture(directory, CreateFixture(markers, "Main", usesLogger: true));
+        WorkflowValidationResult validation = FileBasedCsMetadataValidator.Validate(
+            assemblyPath, "Main", out string? providerTypeName, out string? qualifiedEntryName);
+        Assert.True(validation.Succeeded, FormatErrors(validation));
+
+        WorkflowResult result = FileBasedWorkflowExecutor.Execute(
+            assemblyPath, providerTypeName!, qualifiedEntryName!, options: null);
+
+        Assert.True(result.Succeeded, $"{result.ErrorCode}: {result.ErrorMessage}");
+    }
+
+    [Fact(DisplayName = "missing declared dependencies fail before Provider construction")]
+    public void MissingDependencyIsReportedBeforeProviderConstructor()
+    {
+        string directory = CreateDirectory();
+        string marker = Path.Combine(directory, "provider-created");
+        string dependencyPath = Path.Combine(directory, "MissingPrivateDependency.dll");
+        CompileFixture(directory, "namespace PrivateDependency; public static class Hook { public static void Touch() { } }", dependencyPath);
+        string escapedMarker = marker.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+        string source = $$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            using PrivateDependency;
+            [WorkflowEntry("Main")] public sealed class MissingDependencyProvider : IWorkflowEntryProvider
+            {
+                public MissingDependencyProvider() => File.WriteAllText("{{escapedMarker}}", "constructed");
+                public IWorkflowEntry Create() { Hook.Touch(); return null!; }
+            }
+            """;
+        string assemblyPath = CompileFixture(directory, source, Path.Combine(directory, "workflow-missing-dependency.dll"), [dependencyPath]);
+        File.Delete(dependencyPath);
+        WorkflowValidationResult validation = FileBasedCsMetadataValidator.Validate(
+            assemblyPath, "Main", out string? providerTypeName, out string? qualifiedEntryName);
+        Assert.True(validation.Succeeded, FormatErrors(validation));
+
+        WorkflowResult result = FileBasedWorkflowExecutor.Execute(
+            assemblyPath, providerTypeName!, qualifiedEntryName!, options: null);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptLoadFailed, result.ErrorCode);
+        Assert.False(File.Exists(marker));
+    }
+
     /// <summary>
     /// Provider 実行テスト向け source fixture を作成します。
     /// </summary>
-    private static string CreateFixture(string markerDirectory, string createdEntryName, bool throwsOnCreate = false)
+    private static string CreateFixture(string markerDirectory, string createdEntryName, bool throwsOnCreate = false, bool usesLogger = false)
     {
         string escaped = markerDirectory.Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("\"", "\\\"", StringComparison.Ordinal);
         string createBody = throwsOnCreate
             ? "Markers.Touch(\"create\"); throw new System.InvalidOperationException(\"provider failed\");"
-            : $"Markers.Touch(\"create\"); return CompositeStep.Define(\"{createdEntryName}\").Run<int>(\"step\", _ => {{ Markers.Touch(\"step\"); return 1; }});";
+            : $"Markers.Touch(\"create\"); return CompositeStep.Define(\"{createdEntryName}\").Run<int>(\"step\", input => {{ {(usesLogger ? "input.Context.Logger.LogInformation(\"host logger shared\");" : "")} Markers.Touch(\"step\"); return 1; }});";
         return $$"""
             using System.IO;
             using Devo6.WorkFlow.Engine;
+            using Microsoft.Extensions.Logging;
 
             internal static class Markers
             {
@@ -118,9 +168,9 @@ public sealed class FileBasedWorkflowExecutorTests
     /// <summary>
     /// C# fixture を一時 managed assembly に compile します。
     /// </summary>
-    private static string CompileFixture(string directory, string source)
+    private static string CompileFixture(string directory, string source, string? outputPath = null, IReadOnlyList<string>? additionalReferences = null)
     {
-        string assemblyPath = Path.Combine(directory, "workflow-fixture.dll");
+        string assemblyPath = outputPath ?? Path.Combine(directory, "workflow-fixture.dll");
         SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(source,
             CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview));
         string trustedAssemblies = (string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")
@@ -129,6 +179,7 @@ public sealed class FileBasedWorkflowExecutorTests
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
             .Append(typeof(WorkflowEntryAttribute).Assembly.Location)
             .Append(typeof(WorkflowErrorCodes).Assembly.Location)
+            .Concat(additionalReferences ?? [])
             .Distinct(StringComparer.Ordinal)
             .Select(path => MetadataReference.CreateFromFile(path));
         CSharpCompilation compilation = CSharpCompilation.Create(

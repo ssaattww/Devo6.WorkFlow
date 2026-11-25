@@ -1,7 +1,10 @@
 #if NET10_0
 using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using System.Runtime.Loader;
 using Devo6.WorkFlow.Abstractions;
+using Microsoft.Extensions.Logging;
 
 namespace Devo6.WorkFlow.Engine;
 
@@ -11,8 +14,7 @@ namespace Devo6.WorkFlow.Engine;
 internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
 {
     private readonly AssemblyDependencyResolver dependencyResolver;
-    private readonly Assembly hostEngineAssembly = typeof(WorkflowEntryAttribute).Assembly;
-    private readonly Assembly hostAbstractionsAssembly = typeof(WorkflowErrorCodes).Assembly;
+    private readonly Dictionary<string, Assembly> sharedAssemblies;
 
     /// <summary>
     /// host の API 型を共有する collectible load context を構成します。
@@ -21,6 +23,73 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
         : base($"Devo6.WorkFlow.FileBased.{Guid.NewGuid():N}", isCollectible: true)
     {
         dependencyResolver = new AssemblyDependencyResolver(Path.GetFullPath(workflowAssemblyPath));
+        sharedAssemblies = new Dictionary<string, Assembly>(StringComparer.Ordinal)
+        {
+            [typeof(WorkflowEntryAttribute).Assembly.GetName().Name!] = typeof(WorkflowEntryAttribute).Assembly,
+            [typeof(WorkflowErrorCodes).Assembly.GetName().Name!] = typeof(WorkflowErrorCodes).Assembly,
+            [typeof(ILogger).Assembly.GetName().Name!] = typeof(ILogger).Assembly,
+        };
+    }
+
+    /// <summary>
+    /// Provider を生成する前に入力と推移依存から参照される private assemblies を解決します。
+    /// </summary>
+    internal void PreloadDeclaredDependencies(string workflowAssemblyPath)
+    {
+        var pendingPaths = new Queue<string>();
+        var inspectedPaths = new HashSet<string>(OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal);
+        pendingPaths.Enqueue(Path.GetFullPath(workflowAssemblyPath));
+
+        while (pendingPaths.TryDequeue(out string? assemblyPath))
+        {
+            if (!inspectedPaths.Add(assemblyPath))
+            {
+                continue;
+            }
+
+            using FileStream stream = File.OpenRead(assemblyPath);
+            using var peReader = new PEReader(stream, PEStreamOptions.LeaveOpen);
+            if (!peReader.HasMetadata)
+            {
+                throw new BadImageFormatException($"A declared workflow dependency has no metadata: {assemblyPath}");
+            }
+
+            MetadataReader metadata = peReader.GetMetadataReader();
+            foreach (AssemblyReferenceHandle referenceHandle in metadata.AssemblyReferences)
+            {
+                AssemblyName requested = GetAssemblyName(metadata, referenceHandle);
+                if (sharedAssemblies.TryGetValue(requested.Name ?? "", out Assembly? hostAssembly))
+                {
+                    ResolveSharedAssembly(requested, hostAssembly.GetName(), hostAssembly);
+                    continue;
+                }
+
+                if (IsSharedFrameworkAssembly(requested.Name))
+                {
+                    continue;
+                }
+
+                string? dependencyPath = dependencyResolver.ResolveAssemblyToPath(requested);
+                if (dependencyPath is null || !File.Exists(dependencyPath))
+                {
+                    throw new FileNotFoundException(
+                        $"A declared workflow dependency could not be resolved before Provider creation: {requested.FullName}",
+                        dependencyPath);
+                }
+
+                AssemblyName resolvedIdentity = AssemblyName.GetAssemblyName(dependencyPath);
+                if (!AssemblyIdentityEquals(requested, resolvedIdentity))
+                {
+                    throw new FileLoadException(
+                        $"A declared workflow dependency has a different assembly identity: requested {requested.FullName}; resolved {resolvedIdentity.FullName}.");
+                }
+
+                LoadFromAssemblyPath(Path.GetFullPath(dependencyPath));
+                pendingPaths.Enqueue(Path.GetFullPath(dependencyPath));
+            }
+        }
     }
 
     /// <summary>
@@ -28,16 +97,9 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
     /// </summary>
     protected override Assembly? Load(AssemblyName assemblyName)
     {
-        AssemblyName engineName = hostEngineAssembly.GetName();
-        if (string.Equals(assemblyName.Name, engineName.Name, StringComparison.Ordinal))
+        if (sharedAssemblies.TryGetValue(assemblyName.Name ?? "", out Assembly? hostAssembly))
         {
-            return ResolveSharedAssembly(assemblyName, engineName, hostEngineAssembly);
-        }
-
-        AssemblyName abstractionsName = hostAbstractionsAssembly.GetName();
-        if (string.Equals(assemblyName.Name, abstractionsName.Name, StringComparison.Ordinal))
-        {
-            return ResolveSharedAssembly(assemblyName, abstractionsName, hostAbstractionsAssembly);
+            return ResolveSharedAssembly(assemblyName, hostAssembly.GetName(), hostAssembly);
         }
 
         string? dependencyPath = dependencyResolver.ResolveAssemblyToPath(assemblyName);
@@ -82,6 +144,31 @@ internal sealed class FileBasedWorkflowLoadContext : AssemblyLoadContext
         }
 
         return hostAssembly;
+    }
+
+    /// <summary>
+    /// PE metadata の AssemblyReference を CLR identity へ変換します。
+    /// </summary>
+    private static AssemblyName GetAssemblyName(MetadataReader reader, AssemblyReferenceHandle handle)
+    {
+        AssemblyReference reference = reader.GetAssemblyReference(handle);
+        var name = new AssemblyName
+        {
+            Name = reader.GetString(reference.Name),
+            Version = reference.Version,
+            CultureName = reference.Culture.IsNil ? "" : reader.GetString(reference.Culture),
+        };
+        byte[] keyOrToken = reader.GetBlobBytes(reference.PublicKeyOrToken);
+        if ((reference.Flags & AssemblyFlags.PublicKey) != 0)
+        {
+            name.SetPublicKey(keyOrToken);
+        }
+        else if (keyOrToken.Length > 0)
+        {
+            name.SetPublicKeyToken(keyOrToken);
+        }
+
+        return name;
     }
 
     /// <summary>

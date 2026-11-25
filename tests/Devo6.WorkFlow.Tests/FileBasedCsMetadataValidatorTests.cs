@@ -98,6 +98,46 @@ public sealed class FileBasedCsMetadataValidatorTests
         Assert.Equal(WorkflowErrorCodes.DuplicateStepName, Assert.Single(result.Errors).Code);
     }
 
+    [Fact(DisplayName = "non-public entry candidates do not collide with public entries")]
+    public void NonPublicCandidateIsIgnoredBeforeDuplicateMatching()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] internal sealed class Hidden : IWorkflowEntryProvider { public Hidden() { } public IWorkflowEntry Create() => null!; }
+            [WorkflowEntry("Main")] public sealed class Visible : IWorkflowEntryProvider { public Visible() { } public IWorkflowEntry Create() => null!; }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.True(result.Succeeded, FormatErrors(result));
+    }
+
+    [Fact(DisplayName = "provider contract and Create implementation may be inherited")]
+    public void InheritedProviderContractIsAcceptedWithoutExecutionDuringValidation()
+    {
+        string directory = CreateDirectory();
+        string marker = Path.Combine(directory, "provider-created");
+        string escapedMarker = marker.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+        string source = $$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            public abstract class ProviderBase : IWorkflowEntryProvider
+            {
+                public ProviderBase() { }
+                public IWorkflowEntry Create() { File.WriteAllText("{{escapedMarker}}", "created"); return null!; }
+            }
+            [WorkflowEntry("Main")] public sealed class InheritedProvider : ProviderBase { public InheritedProvider() { } }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.True(result.Succeeded, FormatErrors(result));
+        Assert.False(File.Exists(marker));
+    }
+
     /// <summary>
     /// metadata-only validation 用の managed source fixture を作成します。
     /// </summary>

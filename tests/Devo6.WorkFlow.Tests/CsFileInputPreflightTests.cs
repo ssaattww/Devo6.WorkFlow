@@ -1,6 +1,7 @@
 using Devo6.WorkFlow.Abstractions;
 using Devo6.WorkFlow.Cli;
 using Devo6.WorkFlow.Engine;
+using System.Collections;
 
 namespace Devo6.WorkFlow.Tests;
 
@@ -46,6 +47,146 @@ public sealed class CsFileInputPreflightTests
         Assert.Equal(WorkflowErrorCodes.ScriptNugetLockMissing, preflight.ErrorCode);
         Assert.Equal(1, exitCode);
         Assert.Equal(0, provider.ResolveCallCount);
+    }
+
+    /// <summary>
+    /// .cs CLI の validate / run は --allow-nuget の外にある直接依存を SDK 起動前に拒否します。
+    /// </summary>
+#if NET10_0
+    [Theory(DisplayName = ".cs validate and run enforce the NuGet allow list before SDK restore")]
+    [InlineData("validate")]
+    [InlineData("run")]
+    public void CliRejectsDisallowedPackageBeforeSdkRestore(string command)
+    {
+        string sourcePath = CreateFileBasedSource("#:package Unauthorized.Package@[1.2.3]");
+        var runner = new RecordingSdkRunner();
+        var builder = new FileBasedCsWorkflowBuilder(runner);
+
+        TextWriter originalError = Console.Error;
+        using var capturedError = new StringWriter();
+        int exitCode;
+        try
+        {
+            Console.SetError(capturedError);
+            exitCode = Program.Run(
+                [command, sourcePath, "--allow-nuget", "Devo6.WorkFlow.Engine,0.1.0"],
+                hostTargetFramework: Net10Host,
+                hostPackageVersion: "0.1.0",
+                fileBasedBuilderFactory: () => builder);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains(WorkflowErrorCodes.ScriptReferenceNotAllowed, capturedError.ToString());
+        Assert.Empty(runner.Calls);
+    }
+#endif
+
+    /// <summary>
+    /// SDK の基準版未満は evaluation / restore より前に失敗します。
+    /// </summary>
+    [Fact(DisplayName = "SDK below the minimum version is rejected before evaluation and restore")]
+    public void UnsupportedSdkDoesNotInvokeEvaluationOrRestore()
+    {
+        string sourcePath = CreateFileBasedSource();
+        string directory = Path.GetDirectoryName(sourcePath)!;
+        string feed = Path.Combine(directory, "feed");
+        Directory.CreateDirectory(feed);
+        File.WriteAllText(Path.Combine(directory, "NuGet.Config"), $"<configuration><packageSources><clear/><add key=\"local\" value=\"{feed}\" /></packageSources></configuration>");
+        File.WriteAllText(Path.Combine(directory, "devo6.nuget.lock.yaml"), $$"""
+            version: 1
+            targetFramework: net10.0
+            verifyPackageSources: true
+            packageSources:
+              - "{{feed}}"
+            directReferences:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            resolvedDependencies:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            """);
+        var runner = new RecordingSdkRunner("10.0.403");
+        var builder = new FileBasedCsWorkflowBuilder(runner, () => Path.Combine(directory, "sdk-output"));
+
+        FileBasedCsBuildResult result = builder.Build(sourcePath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptSdkUnavailable, result.ErrorCode);
+        Assert.Equal(["--version"], Assert.Single(runner.Calls));
+    }
+
+    [Fact(DisplayName = "unverified effective project data stops before restore")]
+    public void UnsupportedEffectiveTargetDoesNotInvokeRestore()
+    {
+        string sourcePath = CreateFileBasedSource();
+        string directory = Path.GetDirectoryName(sourcePath)!;
+        string feed = Path.Combine(directory, "feed");
+        Directory.CreateDirectory(feed);
+        File.WriteAllText(Path.Combine(directory, "NuGet.Config"), $"<configuration><packageSources><clear/><add key=\"local\" value=\"{feed}\" /></packageSources></configuration>");
+        File.WriteAllText(Path.Combine(directory, "devo6.nuget.lock.yaml"), $$"""
+            version: 1
+            targetFramework: net10.0
+            verifyPackageSources: true
+            packageSources:
+              - "{{feed}}"
+            directReferences:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            resolvedDependencies:
+              - packageId: Devo6.WorkFlow.Engine
+                version: 0.1.0
+                direct: true
+            """);
+        string evaluationJson = $$"""
+            {
+              "Properties": { "TargetFramework": "net8.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "" },
+              "Items": { "PackageReference": [ { "Identity": "Devo6.WorkFlow.Engine", "Version": "[0.1.0]" } ] }
+            }
+            """;
+        var runner = new RecordingSdkRunner("10.0.404", evaluationJson);
+        var builder = new FileBasedCsWorkflowBuilder(runner, () => Path.Combine(directory, "sdk-output"));
+
+        FileBasedCsBuildResult result = builder.Build(sourcePath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.DoesNotContain(runner.Calls, call => call.Count > 0 && call[0] == "restore");
+    }
+
+    [Fact(DisplayName = "MSBuild property environment overrides fail before SDK invocation")]
+    public void EnvironmentOverrideDoesNotInvokeSdk()
+    {
+        string sourcePath = CreateFileBasedSource();
+        var variables = new Hashtable(StringComparer.OrdinalIgnoreCase) { ["TargetFramework"] = "net8.0" };
+
+        bool valid = CsFileInputPreflight.ValidateBuildEnvironment(sourcePath, out string error, variables);
+
+        Assert.False(valid);
+        Assert.Contains("TargetFramework", error);
+    }
+
+    [Fact(DisplayName = "inherited Directory.Build.props is rejected before SDK invocation")]
+    public void InheritedMsBuildPropsDoesNotInvokeSdk()
+    {
+        string sourcePath = CreateFileBasedSource();
+        string propsPath = Path.Combine(Path.GetDirectoryName(sourcePath)!, "Directory.Build.props");
+        File.WriteAllText(propsPath, "<Project />");
+        var runner = new RecordingSdkRunner();
+        var builder = new FileBasedCsWorkflowBuilder(runner);
+
+        FileBasedCsBuildResult result = builder.Build(sourcePath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
+        Assert.Empty(runner.Calls);
     }
 
     /// <summary>
@@ -189,6 +330,14 @@ public sealed class CsFileInputPreflightTests
 
     private sealed class RecordingSdkRunner : IFileBasedSdkRunner
     {
+        private readonly string sdkVersion;
+        private readonly string evaluationJson;
+
+        public RecordingSdkRunner(string sdkVersion = "10.0.404", string evaluationJson = "{}")
+        {
+            this.sdkVersion = sdkVersion;
+            this.evaluationJson = evaluationJson;
+        }
         /// <summary>
         /// SDK runner が受け取った呼び出し列を取得します。
         /// </summary>
@@ -203,7 +352,12 @@ public sealed class CsFileInputPreflightTests
             CancellationToken cancellationToken)
         {
             Calls.Add(arguments);
-            return new FileBasedSdkProcessResult(0, "10.0.404", "");
+            if (arguments.Count == 1 && arguments[0] == "--version")
+            {
+                return new FileBasedSdkProcessResult(0, sdkVersion, "");
+            }
+
+            return new FileBasedSdkProcessResult(0, evaluationJson, "");
         }
     }
 #endif

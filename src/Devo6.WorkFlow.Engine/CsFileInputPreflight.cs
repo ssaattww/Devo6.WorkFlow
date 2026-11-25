@@ -1,3 +1,4 @@
+using System.Collections;
 using Devo6.WorkFlow.Abstractions;
 using System.Text.RegularExpressions;
 
@@ -36,6 +37,17 @@ internal static class CsFileInputPreflight
     /// </summary>
     internal static PreflightResult Validate(string entryPath, string? hostTargetFramework)
     {
+        return Validate(entryPath, hostTargetFramework, allowedNuGetReferences: null);
+    }
+
+    /// <summary>
+    /// Input, exact NuGet references, allowed references, and mandatory lock file を restore 前に検査します。
+    /// </summary>
+    internal static PreflightResult Validate(
+        string entryPath,
+        string? hostTargetFramework,
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences)
+    {
         if (!IsNet10(hostTargetFramework))
         {
             return PreflightResult.Failure(
@@ -55,6 +67,26 @@ internal static class CsFileInputPreflight
             return PreflightResult.Failure(WorkflowErrorCodes.ScriptFileDirectiveInvalid, directiveError);
         }
 
+        if (allowedNuGetReferences is { Count: > 0 })
+        {
+            foreach (KeyValuePair<string, string> reference in packageReferences)
+            {
+                if (!allowedNuGetReferences.Any(allowed =>
+                        string.Equals(allowed.PackageId, reference.Key, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(allowed.Version, reference.Value, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return PreflightResult.Failure(
+                        WorkflowErrorCodes.ScriptReferenceNotAllowed,
+                        $"NuGet reference is not allowed: {reference.Key}, {reference.Value}");
+                }
+            }
+        }
+
+        if (!ValidateBuildEnvironment(entryPath, out string environmentError))
+        {
+            return PreflightResult.Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, environmentError);
+        }
+
         string lockPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(entryPath))!, RequiredLockFileName);
         if (!File.Exists(lockPath))
         {
@@ -64,6 +96,56 @@ internal static class CsFileInputPreflight
         }
 
         return PreflightResult.Successful(packageReferences, lockPath);
+    }
+
+    /// <summary>
+    /// Restore 前に MSBuild response file と環境変数による property override を拒否します。
+    /// </summary>
+    internal static bool ValidateBuildEnvironment(string entryPath, out string error, IDictionary? environment = null)
+    {
+        error = "";
+        string[] responseFiles = [
+            "Directory.Build.rsp", "MSBuild.rsp", "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props",
+        ];
+        string directory = Path.GetDirectoryName(Path.GetFullPath(entryPath))!;
+        for (DirectoryInfo? current = new(directory); current is not null; current = current.Parent)
+        {
+            foreach (string fileName in responseFiles)
+            {
+                string responsePath = Path.Combine(current.FullName, fileName);
+                if (File.Exists(responsePath))
+                {
+                    error = $"Inherited MSBuild configuration is not supported for file-based workflow input: {responsePath}";
+                    return false;
+                }
+            }
+        }
+
+        string[] overriddenProperties =
+        [
+            "TargetFramework", "TargetFrameworks", "OutputType", "PublishAot",
+            "RestoreSources", "RestoreAdditionalProjectSources", "RestoreConfigFile",
+            "RestorePackagesWithLockFile", "RestoreLockedMode", "ManagePackageVersionsCentrally",
+            "MSBuildProjectExtensionsPath", "MSBuildProjectDirectory", "MSBuildSDKsPath",
+            "MSBuildExtensionsPath", "DirectoryBuildPropsPath", "DirectoryBuildTargetsPath",
+            "CustomBeforeMicrosoftCommonProps", "CustomAfterMicrosoftCommonProps",
+            "CustomBeforeMicrosoftCommonTargets", "CustomAfterMicrosoftCommonTargets",
+            "CustomBeforeMicrosoftCSharpTargets", "CustomAfterMicrosoftCSharpTargets",
+        ];
+        HashSet<string> propertyNames = new(overriddenProperties, StringComparer.OrdinalIgnoreCase);
+        IDictionary variables = environment ?? Environment.GetEnvironmentVariables();
+        foreach (DictionaryEntry variable in variables)
+        {
+            string name = variable.Key?.ToString() ?? "";
+            string value = variable.Value?.ToString() ?? "";
+            if (propertyNames.Contains(name) && !string.IsNullOrWhiteSpace(value))
+            {
+                error = $"MSBuild environment property override is not supported: {name}";
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

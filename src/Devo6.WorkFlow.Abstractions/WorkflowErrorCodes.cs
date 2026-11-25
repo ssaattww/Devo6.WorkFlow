@@ -74,6 +74,10 @@ public static class WorkflowErrorCodes
     /// File-based C# build or execution failed.
     /// </summary>
     public const string ScriptBuildFailed = "SCRIPT_BUILD_FAILED";
+    /// <summary>
+    /// File-based build environment properties could not be verified before restore.
+    /// </summary>
+    public const string ScriptBuildEnvironmentUnsupported = "SCRIPT_BUILD_ENVIRONMENT_UNSUPPORTED";
 
     /// <summary>
     /// The NuGet package version of the running workflow host could not be determined.

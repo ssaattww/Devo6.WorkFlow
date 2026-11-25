@@ -77,6 +77,11 @@ internal static class FileBasedCsMetadataValidator
             foreach (TypeDefinitionHandle typeHandle in reader.TypeDefinitions)
             {
                 TypeDefinition type = reader.GetTypeDefinition(typeHandle);
+                if (!IsExternallyVisible(reader, typeHandle))
+                {
+                    continue;
+                }
+
                 foreach (CustomAttributeHandle attributeHandle in type.GetCustomAttributes())
                 {
                     CustomAttribute attribute = reader.GetCustomAttribute(attributeHandle);
@@ -185,9 +190,7 @@ internal static class FileBasedCsMetadataValidator
     {
         TypeDefinition type = reader.GetTypeDefinition(typeHandle);
         TypeAttributes attributes = type.Attributes;
-        TypeAttributes visibility = attributes & TypeAttributes.VisibilityMask;
-        bool externallyVisible = visibility == TypeAttributes.Public
-            || visibility == TypeAttributes.NestedPublic && IsPublicDeclaringChain(reader, type.GetDeclaringType());
+        bool externallyVisible = IsExternallyVisible(reader, typeHandle);
         bool isClass = (attributes & TypeAttributes.ClassSemanticsMask) == 0;
         string baseTypeName = type.BaseType.IsNil ? "" : GetTypeFullName(reader, type.BaseType);
         isClass &= baseTypeName is not "System.ValueType" and not "System.Enum";
@@ -224,16 +227,96 @@ internal static class FileBasedCsMetadataValidator
             }
         }
 
-        EntityHandle providerInterface = type.GetInterfaceImplementations()
-            .Select(handle => reader.GetInterfaceImplementation(handle).Interface)
-            .FirstOrDefault(interfaceHandle => GetTypeFullName(reader, interfaceHandle) == EntryProviderTypeName
-                && IsEngineTypeReference(reader, interfaceHandle));
-        bool implementsProvider = !providerInterface.IsNil;
-        bool hasExplicitCreateMethod = implementsProvider && type.GetMethodImplementations()
+        var inspectedTypes = new HashSet<TypeDefinitionHandle>();
+        bool implementsProvider = ImplementsProviderContract(reader, typeHandle, inspectedTypes);
+        bool inheritsCreateMethod = HasCreateMethod(reader, typeHandle, new HashSet<TypeDefinitionHandle>(), signatureProvider);
+        return implementsProvider && hasPublicParameterlessConstructor && (hasPublicCreateMethod || inheritsCreateMethod);
+    }
+
+    /// <summary>
+    /// Provider contract を自型または同じ入力 assembly の base / interface からたどります。
+    /// </summary>
+    private static bool ImplementsProviderContract(
+        MetadataReader reader,
+        TypeDefinitionHandle typeHandle,
+        HashSet<TypeDefinitionHandle> visited)
+    {
+        if (typeHandle.IsNil || !visited.Add(typeHandle))
+        {
+            return false;
+        }
+
+        TypeDefinition type = reader.GetTypeDefinition(typeHandle);
+        foreach (InterfaceImplementationHandle implementationHandle in type.GetInterfaceImplementations())
+        {
+            EntityHandle interfaceHandle = reader.GetInterfaceImplementation(implementationHandle).Interface;
+            if (GetTypeFullName(reader, interfaceHandle) == EntryProviderTypeName
+                && IsEngineTypeReference(reader, interfaceHandle))
+            {
+                return true;
+            }
+
+            if (interfaceHandle.Kind == HandleKind.TypeDefinition
+                && ImplementsProviderContract(reader, (TypeDefinitionHandle)interfaceHandle, visited))
+            {
+                return true;
+            }
+        }
+
+        return type.BaseType.Kind == HandleKind.TypeDefinition
+            && ImplementsProviderContract(reader, (TypeDefinitionHandle)type.BaseType, visited);
+    }
+
+    /// <summary>
+    /// Create method implementation を自型と同一 assembly の base chain から探します。
+    /// </summary>
+    private static bool HasCreateMethod(
+        MetadataReader reader,
+        TypeDefinitionHandle typeHandle,
+        HashSet<TypeDefinitionHandle> visited,
+        MetadataSignatureTypeProvider signatureProvider)
+    {
+        if (typeHandle.IsNil || !visited.Add(typeHandle))
+        {
+            return false;
+        }
+
+        TypeDefinition type = reader.GetTypeDefinition(typeHandle);
+        foreach (MethodDefinitionHandle methodHandle in type.GetMethods())
+        {
+            MethodDefinition method = reader.GetMethodDefinition(methodHandle);
+            MethodAttributes attributes = method.Attributes;
+            bool publicInstance = (attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.Public
+                && (attributes & MethodAttributes.Static) == 0;
+            if (reader.GetString(method.Name) == "Create"
+                && publicInstance
+                && IsCreateSignature(method.DecodeSignature(signatureProvider, genericContext: null)))
+            {
+                return true;
+            }
+        }
+
+        bool hasExplicitCreate = type.GetMethodImplementations()
             .Select(handle => reader.GetMethodImplementation(handle))
             .Any(implementation => IsCreateInterfaceImplementation(reader, implementation, signatureProvider));
+        if (hasExplicitCreate)
+        {
+            return true;
+        }
 
-        return implementsProvider && hasPublicParameterlessConstructor && (hasPublicCreateMethod || hasExplicitCreateMethod);
+        return type.BaseType.Kind == HandleKind.TypeDefinition
+            && HasCreateMethod(reader, (TypeDefinitionHandle)type.BaseType, visited, signatureProvider);
+    }
+
+    /// <summary>
+    /// candidate が CLR 外部から利用できる public type か確認します。
+    /// </summary>
+    private static bool IsExternallyVisible(MetadataReader reader, TypeDefinitionHandle typeHandle)
+    {
+        TypeDefinition type = reader.GetTypeDefinition(typeHandle);
+        TypeAttributes visibility = type.Attributes & TypeAttributes.VisibilityMask;
+        return visibility == TypeAttributes.Public
+            || visibility == TypeAttributes.NestedPublic && IsPublicDeclaringChain(reader, type.GetDeclaringType());
     }
 
     /// <summary>
