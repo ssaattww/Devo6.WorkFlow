@@ -897,6 +897,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
         ILogger logger = input.Context.Logger;
         foreach (StepRegistration step in stepSequence)
         {
+            bool allowPreCancelledSynchronousExecution =
+                step.AllowsPreCancelledSynchronousExecution && cancellationToken.IsCancellationRequested;
             using IDisposable? stepScope = logger.BeginScope(new Dictionary<string, object?>
             {
                 ["StepName"] = step.Name,
@@ -927,7 +929,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                     input,
                     currentValue,
                     cancellationToken,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    allowPreCancelledSynchronousExecution).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 currentValue = result.Value;
                 step.Produce(input, currentValue);
@@ -978,6 +981,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
         int stepIndex = startStepIndex;
         foreach (StepRegistration step in stepSequence)
         {
+            bool cancellationWasRequestedBeforeStep = cancellationToken.IsCancellationRequested;
             if (step.IsConditionalBranch)
             {
                 WorkflowSequenceExecutionResult branchResult = await ExecuteIfStepAsync(
@@ -1016,6 +1020,10 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
 
                 engineLogger.LogInformation("Step started for attempt {Attempt}", attempt);
 
+                bool allowPreCancelledSynchronousExecution =
+                    stepIndex == 0
+                    && step.AllowsPreCancelledSynchronousExecution
+                    && cancellationWasRequestedBeforeStep;
                 using StepExecutionCancellation stepCancellation = CreateStepExecutionCancellation(
                     options.StepTimeout,
                     cancellationToken,
@@ -1024,12 +1032,17 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                 try
                 {
                     SetStepConfig(input.Context, options.StepConfigs, stepIndex);
-                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!allowPreCancelledSynchronousExecution)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
                     StepExecutionResult stepResult = await step.ExecuteAsync(
                         input,
                         currentValue,
                         stepCancellation.Token,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        allowPreCancelledSynchronousExecution).ConfigureAwait(false);
                     currentValue = stepResult.Value;
 
                     StepCancellationFailure? cancellationFailure = DetectCancellationFailure(
@@ -2541,6 +2554,7 @@ internal sealed class StepRegistration
     private readonly Func<StepInput, object?, CancellationToken, CancellationToken, Task<StepExecutionResult>> executeAsync;
     private readonly IReadOnlyList<StepValueProducer> producers;
     private readonly ConditionalBranchRegistration? conditionalBranch;
+    private readonly bool allowsPreCancelledSynchronousExecution;
 
     /// <summary>
     /// Step 登録情報を初期化します。
@@ -2549,12 +2563,14 @@ internal sealed class StepRegistration
     /// <param name="stepType">登録された Step 型。</param>
     /// <param name="executeAsync">登録済み Step を実行する処理。</param>
     /// <param name="producers">Step 成功後に実行する値生成処理。</param>
+    /// <param name="allowsPreCancelledSynchronousExecution">workflow 開始前から取消済みでも同期 Step 完了まで実行するか。</param>
     private StepRegistration(
         string name,
         Type stepType,
         Func<StepInput, object?, CancellationToken, CancellationToken, Task<StepExecutionResult>> executeAsync,
         IReadOnlyList<StepValueProducer> producers,
-        ConditionalBranchRegistration? conditionalBranch = null)
+        ConditionalBranchRegistration? conditionalBranch = null,
+        bool allowsPreCancelledSynchronousExecution = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(stepType);
@@ -2566,12 +2582,18 @@ internal sealed class StepRegistration
         this.executeAsync = executeAsync;
         this.producers = producers.ToArray();
         this.conditionalBranch = conditionalBranch;
+        this.allowsPreCancelledSynchronousExecution = allowsPreCancelledSynchronousExecution;
     }
 
     /// <summary>
     /// trace と log に記録する Step 名を取得します。
     /// </summary>
     public string Name => name;
+
+    /// <summary>
+    /// workflow 開始前から取消済みの場合に同期 Step 完了まで実行するかを取得します。
+    /// </summary>
+    public bool AllowsPreCancelledSynchronousExecution => allowsPreCancelledSynchronousExecution;
 
     /// <summary>
     /// 登録された Step 型を取得します。
@@ -2607,12 +2629,17 @@ internal sealed class StepRegistration
             typeof(TStep),
             (input, currentValue, cancellationToken, workflowCancellationToken) =>
             {
+                bool cancellationWasRequestedBeforeConstruction = workflowCancellationToken.IsCancellationRequested;
                 TStep step = new();
-                workflowCancellationToken.ThrowIfCancellationRequested();
+                if (!cancellationWasRequestedBeforeConstruction)
+                {
+                    workflowCancellationToken.ThrowIfCancellationRequested();
+                }
 
                 return Task.FromResult(StepExecutionResult.Succeeded(step.Execute(input)));
             },
-            []);
+            [],
+            allowsPreCancelledSynchronousExecution: true);
     }
 
     /// <summary>
@@ -2654,11 +2681,10 @@ internal sealed class StepRegistration
             typeof(LambdaStepRegistrationMarker),
             (input, currentValue, cancellationToken, workflowCancellationToken) =>
             {
-                workflowCancellationToken.ThrowIfCancellationRequested();
-
                 return Task.FromResult(StepExecutionResult.Succeeded(body(input)));
             },
-            []);
+            [],
+            allowsPreCancelledSynchronousExecution: true);
     }
 
     /// <summary>
@@ -2679,11 +2705,10 @@ internal sealed class StepRegistration
             typeof(LambdaStepRegistrationMarker),
             (input, currentValue, cancellationToken, workflowCancellationToken) =>
             {
-                workflowCancellationToken.ThrowIfCancellationRequested();
-
                 return Task.FromResult(StepExecutionResult.Succeeded(body((TCurrent)currentValue!, input)));
             },
-            []);
+            [],
+            allowsPreCancelledSynchronousExecution: true);
     }
 
     /// <summary>
@@ -3012,14 +3037,19 @@ internal sealed class StepRegistration
     /// <param name="currentValue">直前の Step が返した現在値。</param>
     /// <param name="cancellationToken">Step へ渡す cancellation token。</param>
     /// <param name="workflowCancellationToken">workflow の外部 cancellation token。</param>
+    /// <param name="allowPreCancelledExecution">開始前から取消済みの同期 Step を完了まで実行するか。</param>
     /// <returns>Step が返した出力値。</returns>
     public Task<StepExecutionResult> ExecuteAsync(
         StepInput input,
         object? currentValue,
         CancellationToken cancellationToken,
-        CancellationToken workflowCancellationToken)
+        CancellationToken workflowCancellationToken,
+        bool allowPreCancelledExecution = false)
     {
-        workflowCancellationToken.ThrowIfCancellationRequested();
+        if (!allowPreCancelledExecution)
+        {
+            workflowCancellationToken.ThrowIfCancellationRequested();
+        }
 
         return executeAsync(input, currentValue, cancellationToken, workflowCancellationToken);
     }
@@ -3042,7 +3072,13 @@ internal sealed class StepRegistration
 
         nextProducers[^1] = producer;
 
-        return new StepRegistration(name, stepType, executeAsync, nextProducers, conditionalBranch);
+        return new StepRegistration(
+            name,
+            stepType,
+            executeAsync,
+            nextProducers,
+            conditionalBranch,
+            allowsPreCancelledSynchronousExecution);
     }
 
     /// <summary>
@@ -3051,7 +3087,7 @@ internal sealed class StepRegistration
     /// <returns>値生成処理を削除した Step 登録情報。</returns>
     public StepRegistration ClearProducers()
     {
-        return new StepRegistration(name, stepType, executeAsync, [], conditionalBranch);
+        return new StepRegistration(name, stepType, executeAsync, [], conditionalBranch, allowsPreCancelledSynchronousExecution);
     }
 
     /// <summary>

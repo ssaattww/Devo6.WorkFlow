@@ -116,6 +116,35 @@ public sealed class FileBasedWorkflowExecutorTests
     }
 
     /// <summary>
+    /// Run に事前取消を渡した場合は Provider と Step の利用者コードを実行しないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "pre-cancelled file-based run does not execute Provider or Step code")]
+    public void PreCancelledRunDoesNotExecuteProviderOrStep()
+    {
+        string directory = CreateDirectory();
+        string markers = Path.Combine(directory, "markers");
+        Directory.CreateDirectory(markers);
+        string assemblyPath = CompileFixture(directory, CreateFixture(markers, "Main"));
+
+        WorkflowValidationResult validation = FileBasedCsMetadataValidator.Validate(
+            assemblyPath, "Main", out string? providerTypeName, out string? qualifiedEntryName);
+        Assert.True(validation.Succeeded, FormatErrors(validation));
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        WorkflowResult result = FileBasedWorkflowExecutor.Execute(
+            assemblyPath,
+            providerTypeName!,
+            qualifiedEntryName!,
+            options: null,
+            cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Empty(Directory.GetFiles(markers));
+    }
+
+    /// <summary>
     /// PE metadata が選んだ非ジェネリック Create だけを実行します。
     /// </summary>
     [Fact(DisplayName = "file-based execution invokes the exact public Create validated by metadata")]
