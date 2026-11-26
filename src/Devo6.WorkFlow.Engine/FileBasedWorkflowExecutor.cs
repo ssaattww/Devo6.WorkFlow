@@ -135,6 +135,7 @@ internal static class FileBasedWorkflowExecutor
                 return configFailure;
             }
 
+            preparedOptions = WithStrictCancellationPolicy(preparedOptions);
             return ExecuteEntryWithCancellation(entry, preparedOptions, cancellationToken);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -175,6 +176,15 @@ internal static class FileBasedWorkflowExecutor
 
         return Failure("", WorkflowErrorCodes.EntryStepNotFound, "Entry step could not be executed.");
     }
+
+    /// <summary>
+    /// file-based 実行で開始前取消の同期 Step 互換特例を無効にした option を作成します。
+    /// </summary>
+    /// <param name="options">Config の準備後に得た workflow 実行 option。</param>
+    /// <returns>file-based 専用の厳格な取消方針を持つ option。</returns>
+    internal static WorkflowExecutionOptions WithStrictCancellationPolicy(WorkflowExecutionOptions? options) =>
+        (options ?? new WorkflowExecutionOptions())
+            .WithCancellationPolicy(WorkflowEntryCancellationPolicy.StopBeforeSynchronousStep);
 
     /// <summary>
     /// Entry が host CompositeStep<T> であるか確認します。

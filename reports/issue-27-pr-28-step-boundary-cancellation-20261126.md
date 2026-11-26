@@ -35,3 +35,15 @@
 - 関連する If / Switch、timeout、file-based executor / lifecycle 検査: 75件成功、1件既存 skip。
 - T31: 1件成功。`net8.0` build: 成功、警告0、エラー0。solution format check と `git diff --check`: 成功。
 - 標準 .NET 8 runtime の test 実行、全件ローカル試験、新候補の自動 CI は未確認。
+
+## File-based entry 事前取消方針の追補
+
+通常再確認で、FileBasedWorkflowExecutor の最終 token 確認後から共有 Engine の開始までに取消された場合、公開 Engine の既存同期 Step 特例を使う境界が確認された。公開経路の既定動作を保つため、`WorkflowExecutionOptions` に内部の `WorkflowEntryCancellationPolicy` を追加した。既定の公開 Engine は `PreservePreCancelledSynchronousStep`、file-based 実行は Config 準備後に `WithStrictCancellationPolicy` で `StopBeforeSynchronousStep` を選ぶ。これにより、Engine の呼出し開始時点ですでに token が取消済みでも file-based 経路は同期 Step を開始しない。
+
+決定的な回帰は、Engine に事前取消済み token と厳格方針を直接渡して同期 Step の実行印が残らないこと、file-based executor の方針作成 helper が厳格方針を返し他の option を維持することを別々に確認する。公開 file-based `Run` では Entry 開始ログ中の取消、事前取消時の Provider constructor 非実行を確認する。前回修正の再発として、公開 Engine の Entry / Composite ログ中取消で同期 Step が動かないこと、および事前取消済み同期 Step の通常例外で retry・Produce・後続 Step が起きず `STEP_EXECUTION_FAILED` が保持されることも確認する。公開 Engine の事前取消時の既存同期 Step 完了契約は維持する。
+
+- 焦点検査: 12件成功。
+- 関連 .NET 10 検査: 199件成功、既存 skip 2件。
+- `net8.0` 向け生成: 成功、警告0、エラー0。net8.0 対象検査: 132件成功、既存 skip 2件。いずれの実行にも .NET 10.0.15 を使用し、net8.0 対象の試験は `DOTNET_ROLL_FORWARD=Major` で実行した。標準 .NET 8 runtime は未確認。
+- `dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore` と `git diff --check`: 成功。変更した `tasks-status.md` の textlint、CSpell、許可語検査: すべて指摘0件。
+- この追補は公開 `bece4808f7565f3bea935ce4da4158328caadce6` からのローカル差分であり、commit、push、自動 CI の起動は未実施。

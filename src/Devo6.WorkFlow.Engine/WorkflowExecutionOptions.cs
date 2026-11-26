@@ -4,6 +4,22 @@ using Microsoft.Extensions.Logging;
 namespace Devo6.WorkFlow.Engine;
 
 /// <summary>
+/// workflow entry の事前取消に対する内部実行方針を表します。
+/// </summary>
+internal enum WorkflowEntryCancellationPolicy
+{
+    /// <summary>
+    /// 公開 Engine 経路の既存契約として、開始前に取消済みでも最初の同期 Step を完了させます。
+    /// </summary>
+    PreservePreCancelledSynchronousStep,
+
+    /// <summary>
+    /// 取消済みなら最初の同期 Step を開始しません。
+    /// </summary>
+    StopBeforeSynchronousStep,
+}
+
+/// <summary>
 /// workflow 実行に使う任意の依存関係を提供します。
 /// </summary>
 public sealed class WorkflowExecutionOptions
@@ -55,6 +71,30 @@ public sealed class WorkflowExecutionOptions
     internal IReadOnlyList<StepConfigValue> StepConfigs { get; private init; } = [];
 
     /// <summary>
+    /// workflow entry の開始前取消を扱う内部方針を取得します。
+    /// </summary>
+    internal WorkflowEntryCancellationPolicy CancellationPolicy { get; private init; } =
+        WorkflowEntryCancellationPolicy.PreservePreCancelledSynchronousStep;
+
+    /// <summary>
+    /// entry 取消方針だけを変更し、その他の実行設定を維持した option を作成します。
+    /// </summary>
+    /// <param name="cancellationPolicy">適用する内部取消方針。</param>
+    /// <returns>指定方針と既存設定を持つ実行 option。</returns>
+    internal WorkflowExecutionOptions WithCancellationPolicy(WorkflowEntryCancellationPolicy cancellationPolicy)
+    {
+        return new WorkflowExecutionOptions(LoggerFactory, EngineArguments)
+        {
+            Retry = Retry,
+            StandardConfig = StandardConfig,
+            StepConfigs = StepConfigs,
+            StepTimeout = StepTimeout,
+            StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            CancellationPolicy = cancellationPolicy,
+        };
+    }
+
+    /// <summary>
     /// 標準 Config instance を追加した実行 option を作成します。
     /// </summary>
     /// <param name="standardConfig">StepContext に登録する標準 Config instance。</param>
@@ -70,6 +110,7 @@ public sealed class WorkflowExecutionOptions
             StandardConfig = standardConfig,
             StepTimeout = StepTimeout,
             StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            CancellationPolicy = CancellationPolicy,
         };
     }
 
@@ -89,6 +130,7 @@ public sealed class WorkflowExecutionOptions
             StepConfigs = stepConfigs.ToArray(),
             StepTimeout = StepTimeout,
             StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            CancellationPolicy = CancellationPolicy,
         };
     }
 }

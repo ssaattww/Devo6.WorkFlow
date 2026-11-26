@@ -145,6 +145,23 @@ public sealed class FileBasedWorkflowExecutorTests
     }
 
     /// <summary>
+    /// file-based executor が開始前取消の同期 Step 互換特例を無効にすることを確認します。
+    /// </summary>
+    [Fact(DisplayName = "file-based execution selects strict Entry cancellation policy")]
+    public void FileBasedExecutionSelectsStrictEntryCancellationPolicy()
+    {
+        var retry = new RetryOptions { MaxAttempts = 2 };
+        WorkflowExecutionOptions options = FileBasedWorkflowExecutor.WithStrictCancellationPolicy(
+            new WorkflowExecutionOptions { Retry = retry });
+
+        Assert.Equal(WorkflowEntryCancellationPolicy.StopBeforeSynchronousStep, options.CancellationPolicy);
+        Assert.Same(retry, options.Retry);
+        Assert.Equal(
+            WorkflowEntryCancellationPolicy.PreservePreCancelledSynchronousStep,
+            new WorkflowExecutionOptions().CancellationPolicy);
+    }
+
+    /// <summary>
     /// PE metadata が選んだ非ジェネリック Create だけを実行します。
     /// </summary>
     [Fact(DisplayName = "file-based execution invokes the exact public Create validated by metadata")]

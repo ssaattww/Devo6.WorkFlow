@@ -828,7 +828,10 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
         WorkflowExecutionOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        bool cancellationWasRequestedAtEntry = cancellationToken.IsCancellationRequested;
+        bool cancellationWasRequestedAtEntry =
+            (options?.CancellationPolicy ?? WorkflowEntryCancellationPolicy.PreservePreCancelledSynchronousStep)
+                == WorkflowEntryCancellationPolicy.PreservePreCancelledSynchronousStep
+            && cancellationToken.IsCancellationRequested;
         options ??= new WorkflowExecutionOptions();
 
         ILoggerFactory loggerFactory = options.LoggerFactory ?? NullLoggerFactory.Instance;
