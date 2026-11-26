@@ -18,7 +18,7 @@
 
 - `ExecuteWorkflowStepSequenceAsync` の条件評価例外 catch に、外部 token が取消済みかつ内側例外が `OperationCanceledException` の場合を追加し、共通の `STEP_CANCELED` trace/result/log 変換を使う。
 - `FileBasedWorkflowExecutor` では Provider の `Activator.CreateInstance` と `Create()` 呼出しを個別に囲み、reflection wrapper をほどいた例外が OCE で外部 token も取消済みの場合だけ既存の `Cancelled` 結果にする。
-- 通常例外、未取消 OCE、Build、`.csx`、timeout の処理は変更しない。
+- 通常例外、未取消 OCE、Build、timeout の分類は維持する。条件 callback の分類は共有 Engine のため、`.csx` でも外部 token 取消済み OCE に同じ `STEP_CANCELED` の扱いが適用される。`.csx` の入力形式、loader、CLI 経路は変更しない。
 
 ## 検証
 
