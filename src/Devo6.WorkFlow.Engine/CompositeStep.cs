@@ -1079,6 +1079,19 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                         engineLogger));
                 }
                 catch (StepConditionEvaluationException exception)
+                    when (cancellationToken.IsCancellationRequested && exception.InnerException is OperationCanceledException)
+                {
+                    stopwatch.Stop();
+
+                    return WorkflowSequenceExecutionResult.Failed(ToCancellationWorkflowResult(
+                        traceSteps,
+                        step,
+                        stopwatch.Elapsed,
+                        attempt,
+                        StepCancellationFailure.Canceled(exception.InnerException.Message),
+                        engineLogger));
+                }
+                catch (StepConditionEvaluationException exception)
                 {
                     stopwatch.Stop();
                     traceSteps.Add(new ExecutionTraceStep(

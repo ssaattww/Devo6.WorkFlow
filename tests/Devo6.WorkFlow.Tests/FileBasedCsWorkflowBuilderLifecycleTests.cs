@@ -441,6 +441,227 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     }
 
     /// <summary>
+    /// 公開 Run の四つの条件付き登録で、外部取消済みの OCE だけを STEP_CANCELED にします。
+    /// </summary>
+    /// <param name="registration">同期または非同期 Step の条件付き登録形式。</param>
+    /// <param name="behavior">条件 callback の結果。</param>
+    /// <param name="expectedErrorCode">期待する workflow error code。</param>
+    [Theory]
+    [InlineData("run-if", "cancelled-oce", WorkflowErrorCodes.StepCanceled)]
+    [InlineData("tap-if", "cancelled-oce", WorkflowErrorCodes.StepCanceled)]
+    [InlineData("run-if-async", "cancelled-oce", WorkflowErrorCodes.StepCanceled)]
+    [InlineData("tap-if-async", "cancelled-oce", WorkflowErrorCodes.StepCanceled)]
+    [InlineData("run-if", "cancelled-ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if", "cancelled-ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if-async", "cancelled-ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if-async", "cancelled-ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if", "uncancelled-oce", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if", "uncancelled-oce", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if-async", "uncancelled-oce", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if-async", "uncancelled-oce", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if", "ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if", "ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if-async", "ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if-async", "ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    public void RunConditionalCallbackCancellationKeepsDiagnosticSession(
+        string registration,
+        string behavior,
+        string expectedErrorCode)
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-runif-cancellation", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string callbackPath = Path.Combine(markerRoot, "callback-started");
+        string registrationCode = registration switch
+        {
+            "run-if" => ".RunIf<SyncValueStep>((current, input) => ConditionFixture.Evaluate(input))",
+            "tap-if" => ".TapIf<SyncUnitStep>((current, input) => ConditionFixture.Evaluate(input))",
+            "run-if-async" => ".RunIfAsync<AsyncValueStep>((current, input) => ConditionFixture.Evaluate(input))",
+            "tap-if-async" => ".TapIfAsync<AsyncUnitStep>((current, input) => ConditionFixture.Evaluate(input))",
+            _ => throw new ArgumentOutOfRangeException(nameof(registration), registration, "Unknown conditional registration."),
+        };
+        using var cancellation = new CancellationTokenSource();
+        var loggerFactory = new CancellationTriggerLoggerFactory(message =>
+        {
+            if (message == "conditional callback cancellation")
+            {
+                cancellation.Cancel();
+            }
+        });
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Microsoft.Extensions.Logging;
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public IWorkflowEntry Create() => CompositeStep.Define("Main")
+                    .Run("seed", _ => "seed")
+                    {{registrationCode}};
+            }
+            internal static class ConditionFixture
+            {
+                public static bool Evaluate(StepInput input)
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(callbackPath)}}, "called");
+                    if ({{JsonSerializer.Serialize(behavior)}} is "cancelled-oce" or "cancelled-ordinary")
+                    {
+                        input.Context.Logger.LogInformation("conditional callback cancellation");
+                    }
+                    if ({{JsonSerializer.Serialize(behavior)}} is "cancelled-oce" or "uncancelled-oce")
+                    {
+                        throw new System.OperationCanceledException("Conditional callback canceled.");
+                    }
+                    throw new System.InvalidOperationException("Conditional callback failed.");
+                }
+            }
+            public sealed class SyncValueStep : IStep<string>
+            {
+                public string Execute(StepInput input) => "sync";
+            }
+            public sealed class SyncUnitStep : IStep<Unit>
+            {
+                public Unit Execute(StepInput input) => Unit.Value;
+            }
+            public sealed class AsyncValueStep : IAsyncStep<string>
+            {
+                public Task<string> ExecuteAsync(StepInput input, CancellationToken token) => Task.FromResult("async");
+            }
+            public sealed class AsyncUnitStep : IAsyncStep<Unit>
+            {
+                public Task<Unit> ExecuteAsync(StepInput input, CancellationToken token) => Task.FromResult(Unit.Value);
+            }
+            """);
+
+        WorkflowResult result = fixture.Builder.Run(
+            fixture.EntryPath,
+            "0.1.0",
+            options: new WorkflowExecutionOptions(loggerFactory),
+            cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        Assert.True(File.Exists(callbackPath));
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
+        ExecutionTraceStep failedStep = Assert.Single(result.Trace!.Steps.Where(step => step.Status == ExecutionTraceStepStatus.Failed));
+        Assert.Equal(expectedErrorCode, failedStep.ErrorCode);
+    }
+
+    /// <summary>
+    /// Provider constructor と Create の例外を、外部取消の状態に従って公開 Run で分類します。
+    /// </summary>
+    /// <param name="phase">例外を送出する constructor または Create。</param>
+    /// <param name="failureKind">取消例外、未取消の OCE、通常例外のいずれか。</param>
+    /// <param name="expectedErrorCode">期待する workflow error code。</param>
+    [Theory]
+    [InlineData("constructor", "cancelled-oce", WorkflowErrorCodes.StepCanceled, true)]
+    [InlineData("create", "cancelled-oce", WorkflowErrorCodes.StepCanceled, true)]
+    [InlineData("constructor", "cancelled-ordinary", WorkflowErrorCodes.ScriptEntryProviderFailed, true)]
+    [InlineData("create", "cancelled-ordinary", WorkflowErrorCodes.ScriptEntryProviderFailed, true)]
+    [InlineData("constructor", "uncancelled-oce", WorkflowErrorCodes.ScriptEntryProviderFailed, false)]
+    [InlineData("create", "uncancelled-oce", WorkflowErrorCodes.ScriptEntryProviderFailed, false)]
+    [InlineData("constructor", "ordinary", WorkflowErrorCodes.ScriptEntryProviderFailed, false)]
+    [InlineData("create", "ordinary", WorkflowErrorCodes.ScriptEntryProviderFailed, false)]
+    public async Task RunProviderCancellationExceptionsKeepDiagnosticSession(
+        string phase,
+        string failureKind,
+        string expectedErrorCode,
+        bool cancelExternalToken)
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-provider-callback-cancellation", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string enteredPath = Path.Combine(markerRoot, "provider-callback-entered");
+        string releasePath = Path.Combine(markerRoot, "release-provider-callback");
+        using var cancellation = new CancellationTokenSource();
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using System.Threading;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider()
+                {
+                    if ({{JsonSerializer.Serialize(phase)}} == "constructor")
+                    {
+                        ProviderGate.Wait({{JsonSerializer.Serialize(enteredPath)}}, {{JsonSerializer.Serialize(releasePath)}});
+                        ProviderGate.Throw({{JsonSerializer.Serialize(failureKind)}});
+                    }
+                }
+                public IWorkflowEntry Create()
+                {
+                    if ({{JsonSerializer.Serialize(phase)}} == "create")
+                    {
+                        ProviderGate.Wait({{JsonSerializer.Serialize(enteredPath)}}, {{JsonSerializer.Serialize(releasePath)}});
+                        ProviderGate.Throw({{JsonSerializer.Serialize(failureKind)}});
+                    }
+                    return CompositeStep.Define("Main").Run<int>("ok", _ => 1);
+                }
+            }
+            internal static class ProviderGate
+            {
+                public static void Wait(string enteredPath, string releasePath)
+                {
+                    File.WriteAllText(enteredPath, "entered");
+                    long deadline = System.Environment.TickCount64 + 10000;
+                    while (!File.Exists(releasePath) && System.Environment.TickCount64 < deadline)
+                    {
+                        Thread.Yield();
+                    }
+                    if (!File.Exists(releasePath)) throw new System.TimeoutException("Provider test gate timed out.");
+                }
+                public static void Throw(string failureKind)
+                {
+                    if (failureKind is "cancelled-oce" or "uncancelled-oce")
+                    {
+                        throw new System.OperationCanceledException("Provider callback canceled.");
+                    }
+                    throw new System.InvalidOperationException("Provider callback failed.");
+                }
+            }
+            """);
+        WorkflowResult? result = null;
+        Task run = Task.Run(() => result = fixture.Builder.Run(
+            fixture.EntryPath,
+            "0.1.0",
+            cancellationToken: cancellation.Token));
+        fixture.DeferCleanupUntil(run);
+        markerCleanup.DeferCleanupUntil(run);
+
+        try
+        {
+            await WaitForFileAsync(enteredPath, run);
+            if (cancelExternalToken)
+            {
+                cancellation.Cancel();
+            }
+            File.WriteAllText(releasePath, "release");
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            cancellation.Cancel();
+            File.WriteAllText(releasePath, "release");
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.NotNull(result);
+        Assert.False(result.Succeeded);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        string expectedMessage = cancelExternalToken && failureKind == "cancelled-oce"
+            ? "Workflow execution was cancelled before the next execution boundary."
+            : failureKind is "ordinary" or "cancelled-ordinary"
+                ? "Provider callback failed."
+                : "Provider callback canceled.";
+        Assert.Contains(expectedMessage, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
+    }
+
+    /// <summary>
     /// 公開 Run で条件評価または Step 生成中に外部取消された場合は同期本体を開始しません。
     /// </summary>
     /// <param name="registration">取消を発生させる RunIf、TapIf、または型付き Step の登録形態。</param>

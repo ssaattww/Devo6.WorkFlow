@@ -50,7 +50,17 @@ internal static class FileBasedWorkflowExecutor
                 return Cancelled(expectedQualifiedEntryName);
             }
 
-            object? providerObject = Activator.CreateInstance(providerType);
+            object? providerObject;
+            try
+            {
+                providerObject = Activator.CreateInstance(providerType);
+            }
+            catch (Exception exception)
+                when (cancellationToken.IsCancellationRequested && Unwrap(exception) is OperationCanceledException)
+            {
+                return Cancelled(expectedQualifiedEntryName);
+            }
+
             if (providerObject is not IWorkflowEntryProvider provider)
             {
                 return Failure(
@@ -83,7 +93,17 @@ internal static class FileBasedWorkflowExecutor
                 return Cancelled(expectedQualifiedEntryName);
             }
 
-            IWorkflowEntry? entry = createMethods[0].Invoke(providerObject, null) as IWorkflowEntry;
+            IWorkflowEntry? entry;
+            try
+            {
+                entry = createMethods[0].Invoke(providerObject, null) as IWorkflowEntry;
+            }
+            catch (Exception exception)
+                when (cancellationToken.IsCancellationRequested && Unwrap(exception) is OperationCanceledException)
+            {
+                return Cancelled(expectedQualifiedEntryName);
+            }
+
             if (cancellationToken.IsCancellationRequested)
             {
                 return Cancelled(expectedQualifiedEntryName);
