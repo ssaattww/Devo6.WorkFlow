@@ -6,6 +6,21 @@ namespace Devo6.WorkFlow.Tests;
 internal static class TestBuildConfiguration
 {
     /// <summary>
+    /// 現在の検査用アセンブリが参照する CLI target framework を取得します。
+    /// </summary>
+    public static string TargetFramework
+    {
+        get
+        {
+#if NET10_0
+            return "net10.0";
+#else
+            return "net8.0";
+#endif
+        }
+    }
+
+    /// <summary>
     /// 現在の検査用アセンブリ配置先からビルド構成名を取得します。
     /// </summary>
     public static string Current => ResolveCurrent();

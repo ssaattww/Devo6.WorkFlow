@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Devo6.WorkFlow.Abstractions\Devo6.WorkFlow.Abstractions.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\Devo6.WorkFlow.Engine\Devo6.WorkFlow.Engine.csproj" />

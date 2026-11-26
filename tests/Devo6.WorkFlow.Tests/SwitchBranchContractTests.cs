@@ -173,6 +173,49 @@ public sealed class SwitchBranchContractTests
     }
 
     /// <summary>
+    /// Switch selector が OperationCanceledException を送出した場合だけ外部取消状態に応じて診断を選びます。
+    /// </summary>
+    /// <param name="cancelExternalToken">selector 評価中に外部 token を取り消す場合は true。</param>
+    /// <param name="expectedErrorCode">期待する workflow error code。</param>
+    [Theory]
+    [InlineData(true, WorkflowErrorCodes.StepCanceled)]
+    [InlineData(false, WorkflowErrorCodes.SwitchSelectorFailed)]
+    public async Task SwitchSelectorCancellationExceptionUsesExternalTokenState(
+        bool cancelExternalToken,
+        string expectedErrorCode)
+    {
+        SwitchBranchState.Reset();
+        using var cancellation = new CancellationTokenSource();
+        CompositeStep<string> step = CompositeStep
+            .Define("Main")
+            .Run("seed", _ => new SwitchValue("alpha"))
+            .Switch<SwitchKind, string>(
+                "throwing-cancel-selector",
+                current =>
+                {
+                    SwitchBranchState.IncrementSelectorAttempts();
+                    if (cancelExternalToken)
+                    {
+                        cancellation.Cancel();
+                    }
+
+                    throw new OperationCanceledException("Switch selector canceled.");
+                },
+                cases => cases
+                    .Case(SwitchKind.Alpha, branch => branch.Run<AlphaStep, string>())
+                    .Default(branch => branch.Run<DefaultStep, string>()));
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        Assert.Equal(1, SwitchBranchState.SelectorAttempts);
+        Assert.Contains("Switch selector canceled.", result.ErrorMessage, StringComparison.Ordinal);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps.Where(candidate => candidate.StepName == "throwing-cancel-selector"));
+        Assert.Equal(expectedErrorCode, traceStep.ErrorCode);
+    }
+
+    /// <summary>
     /// branch 内で入れ子 Switch と値 API が使えることを確認します。
     /// </summary>
     [Fact(DisplayName = "BranchBuilder supports nested switch and value APIs")]

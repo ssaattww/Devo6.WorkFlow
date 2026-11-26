@@ -420,6 +420,77 @@ public sealed class RunIfTapIfContractTests
     }
 
     /// <summary>
+    /// RunIf、TapIf と非同期 Step 版の条件 OCE を外部 token の状態で分類します。
+    /// </summary>
+    /// <param name="registration">実行する条件付き Step の形式。</param>
+    /// <param name="failureKind">条件が送出する cancellation または通常例外。</param>
+    /// <param name="expectedErrorCode">期待する失敗コード。</param>
+    [Theory]
+    [InlineData("run-if", "cancelled-oce", WorkflowErrorCodes.StepCanceled)]
+    [InlineData("tap-if", "cancelled-oce", WorkflowErrorCodes.StepCanceled)]
+    [InlineData("run-if-async", "cancelled-oce", WorkflowErrorCodes.StepCanceled)]
+    [InlineData("tap-if-async", "cancelled-oce", WorkflowErrorCodes.StepCanceled)]
+    [InlineData("run-if", "cancelled-ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if", "cancelled-ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if-async", "cancelled-ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if-async", "cancelled-ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if", "uncancelled-oce", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if", "uncancelled-oce", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if-async", "uncancelled-oce", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if-async", "uncancelled-oce", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if", "ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if", "ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("run-if-async", "ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    [InlineData("tap-if-async", "ordinary", WorkflowErrorCodes.ConditionEvaluationFailed)]
+    public async Task ConditionalStepConditionCancellationUsesExternalTokenState(
+        string registration,
+        string failureKind,
+        string expectedErrorCode)
+    {
+        RunIfTapIfState.Reset();
+        int conditionAttempts = 0;
+        using var cancellation = new CancellationTokenSource();
+        Func<ConditionalValue, StepInput, bool> condition = (_, _) =>
+        {
+            conditionAttempts++;
+            if (failureKind is "cancelled-oce" or "cancelled-ordinary")
+            {
+                cancellation.Cancel();
+            }
+
+            if (failureKind is "cancelled-oce" or "uncancelled-oce")
+            {
+                throw new OperationCanceledException("Conditional callback canceled.");
+            }
+
+            throw new InvalidOperationException("Conditional callback failed.");
+        };
+        CompositeStep<ConditionalValue> step = CompositeStep
+            .Define("Main")
+            .Run("seed", _ => new ConditionalValue("seed"));
+        step = registration switch
+        {
+            "run-if" => step.RunIf<RetryRunIfStep>(condition),
+            "tap-if" => step.TapIf<RetryTapIfStep>(condition),
+            "run-if-async" => step.RunIfAsync<AsyncRunIfValueStep>(condition),
+            "tap-if-async" => step.TapIfAsync<AsyncTapIfUnitStep>(condition),
+            _ => throw new ArgumentOutOfRangeException(nameof(registration), registration, "Unknown conditional registration."),
+        };
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        Assert.Equal(1, conditionAttempts);
+        Assert.Contains(failureKind is "ordinary" or "cancelled-ordinary"
+                ? "Conditional callback failed."
+                : "Conditional callback canceled.",
+            result.ErrorMessage, StringComparison.Ordinal);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps.Where(candidate => candidate.Status == ExecutionTraceStepStatus.Failed));
+        Assert.Equal(expectedErrorCode, traceStep.ErrorCode);
+    }
+
+    /// <summary>
     /// RunIf と TapIf API の null 引数が既存方針どおり失敗することを確認します。
     /// </summary>
     [Fact(DisplayName = "RunIf and TapIf reject null delegates")]

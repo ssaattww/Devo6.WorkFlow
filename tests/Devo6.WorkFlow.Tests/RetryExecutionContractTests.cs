@@ -151,6 +151,45 @@ public sealed class RetryExecutionContractTests
     }
 
     /// <summary>
+    /// 事前取消を許容する同期 Step が通常例外を送出した場合、取消後の再試行や後続処理を行わないことを確認します。
+    /// </summary>
+    [Fact(DisplayName = "pre-cancelled sync Step failure is not retried or followed by another Step")]
+    public async Task PreCancelledSynchronousStepFailureIsNotRetried()
+    {
+        RetryContractState.Reset();
+        using var cancellationTokenSource = new CancellationTokenSource();
+        cancellationTokenSource.Cancel();
+        CompositeStep<string> step = CompositeStep
+            .Define("Main")
+            .Run<RetryOutput>("cancelled-failure", _ =>
+            {
+                RetryContractState.Add("failed-step");
+                throw new InvalidOperationException("sync failure after pre-cancellation");
+            })
+                .Produce<NextInput>(output =>
+                {
+                    RetryContractState.Add("produce");
+
+                    return new NextInput(output.Value);
+                })
+            .Run<FollowingStep, string>()
+                .StoreAs();
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(
+            new WorkflowExecutionOptions { Retry = new RetryOptions { MaxAttempts = 3 } },
+            cancellationTokenSource.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepExecutionFailed, result.ErrorCode);
+        Assert.Contains("sync failure after pre-cancellation", result.ErrorMessage, StringComparison.Ordinal);
+        Assert.Equal(["failed-step"], RetryContractState.Snapshot());
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal(ExecutionTraceStepStatus.Failed, traceStep.Status);
+        Assert.Equal(WorkflowErrorCodes.StepExecutionFailed, traceStep.ErrorCode);
+        Assert.Equal(1, traceStep.Attempt);
+    }
+
+    /// <summary>
     /// timeout は retry 対象外であり、1 回の失敗で Produce と後続 Step を止めることを確認します。
     /// </summary>
     [Fact(DisplayName = "step timeout is not retried")]
@@ -322,7 +361,7 @@ public sealed class RetryExecutionContractTests
             int attempt = RetryContractState.IncrementAttempt(nameof(TimeoutStep));
             RetryContractState.Add($"timeout-step:{attempt}");
 
-            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
 
             return new RetryOutput("timeout");
         }

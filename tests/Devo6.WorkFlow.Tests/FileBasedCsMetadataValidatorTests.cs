@@ -1,0 +1,359 @@
+#if NET10_0
+using System.Reflection;
+using System.Runtime.Loader;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Emit;
+using Devo6.WorkFlow.Abstractions;
+using Devo6.WorkFlow.Engine;
+
+namespace Devo6.WorkFlow.Tests;
+
+/// <summary>
+/// PE metadata validate が user code を実行しないことを検証します。
+/// </summary>
+public sealed class FileBasedCsMetadataValidatorTests
+{
+    [Fact(DisplayName = "metadata validation accepts a provider without executing any user code")]
+    /// <summary>
+    /// 有効な Provider metadata を検証して user code が動かないことを確認します。
+    /// </summary>
+    public void ValidProviderMetadataDoesNotExecuteUserCode()
+    {
+        string directory = CreateDirectory();
+        string markerDirectory = Path.Combine(directory, "markers");
+        Directory.CreateDirectory(markerDirectory);
+        string assemblyPath = CompileFixture(directory, ValidFixture(markerDirectory));
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.True(result.Succeeded, FormatErrors(result));
+        Assert.Empty(Directory.GetFiles(markerDirectory));
+        Assert.DoesNotContain(
+            AssemblyLoadContext.Default.Assemblies,
+            assembly => string.Equals(assembly.Location, assemblyPath, StringComparison.Ordinal));
+    }
+
+    [Theory(DisplayName = "metadata validation rejects invalid provider shapes without loading them")]
+    [InlineData("internal sealed class MainWorkflow", "public MainWorkflow() { }", WorkflowErrorCodes.EntryStepNotFound)]
+    [InlineData("public abstract class MainWorkflow", "public MainWorkflow() { }", WorkflowErrorCodes.ScriptEntryProviderInvalid)]
+    [InlineData("public sealed class MainWorkflow<T>", "public MainWorkflow() { }", WorkflowErrorCodes.ScriptEntryProviderInvalid)]
+    [InlineData("public class MainWorkflow", "public MainWorkflow() { }", WorkflowErrorCodes.ScriptEntryProviderInvalid)]
+    [InlineData("public sealed class MainWorkflow", "private MainWorkflow() { }", WorkflowErrorCodes.ScriptEntryProviderInvalid)]
+    /// <summary>
+    /// 契約外 Provider の型形状が拒否されることを確認します。
+    /// </summary>
+    public void InvalidProviderShapeIsRejected(string declaration, string constructor, string expectedErrorCode)
+    {
+        string directory = CreateDirectory();
+        string source = $$"""
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")]
+            {{declaration}} : IWorkflowEntryProvider
+            {
+                {{constructor}}
+                public IWorkflowEntry Create() => null!;
+            }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(expectedErrorCode, Assert.Single(result.Errors).Code);
+    }
+
+    /// <summary>
+    /// metadata が検証する public Create と interface の明示実装が異なる Provider を拒否します。
+    /// </summary>
+    [Fact(DisplayName = "metadata validation rejects a generic public Create that differs from the interface target")]
+    public void GenericPublicCreateDoesNotMatchTheValidatedEntryMethod()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainWorkflow : IWorkflowEntryProvider
+            {
+                public MainWorkflow() { }
+                IWorkflowEntry IWorkflowEntryProvider.Create() => null!;
+                public IWorkflowEntry Create<T>() => null!;
+            }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
+    }
+
+    [Fact(DisplayName = "metadata validation diagnoses an absent requested entry")]
+    /// <summary>
+    /// 要求 Entry がない場合の診断を確認します。
+    /// </summary>
+    public void MissingEntryIsDiagnosed()
+    {
+        string directory = CreateDirectory();
+        string assemblyPath = CompileFixture(directory, ValidFixture(Path.Combine(directory, "unused"), entryName: "Deploy"));
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Missing");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.EntryStepNotFound, Assert.Single(result.Errors).Code);
+    }
+
+    [Fact(DisplayName = "metadata validation diagnoses duplicate entry names")]
+    /// <summary>
+    /// 重複 Entry 名の診断を確認します。
+    /// </summary>
+    public void DuplicateEntryNamesAreDiagnosed()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class First : IWorkflowEntryProvider { public First() { } public IWorkflowEntry Create() => null!; }
+            [WorkflowEntry("Main")] public sealed class Second : IWorkflowEntryProvider { public Second() { } public IWorkflowEntry Create() => null!; }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.DuplicateStepName, Assert.Single(result.Errors).Code);
+    }
+
+    [Fact(DisplayName = "non-public entry candidates do not collide with public entries")]
+    /// <summary>
+    /// 非公開同名 candidate が公開 Entry の重複判定へ混ざらないことを確認します。
+    /// </summary>
+    public void NonPublicCandidateIsIgnoredBeforeDuplicateMatching()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] internal sealed class Hidden : IWorkflowEntryProvider { public Hidden() { } public IWorkflowEntry Create() => null!; }
+            [WorkflowEntry("Main")] public sealed class Visible : IWorkflowEntryProvider { public Visible() { } public IWorkflowEntry Create() => null!; }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.True(result.Succeeded, FormatErrors(result));
+    }
+
+    /// <summary>
+    /// 非公開 Entry だけでは公開 candidate が存在しない診断になります。
+    /// </summary>
+    [Fact(DisplayName = "a non-public-only entry is diagnosed as not found")]
+    public void NonPublicOnlyEntryIsNotFound()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] internal sealed class Hidden : IWorkflowEntryProvider
+            {
+                public Hidden() { }
+                public IWorkflowEntry Create() => null!;
+            }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.EntryStepNotFound, Assert.Single(result.Errors).Code);
+    }
+
+    [Fact(DisplayName = "provider contract and Create implementation must be declared by the entry type")]
+    /// <summary>
+    /// 継承 Provider は契約外として拒否し、ctor や Create を動かさないことを確認します。
+    /// </summary>
+    public void InheritedProviderContractIsRejectedWithoutExecutionDuringValidation()
+    {
+        string directory = CreateDirectory();
+        string marker = Path.Combine(directory, "provider-created");
+        string escapedMarker = marker.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+        string source = $$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            public abstract class ProviderBase : IWorkflowEntryProvider
+            {
+                public ProviderBase() { }
+                public IWorkflowEntry Create() { File.WriteAllText("{{escapedMarker}}", "created"); return null!; }
+            }
+            [WorkflowEntry("Main")] public sealed class InheritedProvider : ProviderBase { public InheritedProvider() { } }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
+        Assert.False(File.Exists(marker));
+    }
+
+    [Fact(DisplayName = "generic provider base types are rejected before execution")]
+    /// <summary>
+    /// generic base から継承した Provider 契約を受け入れません。
+    /// </summary>
+    public void GenericProviderBaseIsRejected()
+    {
+        string directory = CreateDirectory();
+        string source = """
+            using Devo6.WorkFlow.Engine;
+            public abstract class ProviderBase<T> : IWorkflowEntryProvider
+            {
+                public ProviderBase() { }
+                public IWorkflowEntry Create() => null!;
+            }
+            [WorkflowEntry("Main")] public sealed class InheritedProvider : ProviderBase<int> { public InheritedProvider() { } }
+            """;
+        string assemblyPath = CompileFixture(directory, source);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
+    }
+
+    [Fact(DisplayName = "provider contract inherited from a dependency assembly is rejected")]
+    /// <summary>
+    /// dependency DLL の Provider 基底型を候補自動解決せず拒否します。
+    /// </summary>
+    public void DependencyProviderBaseIsRejected()
+    {
+        string directory = CreateDirectory();
+        string dependencyPath = CompileFixture(
+            directory,
+            """
+            using Devo6.WorkFlow.Engine;
+            namespace ProviderDependency;
+            public abstract class ProviderBase : IWorkflowEntryProvider
+            {
+                public ProviderBase() { }
+                public IWorkflowEntry Create() => null!;
+            }
+            """,
+            outputFileName: "provider-dependency.dll");
+        string assemblyPath = CompileFixture(
+            directory,
+            """
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class InheritedProvider : ProviderDependency.ProviderBase
+            {
+                public InheritedProvider() { }
+            }
+            """,
+            additionalReferencePaths: [dependencyPath]);
+
+        WorkflowValidationResult result = FileBasedCsMetadataValidator.Validate(assemblyPath, "Main");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptEntryProviderInvalid, Assert.Single(result.Errors).Code);
+    }
+
+    /// <summary>
+    /// metadata-only validation 用の managed source fixture を作成します。
+    /// </summary>
+    private static string ValidFixture(string markerDirectory, string entryName = "Main")
+    {
+        string escapedMarkerDirectory = markerDirectory.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+        return $$"""
+            using System;
+            using System.IO;
+            using System.Runtime.CompilerServices;
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+
+            internal static class Markers
+            {
+                internal static void Touch(string name) => File.WriteAllText(Path.Combine("{{escapedMarkerDirectory}}", name), name);
+            }
+
+            [AttributeUsage(AttributeTargets.Class)]
+            public sealed class MarkerAttribute : Attribute
+            {
+                public MarkerAttribute() => Markers.Touch("attribute");
+            }
+
+            public static class ModuleMarker
+            {
+                [ModuleInitializer]
+                public static void Initialize() => Markers.Touch("module");
+            }
+
+            [Marker]
+            [WorkflowEntry("{{entryName}}")]
+            public sealed class MainWorkflow : IWorkflowEntryProvider
+            {
+                static MainWorkflow() => Markers.Touch("static");
+                public MainWorkflow() => Markers.Touch("provider-constructor");
+                public IWorkflowEntry Create()
+                {
+                    Markers.Touch("create");
+                    return CompositeStep.Define("{{entryName}}").Run<MarkerStep, string>();
+                }
+            }
+
+            public sealed class MarkerStep : IStep<string>
+            {
+                public MarkerStep() => Markers.Touch("step-constructor");
+                public string Execute(StepInput input)
+                {
+                    Markers.Touch("step-execute");
+                    return "ok";
+                }
+            }
+            """;
+    }
+
+    /// <summary>
+    /// C# fixture を一時 managed assembly に compile します。
+    /// </summary>
+    private static string CompileFixture(
+        string directory,
+        string source,
+        string outputFileName = "metadata-fixture.dll",
+        IReadOnlyList<string>? additionalReferencePaths = null)
+    {
+        string assemblyPath = Path.Combine(directory, outputFileName);
+        var parseOptions = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
+        SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
+        string trustedAssemblies = (string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")
+            ?? throw new InvalidOperationException("Trusted platform assemblies are unavailable.");
+        IEnumerable<MetadataReference> references = trustedAssemblies
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Append(typeof(WorkflowEntryAttribute).Assembly.Location)
+            .Append(typeof(WorkflowErrorCodes).Assembly.Location)
+            .Concat(additionalReferencePaths ?? [])
+            .Distinct(StringComparer.Ordinal)
+            .Select(path => MetadataReference.CreateFromFile(path));
+        CSharpCompilation compilation = CSharpCompilation.Create(
+            Path.GetFileNameWithoutExtension(assemblyPath),
+            [syntaxTree],
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+
+        using FileStream output = File.Create(assemblyPath);
+        EmitResult emitResult = compilation.Emit(output);
+        Assert.True(emitResult.Success, string.Join(Environment.NewLine, emitResult.Diagnostics));
+        return assemblyPath;
+    }
+
+    /// <summary>
+    /// 一意なテスト用一時ディレクトリを作成します。
+    /// </summary>
+    private static string CreateDirectory()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "devo6-workflow-metadata-validate-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    /// <summary>
+    /// metadata validation errors を診断文字列へ整形します。
+    /// </summary>
+    private static string FormatErrors(WorkflowValidationResult result) =>
+        string.Join(Environment.NewLine, result.Errors.Select(error => $"{error.Code}: {error.Path}: {error.Message}"));
+}
+#endif

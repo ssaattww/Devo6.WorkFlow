@@ -4,6 +4,22 @@ using Microsoft.Extensions.Logging;
 namespace Devo6.WorkFlow.Engine;
 
 /// <summary>
+/// workflow entry の事前取消に対する内部実行方針を表します。
+/// </summary>
+internal enum WorkflowEntryCancellationPolicy
+{
+    /// <summary>
+    /// 公開 Engine 経路の既存契約として、開始前に取消済みでも最初の同期 Step を完了させます。
+    /// </summary>
+    PreservePreCancelledSynchronousStep,
+
+    /// <summary>
+    /// 取消済みなら最初の同期 Step を開始しません。
+    /// </summary>
+    StopBeforeSynchronousStep,
+}
+
+/// <summary>
 /// workflow 実行に使う任意の依存関係を提供します。
 /// </summary>
 public sealed class WorkflowExecutionOptions
@@ -35,6 +51,16 @@ public sealed class WorkflowExecutionOptions
     public TimeSpan? StepTimeout { get; set; }
 
     /// <summary>
+    /// テストで実際の Step timeout token を観測する任意 callback。
+    /// </summary>
+    internal Action<CancellationToken>? StepTimeoutTokenObserver { get; set; }
+
+    /// <summary>
+    /// 登録済み Step の cancellation 検査後、実行デリゲートを呼ぶ直前に呼び出すテスト用 callback。
+    /// </summary>
+    internal Action? BeforeStepRegistrationExecutionObserver { get; set; }
+
+    /// <summary>
     /// Step 本体の通常例外に適用する retry 設定を取得または設定します。null の場合は retry を行いません。
     /// </summary>
     public RetryOptions? Retry { get; set; }
@@ -48,6 +74,31 @@ public sealed class WorkflowExecutionOptions
     /// Step 実行直前に StepContext へ登録する Step Config instance の一覧を取得します。
     /// </summary>
     internal IReadOnlyList<StepConfigValue> StepConfigs { get; private init; } = [];
+
+    /// <summary>
+    /// workflow entry の開始前取消を扱う内部方針を取得します。
+    /// </summary>
+    internal WorkflowEntryCancellationPolicy CancellationPolicy { get; private init; } =
+        WorkflowEntryCancellationPolicy.PreservePreCancelledSynchronousStep;
+
+    /// <summary>
+    /// entry 取消方針だけを変更し、その他の実行設定を維持した option を作成します。
+    /// </summary>
+    /// <param name="cancellationPolicy">適用する内部取消方針。</param>
+    /// <returns>指定方針と既存設定を持つ実行 option。</returns>
+    internal WorkflowExecutionOptions WithCancellationPolicy(WorkflowEntryCancellationPolicy cancellationPolicy)
+    {
+        return new WorkflowExecutionOptions(LoggerFactory, EngineArguments)
+        {
+            Retry = Retry,
+            StandardConfig = StandardConfig,
+            StepConfigs = StepConfigs,
+            StepTimeout = StepTimeout,
+            StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            BeforeStepRegistrationExecutionObserver = BeforeStepRegistrationExecutionObserver,
+            CancellationPolicy = cancellationPolicy,
+        };
+    }
 
     /// <summary>
     /// 標準 Config instance を追加した実行 option を作成します。
@@ -64,6 +115,9 @@ public sealed class WorkflowExecutionOptions
             StepConfigs = StepConfigs,
             StandardConfig = standardConfig,
             StepTimeout = StepTimeout,
+            StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            BeforeStepRegistrationExecutionObserver = BeforeStepRegistrationExecutionObserver,
+            CancellationPolicy = CancellationPolicy,
         };
     }
 
@@ -82,6 +136,9 @@ public sealed class WorkflowExecutionOptions
             StandardConfig = StandardConfig,
             StepConfigs = stepConfigs.ToArray(),
             StepTimeout = StepTimeout,
+            StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            BeforeStepRegistrationExecutionObserver = BeforeStepRegistrationExecutionObserver,
+            CancellationPolicy = CancellationPolicy,
         };
     }
 }

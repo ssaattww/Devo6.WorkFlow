@@ -2018,6 +2018,8 @@ public sealed class StandardConfigLoadingContractTests
                 "run",
                 "--project",
                 Path.Combine(RepositoryRoot, "src/Devo6.WorkFlow.Cli/Devo6.WorkFlow.Cli.csproj"),
+                "--framework",
+                TestBuildConfiguration.TargetFramework,
                 "--configuration",
                 TestBuildConfiguration.Current,
                 "--no-build",

@@ -140,6 +140,82 @@ public sealed class AsyncStepApiContractTests
     }
 
     /// <summary>
+    /// 厳格な entry 取消方針では、Engine に入る前から取消済みなら同期 Step を開始しないことを検証します。
+    /// </summary>
+    [Fact(DisplayName = "strict entry cancellation policy stops a pre-cancelled synchronous Step")]
+    public async Task StrictEntryCancellationPolicyStopsPreCancelledSynchronousStep()
+    {
+        ExecutionLog.Clear();
+        using var cancellationTokenSource = new CancellationTokenSource();
+        cancellationTokenSource.Cancel();
+        CompositeStep<FirstOutput> step = CompositeStep
+            .Define("Main")
+            .Run<FirstSyncStep, FirstOutput>();
+        var options = new WorkflowExecutionOptions()
+            .WithCancellationPolicy(WorkflowEntryCancellationPolicy.StopBeforeSynchronousStep);
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(options, cancellationTokenSource.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Empty(ExecutionLog.Values);
+    }
+
+    /// <summary>
+    /// Entry 開始ログ中の取消は事前取消の同期 Step 互換経路を使わないことを検証します。
+    /// </summary>
+    [Fact(DisplayName = "cancellation during Entry started logging stops before the first synchronous Step")]
+    public async Task CancellationDuringEntryStartedLogStopsBeforeSynchronousStep()
+    {
+        ExecutionLog.Clear();
+        using var cancellationTokenSource = new CancellationTokenSource();
+        using var loggerFactory = new CancellationTriggerLoggerFactory(message =>
+        {
+            if (message == "Entry started")
+            {
+                cancellationTokenSource.Cancel();
+            }
+        });
+        CompositeStep<FirstOutput> step = CompositeStep
+            .Define("Main")
+            .Run<FirstSyncStep, FirstOutput>();
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(
+            new WorkflowExecutionOptions(loggerFactory),
+            cancellationTokenSource.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Empty(ExecutionLog.Values);
+    }
+
+    /// <summary>
+    /// Composite 開始ログ中の取消で同期 Step 本体を実行せず、取消例外を伝えることを検証します。
+    /// </summary>
+    [Fact(DisplayName = "cancellation during Composite started logging stops before the synchronous Step")]
+    public async Task CancellationDuringCompositeStartedLogStopsBeforeSynchronousStep()
+    {
+        ExecutionLog.Clear();
+        using var cancellationTokenSource = new CancellationTokenSource();
+        using var loggerFactory = new CancellationTriggerLoggerFactory(message =>
+        {
+            if (message == "Composite started")
+            {
+                cancellationTokenSource.Cancel();
+            }
+        });
+        CompositeStep<FirstOutput> step = CompositeStep
+            .Define("Main")
+            .Run<FirstSyncStep, FirstOutput>();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => step.ExecuteAsync(
+            new StepInput(new StepContext(loggerFactory)),
+            cancellationTokenSource.Token));
+
+        Assert.Empty(ExecutionLog.Values);
+    }
+
+    /// <summary>
     /// Abstractions assembly から IAsyncStep&lt;T&gt; を取得し、指定した出力型で閉じた型を返します。
     /// </summary>
     private static Type RequireAsyncStepType(Type outputType)
