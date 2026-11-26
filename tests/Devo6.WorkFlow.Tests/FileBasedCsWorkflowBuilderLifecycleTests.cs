@@ -107,6 +107,58 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     }
 
     /// <summary>
+    /// 登録ラッパーの取消確認後に取消された場合、型付き同期 Step 本体を開始しません。
+    /// </summary>
+    [Fact(DisplayName = "Run cancellation after registration check stops before typed synchronous Step body")]
+    public void RunCancellationAfterRegistrationCheckStopsBeforeTypedSynchronousStep()
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), $"devo6-registration-cancel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string stepMarkerPath = Path.Combine(markerRoot, "step-started");
+        using var cancellation = new CancellationTokenSource();
+        int cancellationCount = 0;
+        var options = new WorkflowExecutionOptions
+        {
+            BeforeStepRegistrationExecutionObserver = () =>
+            {
+                if (Interlocked.Exchange(ref cancellationCount, 1) == 0)
+                {
+                    cancellation.Cancel();
+                }
+            },
+        };
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<MarkerStep, int>();
+            }
+            public sealed class MarkerStep : IStep<int>
+            {
+                public int Execute(StepInput input)
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(stepMarkerPath)}}, "started");
+                    return 1;
+                }
+            }
+            """);
+
+        WorkflowResult result = fixture.Builder.Run(
+            fixture.EntryPath,
+            "0.1.0",
+            options: options,
+            cancellationToken: cancellation.Token);
+
+        Assert.Equal(1, cancellationCount);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.False(File.Exists(stepMarkerPath));
+    }
+
+    /// <summary>
     /// 公開 Run に事前取消を渡すと Provider constructor の利用者コードを実行しません。
     /// </summary>
     [Fact(DisplayName = "pre-cancelled Run does not execute the Provider constructor")]

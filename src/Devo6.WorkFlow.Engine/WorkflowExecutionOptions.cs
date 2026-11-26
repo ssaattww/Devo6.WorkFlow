@@ -56,6 +56,11 @@ public sealed class WorkflowExecutionOptions
     internal Action<CancellationToken>? StepTimeoutTokenObserver { get; set; }
 
     /// <summary>
+    /// 登録済み Step の cancellation 検査後、実行デリゲートを呼ぶ直前に呼び出すテスト用 callback。
+    /// </summary>
+    internal Action? BeforeStepRegistrationExecutionObserver { get; set; }
+
+    /// <summary>
     /// Step 本体の通常例外に適用する retry 設定を取得または設定します。null の場合は retry を行いません。
     /// </summary>
     public RetryOptions? Retry { get; set; }
@@ -90,6 +95,7 @@ public sealed class WorkflowExecutionOptions
             StepConfigs = StepConfigs,
             StepTimeout = StepTimeout,
             StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            BeforeStepRegistrationExecutionObserver = BeforeStepRegistrationExecutionObserver,
             CancellationPolicy = cancellationPolicy,
         };
     }
@@ -110,6 +116,7 @@ public sealed class WorkflowExecutionOptions
             StandardConfig = standardConfig,
             StepTimeout = StepTimeout,
             StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            BeforeStepRegistrationExecutionObserver = BeforeStepRegistrationExecutionObserver,
             CancellationPolicy = CancellationPolicy,
         };
     }
@@ -130,6 +137,7 @@ public sealed class WorkflowExecutionOptions
             StepConfigs = stepConfigs.ToArray(),
             StepTimeout = StepTimeout,
             StepTimeoutTokenObserver = StepTimeoutTokenObserver,
+            BeforeStepRegistrationExecutionObserver = BeforeStepRegistrationExecutionObserver,
             CancellationPolicy = CancellationPolicy,
         };
     }
