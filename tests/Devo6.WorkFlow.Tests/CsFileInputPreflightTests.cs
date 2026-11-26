@@ -353,7 +353,7 @@ public sealed class CsFileInputPreflightTests
             """);
         string evaluationJson = $$"""
             {
-              "Properties": { "TargetFramework": "net10.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "", "MSBuildSDKsPath": "/opt/override/sdk/10.0.404/Sdks", "MSBuildExtensionsPath": "/usr/share/dotnet/sdk/10.0.404/" },
+              "Properties": { "TargetFramework": "net10.0", "TargetFrameworks": "", "OutputType": "Library", "PublishAot": "false", "NETCoreSdkVersion": "10.0.404", "RestorePackagesWithLockFile": "", "RestoreLockedMode": "", "ManagePackageVersionsCentrally": "", "RestoreAdditionalProjectSources": "", "RestoreConfigFile": "", "RestoreSources": "", "MSBuildSDKsPath": "/opt/override/sdk/10.0.404/Sdks", "MSBuildExtensionsPath": "/usr/share/dotnet/sdk/10.0.404/" },
               "Items": { "PackageReference": [ { "Identity": "Devo6.WorkFlow.Engine", "Version": "[0.1.0]" } ] }
             }
             """;
@@ -369,7 +369,7 @@ public sealed class CsFileInputPreflightTests
 
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
-        Assert.Equal(3, runner.Calls.Count);
+        Assert.Equal(5, runner.Calls.Count);
         Assert.Equal(["--version"], runner.Calls[0]);
         Assert.Equal(["--info"], runner.Calls[1]);
         Assert.Equal(1, outputRootProviderCalls);
@@ -741,6 +741,7 @@ public sealed class CsFileInputPreflightTests
                     ["TargetFrameworks"] = "",
                     ["OutputType"] = "Library",
                     ["PublishAot"] = "false",
+                    ["NETCoreSdkVersion"] = SdkVersion,
                     ["RestorePackagesWithLockFile"] = "false",
                     ["RestoreLockedMode"] = "false",
                     ["ManagePackageVersionsCentrally"] = "false",

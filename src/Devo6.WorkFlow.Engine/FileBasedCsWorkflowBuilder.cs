@@ -17,7 +17,7 @@ namespace Devo6.WorkFlow.Engine;
 public sealed class FileBasedCsWorkflowBuilder
 {
     private const string EffectiveProjectProperties =
-        "TargetFramework,TargetFrameworks,OutputType,PublishAot,RestoreSources,RestorePackagesPath,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath,BaseOutputPath,OutputPath,OutDir,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath,TargetPath,ArtifactsPath,RuntimeIdentifier,RuntimeIdentifiers";
+        "TargetFramework,TargetFrameworks,OutputType,PublishAot,NETCoreSdkVersion,RestoreSources,RestorePackagesPath,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath,BaseOutputPath,OutputPath,OutDir,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath,TargetPath,ArtifactsPath,RuntimeIdentifier,RuntimeIdentifiers";
     private static readonly IDeserializer LockDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -77,7 +77,13 @@ public sealed class FileBasedCsWorkflowBuilder
         CancellationToken cancellationToken = default,
         IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences = null)
     {
-        return BuildCore(entryPath, hostPackageVersion, cancellationToken, afterBuild: null, allowedNuGetReferences);
+        return BuildCore(
+            entryPath,
+            hostPackageVersion,
+            cancellationToken,
+            afterBuild: null,
+            allowedNuGetReferences: allowedNuGetReferences,
+            propagateCancellation: true);
     }
 
     /// <summary>
@@ -264,7 +270,8 @@ public sealed class FileBasedCsWorkflowBuilder
         string hostPackageVersion,
         CancellationToken cancellationToken,
         Action<string>? afterBuild,
-        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences)
+        IReadOnlyList<CsxNuGetReference>? allowedNuGetReferences,
+        bool propagateCancellation = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
         FileBasedSdkRunContext? sdkRunContext = null;
@@ -351,6 +358,11 @@ public sealed class FileBasedCsWorkflowBuilder
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException or InvalidOperationException)
         {
+            if (exception is OperationCanceledException && cancellationToken.IsCancellationRequested && propagateCancellation)
+            {
+                throw;
+            }
+
             return FileBasedCsBuildResult.Failure(
                 WorkflowErrorCodes.ScriptBuildFailed,
                 $"Could not acquire the file-based output lock: {exception.Message}");
@@ -425,6 +437,12 @@ public sealed class FileBasedCsWorkflowBuilder
                 return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, sdkInfoSettingsError);
             }
 
+            if (!TryVerifySdkSelection(sdkRunner, workingDirectory, cancellationToken, sdkRunContext,
+                    selectedSdkVersion, expectedSdkSdksPath, "evaluation", out string beforeEvaluationSdkError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, beforeEvaluationSdkError);
+            }
+
             FileBasedSdkProcessResult evaluationResult;
             try
             {
@@ -447,6 +465,7 @@ public sealed class FileBasedCsWorkflowBuilder
                     preflight,
                     lockFile!,
                     expectedSdkSdksPath,
+                    selectedSdkVersion,
                     GetSdkArtifactsDirectory(fullEntryPath, sdkRunContext.RunFileRoot),
                     sdkRunContext.NuGetPackagesDirectory,
                     fullEntryPath,
@@ -463,6 +482,12 @@ public sealed class FileBasedCsWorkflowBuilder
             if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string evaluationSettingsError))
             {
                 return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, evaluationSettingsError);
+            }
+
+            if (!TryVerifySdkSelection(sdkRunner, workingDirectory, cancellationToken, sdkRunContext,
+                    selectedSdkVersion, expectedSdkSdksPath, "restore", out string beforeRestoreSdkError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, beforeRestoreSdkError);
             }
 
             FileBasedSdkProcessResult restoreResult;
@@ -489,6 +514,12 @@ public sealed class FileBasedCsWorkflowBuilder
             if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string restoreSettingsError))
             {
                 return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, restoreSettingsError);
+            }
+
+            if (!TryVerifySdkSelection(sdkRunner, workingDirectory, cancellationToken, sdkRunContext,
+                    selectedSdkVersion, expectedSdkSdksPath, "post-restore", out string afterRestoreSdkError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, afterRestoreSdkError);
             }
 
             string? assetsPath = FindAssetsFile(fullEntryPath, sdkRunContext.RunFileRoot);
@@ -529,6 +560,12 @@ public sealed class FileBasedCsWorkflowBuilder
                 return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, beforeBuildSettingsError);
             }
 
+            if (!TryVerifySdkSelection(sdkRunner, workingDirectory, cancellationToken, sdkRunContext,
+                    selectedSdkVersion, expectedSdkSdksPath, "build", out string beforeBuildSdkError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, beforeBuildSdkError);
+            }
+
             FileBasedSdkProcessResult buildResult;
             try
             {
@@ -553,6 +590,12 @@ public sealed class FileBasedCsWorkflowBuilder
             if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string buildSettingsError))
             {
                 return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, buildSettingsError);
+            }
+
+            if (!TryVerifySdkSelection(sdkRunner, workingDirectory, cancellationToken, sdkRunContext,
+                    selectedSdkVersion, expectedSdkSdksPath, "post-build", out string afterBuildSdkError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, afterBuildSdkError);
             }
 
             string postBuildSourceHash;
@@ -593,6 +636,11 @@ public sealed class FileBasedCsWorkflowBuilder
         }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                if (propagateCancellation)
+                {
+                    throw;
+                }
+
                 return Failure(
                     WorkflowErrorCodes.StepCanceled,
                     "The file-based SDK request was cancelled before its generated assembly could be used.");
@@ -821,6 +869,7 @@ public sealed class FileBasedCsWorkflowBuilder
         CsFileInputPreflight.PreflightResult preflight,
         FileBasedNuGetLock lockFile,
         string expectedSdkSdksPath,
+        string expectedSdkVersion,
         string expectedArtifactsDirectory,
         string expectedRestorePackagesPath,
         string entryPath,
@@ -834,7 +883,8 @@ public sealed class FileBasedCsWorkflowBuilder
             expectedArtifactsDirectory,
             entryPath,
             out error,
-            expectedRestorePackagesPath);
+            expectedRestorePackagesPath,
+            expectedSdkVersion);
     }
 
     /// <summary>
@@ -848,7 +898,8 @@ public sealed class FileBasedCsWorkflowBuilder
         string expectedArtifactsDirectory,
         string entryPath,
         out string error,
-        string? expectedRestorePackagesPath = null)
+        string? expectedRestorePackagesPath = null,
+        string? expectedSdkVersion = null)
     {
         error = "";
         try
@@ -879,6 +930,14 @@ public sealed class FileBasedCsWorkflowBuilder
             string artifactsPath = GetProperty(properties, "ArtifactsPath");
             string runtimeIdentifier = GetProperty(properties, "RuntimeIdentifier");
             string runtimeIdentifiers = GetProperty(properties, "RuntimeIdentifiers");
+            string netCoreSdkVersion = GetProperty(properties, "NETCoreSdkVersion");
+
+            if (expectedSdkVersion is not null
+                && !string.Equals(netCoreSdkVersion, expectedSdkVersion, StringComparison.Ordinal))
+            {
+                error = $"The evaluated SDK version does not match the selected SDK version: {netCoreSdkVersion}";
+                return false;
+            }
 
             if (!string.Equals(targetFramework, "net10.0", StringComparison.OrdinalIgnoreCase)
                 || !string.IsNullOrWhiteSpace(targetFrameworks)
@@ -1076,6 +1135,57 @@ public sealed class FileBasedCsWorkflowBuilder
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// SDK の各工程前後で選択版と SDK 配置先が初回選択と一致するか確認します。
+    /// </summary>
+    private static bool TryVerifySdkSelection(
+        IFileBasedSdkRunner sdkRunner,
+        string workingDirectory,
+        CancellationToken cancellationToken,
+        FileBasedSdkRunContext runContext,
+        string expectedVersion,
+        string expectedSdksPath,
+        string phase,
+        out string error)
+    {
+        error = "";
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            FileBasedSdkProcessResult versionResult = sdkRunner.Run(
+                ["--version"], workingDirectory, cancellationToken, runContext);
+            string actualVersion = versionResult.StandardOutput.Trim();
+            if (!versionResult.Succeeded
+                || !string.Equals(actualVersion, expectedVersion, StringComparison.Ordinal))
+            {
+                error = $"The selected SDK version changed before or after {phase}: expected {expectedVersion}, found {actualVersion}.";
+                return false;
+            }
+
+            FileBasedSdkProcessResult infoResult = sdkRunner.Run(
+                ["--info"], workingDirectory, cancellationToken, runContext);
+            if (!infoResult.Succeeded
+                || !TryGetSdkSdksPath(infoResult.StandardOutput, actualVersion, out string actualSdksPath)
+                || !PathsEqual(actualSdksPath, expectedSdksPath))
+            {
+                error = $"The SDK installation path changed before or after {phase}; the selected SDK path no longer matches {expectedSdksPath}.";
+                return false;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            error = $"The SDK version and installation path could not be checked for {phase}: {exception.Message}";
+            return false;
+        }
     }
 
     /// <summary>

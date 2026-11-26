@@ -217,6 +217,8 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         WorkflowResult? result = null;
         Task run = Task.Run(() => result = fixture.Builder.Run(
             fixture.EntryPath, "0.1.0", cancellationToken: cancellation.Token));
+        gateCleanup.DeferCleanupUntil(run);
+        fixture.DeferCleanupUntil(run);
         try
         {
             await WaitForFileAsync(createStartedPath, run);
@@ -227,6 +229,7 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         finally
         {
             File.WriteAllText(releasePath, "release");
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
         }
 
         Assert.NotNull(result);
@@ -274,6 +277,8 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         WorkflowResult? result = null;
         Task run = Task.Run(() => result = fixture.Builder.Run(
             fixture.EntryPath, "0.1.0", cancellationToken: cancellation.Token));
+        gateCleanup.DeferCleanupUntil(run);
+        fixture.DeferCleanupUntil(run);
         try
         {
             await WaitForFileAsync(constructorStartedPath, run);
@@ -284,6 +289,7 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         finally
         {
             File.WriteAllText(releasePath, "release");
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
         }
 
         Assert.NotNull(result);
@@ -311,7 +317,10 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
                 public MainProvider() => File.WriteAllText({{JsonSerializer.Serialize(providerMarker)}}, "created");
                 public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<int>("ok", _ => 1);
             }
-            """, afterRestore: owner => File.AppendAllText(Path.Combine(owner.Root, "global.json"), " "));
+            """, nestedEntryDirectory: true, afterRestore: owner =>
+            {
+                File.WriteAllText(Path.Combine(owner.Root, "Directory.Build.props"), "<Project />");
+            });
 
         WorkflowResult result = fixture.Builder.Run(fixture.EntryPath, "0.1.0");
 
@@ -322,6 +331,37 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 固定 global.json の内容が同じでも SDK の latestPatch 選択が変われば停止します。
+    /// </summary>
+    [Theory]
+    [InlineData("10.0.405", "/usr/share/dotnet/sdk/10.0.405/")]
+    [InlineData("10.0.404", "/alternate/dotnet/sdk/10.0.404/")]
+    public void RunRejectsSdkSelectionChangedWithUnchangedLatestPatchConfig(string version, string basePath)
+    {
+        using var fixture = new BuilderFixture(
+            "public sealed class NoEntry { }",
+            sdkSelection: call => call <= 1
+                ? ("10.0.404", "/usr/share/dotnet/sdk/10.0.404/")
+                : (version, basePath));
+        string globalJson = File.ReadAllText(Path.Combine(fixture.Root, "global.json"));
+
+        WorkflowResult result = fixture.Builder.Run(fixture.EntryPath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
+        Assert.Equal(globalJson, File.ReadAllText(Path.Combine(fixture.Root, "global.json")));
+        Assert.Equal(0, fixture.Runner.EvaluationCallCount);
+        Assert.Equal(0, fixture.Runner.RestoreCallCount);
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 指定期限内に fixture がファイルを作成するまで待ちます。
+    /// </summary>
+    /// <param name="path">作成を待つファイルの path。</param>
+    /// <param name="run">作成より先に完了していないことを確認する実行 Task。</param>
+    /// <returns>ファイルが作成されたときに完了する Task。</returns>
     private static async Task WaitForFileAsync(string path, Task run)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -366,7 +406,7 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
 
     private sealed class BuilderFixture : IDisposable
     {
-        private const string SdkInfo = ".NET SDK:\n Version: 10.0.404\n Base Path: /usr/share/dotnet/sdk/10.0.404/";
+        private Task? deferredCleanup;
 
         /// <summary>
         /// 指定した Provider ソースを使い、session の保持と回収を検証する fixture を作成します。
@@ -375,14 +415,18 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         public BuilderFixture(
             string providerSource,
             Action<BuilderFixture>? afterBuild = null,
-            Action<BuilderFixture>? afterRestore = null)
+            Action<BuilderFixture>? afterRestore = null,
+            bool nestedEntryDirectory = false,
+            Func<int, (string Version, string BasePath)>? sdkSelection = null)
         {
             Root = Path.Combine(Path.GetTempPath(), "devo6-file-based-lifecycle", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Root);
             SessionRoot = Root + "-sessions";
             string feed = Path.Combine(Root, "feed");
             Directory.CreateDirectory(feed);
-            EntryPath = Path.Combine(Root, "workflow.cs");
+            EntryDirectory = nestedEntryDirectory ? Path.Combine(Root, "workflow") : Root;
+            Directory.CreateDirectory(EntryDirectory);
+            EntryPath = Path.Combine(EntryDirectory, "workflow.cs");
             File.WriteAllText(EntryPath, string.Join(Environment.NewLine,
             [
                 "#:property OutputType=Library",
@@ -395,7 +439,8 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
             File.WriteAllText(Path.Combine(Root, "NuGet.Config"),
                 $"<configuration><packageSources><clear/><add key=\"fixture\" value=\"{SecurityElement.Escape(feed)}\" /></packageSources></configuration>");
             File.WriteAllText(Path.Combine(Root, "global.json"), "{\"sdk\":{\"version\":\"10.0.404\",\"rollForward\":\"latestPatch\"}}\n");
-            File.WriteAllText(Path.Combine(Root, "devo6.nuget.lock.yaml"), $$"""
+            LockPath = Path.Combine(EntryDirectory, "devo6.nuget.lock.yaml");
+            File.WriteAllText(LockPath, $$"""
                 version: 1
                 targetFramework: net10.0
                 verifyPackageSources: true
@@ -414,7 +459,7 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
             string fixtureAssembly = Path.Combine(Root, "sdk-fixture.dll");
             CompileFixture(providerSource, fixtureAssembly);
             Runner = new LifecycleSdkRunner(
-                EntryPath, feed, fixtureAssembly, () => afterBuild?.Invoke(this), () => afterRestore?.Invoke(this));
+                EntryPath, feed, fixtureAssembly, () => afterBuild?.Invoke(this), () => afterRestore?.Invoke(this), sdkSelection);
             Builder = new FileBasedCsWorkflowBuilder(
                 Runner,
                 () => Path.Combine(Root, "runfile"),
@@ -430,16 +475,42 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         /// <summary>fixture の workflow 入力ファイルの path を取得します。</summary>
         public string EntryPath { get; }
 
+        /// <summary>fixture の workflow 入力 directory の path。</summary>
+        public string EntryDirectory { get; }
+
+        /// <summary>入力に対応する固定 NuGet lock file の path。</summary>
+        public string LockPath { get; }
+
         /// <summary>SDK の応答と生成物を模擬する runner を取得します。</summary>
         public LifecycleSdkRunner Runner { get; }
 
         /// <summary>fixture の入力を検証または実行する builder を取得します。</summary>
         public FileBasedCsWorkflowBuilder Builder { get; }
 
+        /// <summary>SDK を利用する実行 Task が完了してから所有 directory を回収します。</summary>
+        public void DeferCleanupUntil(Task completion) => deferredCleanup = completion;
+
         /// <summary>fixture が所有する一時ディレクトリを削除します。</summary>
         public void Dispose()
         {
-            Directory.Delete(Root, recursive: true);
+            if (deferredCleanup is { IsCompleted: false } pending)
+            {
+                _ = pending.ContinueWith(_ => Cleanup(), CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                return;
+            }
+
+            Cleanup();
+        }
+
+        /// <summary>fixture が所有する入力と SDK session directory を回収します。</summary>
+        private void Cleanup()
+        {
+            if (Directory.Exists(Root))
+            {
+                Directory.Delete(Root, recursive: true);
+            }
+
             if (Directory.Exists(SessionRoot))
             {
                 Directory.Delete(SessionRoot, recursive: true);
@@ -477,8 +548,27 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     /// <param name="path">この管理対象となるディレクトリの path。</param>
     private sealed class TemporaryDirectory(string path) : IDisposable
     {
+        private Task? deferredCleanup;
+
+        /// <summary>関連 Task の完了後に管理対象 directory を削除します。</summary>
+        /// <param name="completion">終了を待ってから削除する実行 Task。</param>
+        public void DeferCleanupUntil(Task completion) => deferredCleanup = completion;
+
         /// <summary>管理対象の一時ディレクトリがあれば再帰的に削除します。</summary>
         public void Dispose()
+        {
+            if (deferredCleanup is { IsCompleted: false } pending)
+            {
+                _ = pending.ContinueWith(_ => Delete(), CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                return;
+            }
+
+            Delete();
+        }
+
+        /// <summary>管理対象として指定された一時 directory を削除します。</summary>
+        private void Delete()
         {
             if (Directory.Exists(path))
             {
@@ -491,18 +581,31 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     /// <param name="entryPath">builder が処理する workflow 入力の path。</param>
     /// <param name="feedPath">fixture の NuGet source の path。</param>
     /// <param name="fixtureAssemblyPath">build 時に配置するメタデータ fixture assembly の path。</param>
+    /// <param name="afterBuild">build 完了後に呼び出す任意の fixture callback。</param>
+    /// <param name="afterRestore">restore 完了後に呼び出す任意の fixture callback。</param>
+    /// <param name="sdkSelection">呼出しごとの SDK 版と配置先を返す任意 fixture。</param>
     private sealed class LifecycleSdkRunner(
         string entryPath,
         string feedPath,
         string fixtureAssemblyPath,
         Action? afterBuild,
-        Action? afterRestore) : IFileBasedSdkRunner
+        Action? afterRestore,
+        Func<int, (string Version, string BasePath)>? sdkSelection) : IFileBasedSdkRunner
     {
+        private int sdkVersionCallCount;
+        /// <summary>現在の SDK 応答として返す版と配置先を保持します。</summary>
+        private (string Version, string BasePath) currentSdk = ("10.0.404", "/usr/share/dotnet/sdk/10.0.404/");
         /// <summary>直近の SDK 呼び出しに渡された session context を取得します。</summary>
         public FileBasedSdkRunContext? RunContext { get; private set; }
 
         /// <summary>build 呼び出しで配置した assembly の path を取得します。</summary>
         public string? GeneratedAssemblyPath { get; private set; }
+
+        /// <summary>SDK evaluation 専用の呼出し回数を取得します。</summary>
+        public int EvaluationCallCount { get; private set; }
+
+        /// <summary>restore 呼出しの回数を取得します。</summary>
+        public int RestoreCallCount { get; private set; }
 
         /// <summary>想定した SDK 呼び出しへ応答し、fixture 成果物を配置します。</summary>
         /// <param name="arguments">SDK に渡されたコマンドライン引数。</param>
@@ -519,22 +622,27 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
             RunContext = runContext;
             if (arguments.SequenceEqual(["--version"], StringComparer.Ordinal))
             {
-                return new FileBasedSdkProcessResult(0, "10.0.404", "");
+                int call = Interlocked.Increment(ref sdkVersionCallCount);
+                currentSdk = sdkSelection?.Invoke(call) ?? currentSdk;
+                return new FileBasedSdkProcessResult(0, currentSdk.Version, "");
             }
 
             if (arguments.SequenceEqual(["--info"], StringComparer.Ordinal))
             {
-                return new FileBasedSdkProcessResult(0, SdkInfo, "");
+                return new FileBasedSdkProcessResult(0,
+                    $".NET SDK:\n Version: {currentSdk.Version}\n Base Path: {currentSdk.BasePath}", "");
             }
 
             string artifacts = FileBasedCsWorkflowBuilder.GetSdkArtifactsDirectory(entryPath, runContext!.RunFileRoot);
             if (arguments.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
             {
+                EvaluationCallCount++;
                 return new FileBasedSdkProcessResult(0, EvaluationJson(artifacts, runContext.NuGetPackagesDirectory), "");
             }
 
             if (arguments.FirstOrDefault() == "restore")
             {
+                RestoreCallCount++;
                 string assetsPath = Path.Combine(artifacts, "obj", "project.assets.json");
                 Directory.CreateDirectory(Path.GetDirectoryName(assetsPath)!);
                 File.WriteAllText(assetsPath, JsonSerializer.Serialize(new
@@ -586,7 +694,7 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         /// <param name="artifacts">SDK が使用する成果物の基準ディレクトリ。</param>
         /// <param name="packagesDirectory">restore 対象の NuGet packages directory。</param>
         /// <returns>builder が評価結果として解析する JSON。</returns>
-        private static string EvaluationJson(string artifacts, string packagesDirectory)
+        private string EvaluationJson(string artifacts, string packagesDirectory)
         {
             string bin = Path.Combine(artifacts, "bin");
             string output = Path.Combine(bin, "debug");
@@ -606,8 +714,9 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
                     ["RestoreConfigFile"] = "",
                     ["RestoreSources"] = "",
                     ["RestorePackagesPath"] = packagesDirectory,
-                    ["MSBuildSDKsPath"] = "/usr/share/dotnet/sdk/10.0.404/Sdks",
-                    ["MSBuildExtensionsPath"] = "/usr/share/dotnet/sdk/10.0.404/",
+                    ["MSBuildSDKsPath"] = currentSdk.BasePath + "Sdks",
+                    ["MSBuildExtensionsPath"] = currentSdk.BasePath,
+                    ["NETCoreSdkVersion"] = currentSdk.Version,
                     ["BaseOutputPath"] = bin + Path.DirectorySeparatorChar,
                     ["OutputPath"] = output + Path.DirectorySeparatorChar,
                     ["OutDir"] = output + Path.DirectorySeparatorChar,

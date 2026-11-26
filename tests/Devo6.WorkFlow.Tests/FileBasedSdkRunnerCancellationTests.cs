@@ -552,6 +552,7 @@ exit 0
                     ["RestoreConfigFile"] = "",
                     ["RestoreSources"] = Path.Combine(Path.GetDirectoryName(entryPath)!, "feed"),
                     ["RestorePackagesPath"] = nugetPackagesDirectory,
+                    ["NETCoreSdkVersion"] = "10.0.404",
                     ["MSBuildSDKsPath"] = "/usr/share/dotnet/sdk/10.0.404/Sdks",
                     ["MSBuildExtensionsPath"] = "/usr/share/dotnet/sdk/10.0.404/",
                     ["BaseOutputPath"] = bin + Path.DirectorySeparatorChar,
