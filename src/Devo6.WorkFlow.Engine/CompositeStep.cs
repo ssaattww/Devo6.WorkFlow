@@ -778,6 +778,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
     public async Task<TOut> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
+        bool cancellationWasRequestedAtEntry = cancellationToken.IsCancellationRequested;
 
         ILogger logger = input.Context.Logger;
         using IDisposable? compositeScope = logger.BeginScope(new Dictionary<string, object?>
@@ -793,7 +794,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                 steps,
                 input,
                 currentValue,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                cancellationWasRequestedAtEntry).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             logger.LogInformation("Composite succeeded");
 
@@ -826,6 +828,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
         WorkflowExecutionOptions? options = null,
         CancellationToken cancellationToken = default)
     {
+        bool cancellationWasRequestedAtEntry = cancellationToken.IsCancellationRequested;
         options ??= new WorkflowExecutionOptions();
 
         ILoggerFactory loggerFactory = options.LoggerFactory ?? NullLoggerFactory.Instance;
@@ -861,6 +864,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
             currentValue,
             options,
             cancellationToken,
+            cancellationWasRequestedAtEntry,
             traceSteps,
             engineLogger,
             maxAttempts).ConfigureAwait(false);
@@ -887,18 +891,23 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
     /// <param name="input">Step へ渡す入力値。</param>
     /// <param name="currentValue">Step 列の開始時点の現在値。</param>
     /// <param name="cancellationToken">非同期 Step へ渡す cancellation token。</param>
+    /// <param name="cancellationWasRequestedAtEntry">列の呼び出し開始前から取消済みだったか。</param>
     /// <returns>Step 列の実行後の現在値。</returns>
     private static async Task<object?> ExecuteSimpleStepSequenceAsync(
         IReadOnlyList<StepRegistration> stepSequence,
         StepInput input,
         object? currentValue,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool cancellationWasRequestedAtEntry)
     {
         ILogger logger = input.Context.Logger;
+        bool isFirstStep = true;
         foreach (StepRegistration step in stepSequence)
         {
             bool allowPreCancelledSynchronousExecution =
-                step.AllowsPreCancelledSynchronousExecution && cancellationToken.IsCancellationRequested;
+                isFirstStep
+                && step.AllowsPreCancelledSynchronousExecution
+                && cancellationWasRequestedAtEntry;
             using IDisposable? stepScope = logger.BeginScope(new Dictionary<string, object?>
             {
                 ["StepName"] = step.Name,
@@ -917,11 +926,13 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                         branchPlan.Steps,
                         input,
                         currentValue,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        cancellationWasRequestedAtEntry: false).ConfigureAwait(false);
                     cancellationToken.ThrowIfCancellationRequested();
                     step.Produce(input, currentValue);
                     cancellationToken.ThrowIfCancellationRequested();
                     logger.LogInformation("Step succeeded");
+                    isFirstStep = false;
                     continue;
                 }
 
@@ -943,6 +954,8 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                 {
                     logger.LogInformation("Step succeeded");
                 }
+
+                isFirstStep = false;
             }
             catch (Exception exception)
             {
@@ -963,6 +976,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
     /// <param name="currentValue">Step 列の開始時点の現在値。</param>
     /// <param name="options">実行時 option。</param>
     /// <param name="cancellationToken">workflow 実行へ渡された外部キャンセル用 token。</param>
+    /// <param name="cancellationWasRequestedAtEntry">workflow 呼び出し開始前から取消済みだったか。</param>
     /// <param name="traceSteps">追記対象の trace step 一覧。</param>
     /// <param name="engineLogger">engine 用 logger。</param>
     /// <param name="maxAttempts">Step 本体の最大試行回数。</param>
@@ -974,6 +988,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
         object? currentValue,
         WorkflowExecutionOptions options,
         CancellationToken cancellationToken,
+        bool cancellationWasRequestedAtEntry,
         List<ExecutionTraceStep> traceSteps,
         ILogger engineLogger,
         int maxAttempts)
@@ -981,7 +996,6 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
         int stepIndex = startStepIndex;
         foreach (StepRegistration step in stepSequence)
         {
-            bool cancellationWasRequestedBeforeStep = cancellationToken.IsCancellationRequested;
             if (step.IsConditionalBranch)
             {
                 WorkflowSequenceExecutionResult branchResult = await ExecuteIfStepAsync(
@@ -992,6 +1006,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                     currentValue,
                     options,
                     cancellationToken,
+                    cancellationWasRequestedAtEntry,
                     traceSteps,
                     engineLogger,
                     maxAttempts).ConfigureAwait(false);
@@ -1021,9 +1036,10 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                 engineLogger.LogInformation("Step started for attempt {Attempt}", attempt);
 
                 bool allowPreCancelledSynchronousExecution =
-                    stepIndex == 0
+                    attempt == 1
+                    && stepIndex == 0
                     && step.AllowsPreCancelledSynchronousExecution
-                    && cancellationWasRequestedBeforeStep;
+                    && cancellationWasRequestedAtEntry;
                 using StepExecutionCancellation stepCancellation = CreateStepExecutionCancellation(
                     options.StepTimeout,
                     cancellationToken,
@@ -1143,7 +1159,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                         WorkflowErrorCodes.StepExecutionFailed,
                         attempt));
 
-                    if (attempt < maxAttempts)
+                    if (attempt < maxAttempts && !cancellationToken.IsCancellationRequested)
                     {
                         engineLogger.LogWarning(
                             exception,
@@ -1252,6 +1268,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
     /// <param name="currentValue">If 評価時点の現在値。</param>
     /// <param name="options">実行時 option。</param>
     /// <param name="cancellationToken">workflow 実行へ渡された外部キャンセル用 token。</param>
+    /// <param name="cancellationWasRequestedAtEntry">workflow 呼び出し開始前から取消済みだったか。</param>
     /// <param name="traceSteps">追記対象の trace step 一覧。</param>
     /// <param name="engineLogger">engine 用 logger。</param>
     /// <param name="maxAttempts">branch 内 Step 本体の最大試行回数。</param>
@@ -1264,6 +1281,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
         object? currentValue,
         WorkflowExecutionOptions options,
         CancellationToken cancellationToken,
+        bool cancellationWasRequestedAtEntry,
         List<ExecutionTraceStep> traceSteps,
         ILogger engineLogger,
         int maxAttempts)
@@ -1389,6 +1407,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
             currentValue,
             options,
             cancellationToken,
+            cancellationWasRequestedAtEntry,
             branchTraceSteps,
             engineLogger,
             maxAttempts).ConfigureAwait(false);

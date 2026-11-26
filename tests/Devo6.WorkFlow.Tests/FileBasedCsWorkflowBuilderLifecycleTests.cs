@@ -58,6 +58,86 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     }
 
     /// <summary>
+    /// 公開 Run の Entry 開始ログ中に取消された場合は同期 Step 本体を開始しません。
+    /// </summary>
+    [Fact(DisplayName = "Run cancellation during Entry started logging stops before the first synchronous Step")]
+    public void RunCancellationDuringEntryStartedLogStopsBeforeSynchronousStep()
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-entry-log-cancel-marker", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string providerMarkerPath = Path.Combine(markerRoot, "provider-created");
+        string stepMarkerPath = Path.Combine(markerRoot, "step-started");
+        using var cancellation = new CancellationTokenSource();
+        bool entryStartedObserved = false;
+        using var loggerFactory = new CancellationTriggerLoggerFactory(message =>
+        {
+            if (message == "Entry started")
+            {
+                entryStartedObserved = true;
+                cancellation.Cancel();
+            }
+        });
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider() => File.WriteAllText({{JsonSerializer.Serialize(providerMarkerPath)}}, "created");
+                public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<int>("sync", _ =>
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(stepMarkerPath)}}, "started");
+                    return 1;
+                });
+            }
+            """);
+
+        WorkflowResult result = fixture.Builder.Run(
+            fixture.EntryPath,
+            "0.1.0",
+            options: new WorkflowExecutionOptions(loggerFactory),
+            cancellationToken: cancellation.Token);
+
+        Assert.True(entryStartedObserved);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.True(File.Exists(providerMarkerPath));
+        Assert.False(File.Exists(stepMarkerPath));
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 公開 Run に事前取消を渡すと Provider constructor の利用者コードを実行しません。
+    /// </summary>
+    [Fact(DisplayName = "pre-cancelled Run does not execute the Provider constructor")]
+    public void PreCancelledRunDoesNotExecuteProviderConstructor()
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-pre-cancel-provider-marker", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string providerMarkerPath = Path.Combine(markerRoot, "provider-created");
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider() => File.WriteAllText({{JsonSerializer.Serialize(providerMarkerPath)}}, "created");
+                public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<int>("sync", _ => 1);
+            }
+            """);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        WorkflowResult result = fixture.Builder.Run(
+            fixture.EntryPath,
+            "0.1.0",
+            cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.False(File.Exists(providerMarkerPath));
+    }
+
+    /// <summary>
     /// 実行中 Step に取消を伝え、session と診断場所を保持します。
     /// </summary>
     [Fact(DisplayName = "cancelled Step execution retains its SDK session and diagnostic path")]
