@@ -496,6 +496,7 @@ exit 0
                         arguments[1],
                         Path.Combine(workingDirectory, "feed"),
                         runContext.NuGetPackagesDirectory));
+                    WriteSdkIdentityRecord(arguments, "10.0.404", "/usr/share/dotnet/sdk/10.0.404/");
                     RestoreStarted.TrySetResult();
                     return new FileBasedSdkProcessResult(0, "", "");
                 }
@@ -518,6 +519,7 @@ exit 0
                 Directory.CreateDirectory(Path.GetDirectoryName(assemblyPath)!);
                 File.WriteAllText(assemblyPath, "new-run");
                 File.WriteAllText(Path.Combine(runContext.RunFileRoot, "second-build-marker"), "new-run");
+                WriteSdkIdentityRecord(arguments, "10.0.404", "/usr/share/dotnet/sdk/10.0.404/");
                 return new FileBasedSdkProcessResult(0, "", "");
             }
 
@@ -574,6 +576,20 @@ exit 0
                     },
                 },
             });
+        }
+
+        /// <summary>SDK process の SDK 版と配置先をテスト記録へ出力します。</summary>
+        /// <param name="arguments">SDK process に渡された記録先を含む引数。</param>
+        /// <param name="version">SDK process の実行版。</param>
+        /// <param name="basePath">SDK process の base path。</param>
+        private static void WriteSdkIdentityRecord(IReadOnlyList<string> arguments, string version, string basePath)
+        {
+            const string prefix = "-p:Devo6SdkIdentityRecordPath=";
+            string recordPath = arguments.Single(argument => argument.StartsWith(prefix, StringComparison.Ordinal))[prefix.Length..];
+            Directory.CreateDirectory(Path.GetDirectoryName(recordPath)!);
+            File.WriteAllText(recordPath + ".version", version);
+            File.WriteAllText(recordPath + ".sdks", Path.Combine(basePath, "Sdks"));
+            File.WriteAllText(recordPath + ".extensions", Path.TrimEndingDirectorySeparator(basePath));
         }
 
         /// <summary>

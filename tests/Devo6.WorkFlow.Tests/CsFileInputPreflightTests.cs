@@ -700,6 +700,7 @@ public sealed class CsFileInputPreflightTests
                         },
                     },
                 }));
+                WriteSdkIdentityRecord(arguments, SdkVersion, "/usr/share/dotnet/sdk/10.0.404/");
                 return new FileBasedSdkProcessResult(0, "", "");
             }
 
@@ -709,6 +710,7 @@ public sealed class CsFileInputPreflightTests
                 GeneratedAssemblyPath = assemblyPath;
                 Directory.CreateDirectory(Path.GetDirectoryName(assemblyPath)!);
                 File.WriteAllText(assemblyPath, "stale fixture assembly");
+                WriteSdkIdentityRecord(arguments, SdkVersion, "/usr/share/dotnet/sdk/10.0.404/");
                 if (deleteSourceDuringBuild)
                 {
                     File.Delete(entryPath);
@@ -770,6 +772,20 @@ public sealed class CsFileInputPreflightTests
                     },
                 },
             });
+        }
+
+        /// <summary>SDK process が使ったものとして版と配置先を記録します。</summary>
+        /// <param name="arguments">SDK process に渡された記録先を含む引数。</param>
+        /// <param name="version">process の SDK 版。</param>
+        /// <param name="basePath">process の SDK base path。</param>
+        private static void WriteSdkIdentityRecord(IReadOnlyList<string> arguments, string version, string basePath)
+        {
+            const string prefix = "-p:Devo6SdkIdentityRecordPath=";
+            string recordPath = arguments.Single(argument => argument.StartsWith(prefix, StringComparison.Ordinal))[prefix.Length..];
+            Directory.CreateDirectory(Path.GetDirectoryName(recordPath)!);
+            File.WriteAllText(recordPath + ".version", version);
+            File.WriteAllText(recordPath + ".sdks", Path.Combine(basePath, "Sdks"));
+            File.WriteAllText(recordPath + ".extensions", Path.TrimEndingDirectorySeparator(basePath));
         }
     }
 #endif

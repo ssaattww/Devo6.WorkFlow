@@ -18,6 +18,15 @@ public sealed class FileBasedCsWorkflowBuilder
 {
     private const string EffectiveProjectProperties =
         "TargetFramework,TargetFrameworks,OutputType,PublishAot,NETCoreSdkVersion,RestoreSources,RestorePackagesPath,RestoreAdditionalProjectSources,RestoreConfigFile,RestorePackagesWithLockFile,RestoreLockedMode,ManagePackageVersionsCentrally,MSBuildSDKsPath,MSBuildExtensionsPath,BaseOutputPath,OutputPath,OutDir,BaseIntermediateOutputPath,IntermediateOutputPath,MSBuildProjectExtensionsPath,TargetPath,ArtifactsPath,RuntimeIdentifier,RuntimeIdentifiers";
+    private const string SdkIdentityTargets = """
+        <Project>
+          <Target Name="Devo6RecordSdkIdentity" BeforeTargets="Restore;Build">
+            <WriteLinesToFile File="$(Devo6SdkIdentityRecordPath).version" Lines="$(NETCoreSdkVersion)" Overwrite="true" />
+            <WriteLinesToFile File="$(Devo6SdkIdentityRecordPath).sdks" Lines="$(MSBuildSDKsPath)" Overwrite="true" />
+            <WriteLinesToFile File="$(Devo6SdkIdentityRecordPath).extensions" Lines="$(MSBuildExtensionsPath)" Overwrite="true" />
+          </Target>
+        </Project>
+        """;
     private static readonly IDeserializer LockDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
@@ -358,11 +367,6 @@ public sealed class FileBasedCsWorkflowBuilder
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException or InvalidOperationException)
         {
-            if (exception is OperationCanceledException && cancellationToken.IsCancellationRequested && propagateCancellation)
-            {
-                throw;
-            }
-
             return FileBasedCsBuildResult.Failure(
                 WorkflowErrorCodes.ScriptBuildFailed,
                 $"Could not acquire the file-based output lock: {exception.Message}");
@@ -432,6 +436,17 @@ public sealed class FileBasedCsWorkflowBuilder
                     "The selected SDK installation path could not be verified before restore.");
             }
 
+            string sdkIdentityTargetsPath = Path.Combine(sdkRunContext.SessionDirectory, "sdk-identity.targets");
+            try
+            {
+                File.WriteAllText(sdkIdentityTargetsPath, SdkIdentityTargets);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported,
+                    $"The selected SDK could not be verified from its restore and build processes: {exception.Message}");
+            }
+
             if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string sdkInfoSettingsError))
             {
                 return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, sdkInfoSettingsError);
@@ -494,7 +509,10 @@ public sealed class FileBasedCsWorkflowBuilder
             try
             {
                 restoreResult = sdkRunner.Run(
-                    ["restore", fullEntryPath, "--verbosity", "quiet", RestorePackagesPathArgument(sdkRunContext)],
+                    WithSdkIdentityCapture(
+                        ["restore", fullEntryPath, "--verbosity", "quiet", RestorePackagesPathArgument(sdkRunContext)],
+                        sdkIdentityTargetsPath,
+                        GetSdkIdentityRecordPath(sdkRunContext, "restore")),
                     workingDirectory,
                     cancellationToken,
                     sdkRunContext);
@@ -504,6 +522,18 @@ public sealed class FileBasedCsWorkflowBuilder
                 return Failure(WorkflowErrorCodes.ScriptNugetRestoreFailed, exception.Message);
             }
             cancellationToken.ThrowIfCancellationRequested();
+            string restoreIdentityPath = GetSdkIdentityRecordPath(sdkRunContext, "restore");
+            if ((restoreResult.Succeeded || HasSdkIdentityRecord(restoreIdentityPath))
+                && !TryValidateSdkProcessIdentity(
+                    restoreIdentityPath,
+                    "restore",
+                    selectedSdkVersion,
+                    expectedSdkSdksPath,
+                    out string restoreSdkIdentityError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, restoreSdkIdentityError);
+            }
+
             if (!restoreResult.Succeeded)
             {
                 return Failure(
@@ -570,7 +600,10 @@ public sealed class FileBasedCsWorkflowBuilder
             try
             {
                 buildResult = sdkRunner.Run(
-                    ["build", fullEntryPath, "--no-restore", "--verbosity", "quiet", RestorePackagesPathArgument(sdkRunContext)],
+                    WithSdkIdentityCapture(
+                        ["build", fullEntryPath, "--no-restore", "--verbosity", "quiet", RestorePackagesPathArgument(sdkRunContext)],
+                        sdkIdentityTargetsPath,
+                        GetSdkIdentityRecordPath(sdkRunContext, "build")),
                     workingDirectory,
                     cancellationToken,
                     sdkRunContext);
@@ -580,6 +613,18 @@ public sealed class FileBasedCsWorkflowBuilder
                 return Failure(WorkflowErrorCodes.ScriptBuildFailed, exception.Message);
             }
             cancellationToken.ThrowIfCancellationRequested();
+            string buildIdentityPath = GetSdkIdentityRecordPath(sdkRunContext, "build");
+            if ((buildResult.Succeeded || HasSdkIdentityRecord(buildIdentityPath))
+                && !TryValidateSdkProcessIdentity(
+                    buildIdentityPath,
+                    "build",
+                    selectedSdkVersion,
+                    expectedSdkSdksPath,
+                    out string buildSdkIdentityError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, buildSdkIdentityError);
+            }
+
             if (!buildResult.Succeeded)
             {
                 return Failure(
@@ -1184,6 +1229,67 @@ public sealed class FileBasedCsWorkflowBuilder
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             error = $"The SDK version and installation path could not be checked for {phase}: {exception.Message}";
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 実行する MSBuild 工程へ、同じ process が使用した SDK の記録先を渡します。
+    /// </summary>
+    private static string[] WithSdkIdentityCapture(
+        IReadOnlyList<string> arguments,
+        string targetsPath,
+        string recordPath) =>
+        [
+            .. arguments,
+            $"-p:CustomAfterMicrosoftCommonTargets={targetsPath}",
+            $"-p:Devo6SdkIdentityRecordPath={recordPath}",
+        ];
+
+    /// <summary>
+    /// 一回の SDK 工程で使う版と SDK 配置先の記録接頭辞を返します。
+    /// </summary>
+    private static string GetSdkIdentityRecordPath(FileBasedSdkRunContext runContext, string phase) =>
+        Path.Combine(runContext.SessionDirectory, $"sdk-identity-{phase}");
+
+    /// <summary>
+    /// SDK 工程が版または配置先の記録のいずれかを書き出したか確認します。
+    /// </summary>
+    private static bool HasSdkIdentityRecord(string recordPath) =>
+        File.Exists(recordPath + ".version")
+        || File.Exists(recordPath + ".sdks")
+        || File.Exists(recordPath + ".extensions");
+
+    /// <summary>
+    /// restore/build process が実際に使った SDK 版と MSBuild path を照合します。
+    /// </summary>
+    private static bool TryValidateSdkProcessIdentity(
+        string recordPath,
+        string phase,
+        string expectedVersion,
+        string expectedSdkSdksPath,
+        out string error)
+    {
+        error = "";
+        try
+        {
+            string actualVersion = File.ReadAllText(recordPath + ".version").Trim();
+            string actualSdkSdksPath = File.ReadAllText(recordPath + ".sdks").TrimEnd('\r', '\n');
+            string actualExtensionsPath = File.ReadAllText(recordPath + ".extensions").TrimEnd('\r', '\n');
+            string expectedExtensionsPath = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(expectedSdkSdksPath)) ?? "";
+            if (!string.Equals(actualVersion, expectedVersion, StringComparison.Ordinal)
+                || !PathsEqual(actualSdkSdksPath, expectedSdkSdksPath)
+                || !PathsEqual(actualExtensionsPath, expectedExtensionsPath))
+            {
+                error = $"The {phase} process used a different SDK than the selected SDK: version {actualVersion}, SDK path {actualSdkSdksPath}, extensions path {actualExtensionsPath}.";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            error = $"The {phase} process did not provide a verifiable SDK identity: {exception.Message}";
             return false;
         }
     }
