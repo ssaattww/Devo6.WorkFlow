@@ -462,7 +462,7 @@ public sealed class TraceValueContractTests
         /// </summary>
         public async Task<TraceFailureOutput> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
         {
-            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
 
             return new TraceFailureOutput("timeout");
         }

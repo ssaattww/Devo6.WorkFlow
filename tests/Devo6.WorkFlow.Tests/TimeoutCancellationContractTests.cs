@@ -459,7 +459,7 @@ public sealed class TimeoutCancellationContractTests
             ContractTestState.Add("async-timeout:start");
             ContractTestState.ObserveCancellationToken(cancellationToken);
 
-            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
 
             ContractTestState.Add("async-timeout:end");
 

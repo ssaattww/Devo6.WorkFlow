@@ -361,7 +361,7 @@ public sealed class RetryExecutionContractTests
             int attempt = RetryContractState.IncrementAttempt(nameof(TimeoutStep));
             RetryContractState.Add($"timeout-step:{attempt}");
 
-            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
 
             return new RetryOutput("timeout");
         }

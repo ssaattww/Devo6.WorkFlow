@@ -486,7 +486,7 @@ public sealed class ConditionalFlowIntegrationTests
         public async Task<FlowValue> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
         {
             ConditionalFlowState.Add("timeout-start");
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
 
             return new FlowValue("unreachable");
         }
