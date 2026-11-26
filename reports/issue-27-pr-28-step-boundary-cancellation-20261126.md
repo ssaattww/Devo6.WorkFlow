@@ -22,3 +22,16 @@
 - `dotnet format Devo6.WorkFlow.sln --verify-no-changes --no-restore`: 成功。
 - `git diff --check`: 成功。Markdown lint は `node_modules` がないため未実施。依存追加はしていない。
 - SDK 10.0.404 / runtime 10.0.15 を使用。実 .NET 8 runtime は未導入のため、net8.0 の試験実行は未確認。全件ローカル試験と新 HEAD の自動 CI も未確認。
+
+## If / Switch 選択境界の追補
+
+分岐処理は登録 Step の共通実行 wrapper を通らず `GetBranch` を呼ぶため、利用者の条件または selector に入る直前の外部取消確認が必要だった。さらに条件・selector が `OperationCanceledException` を投げた際、外部 token が取消済みでも既存の条件評価失敗へ分類されていた。
+
+`CompositeStep.ExecuteIfStepAsync` は設定を適用した直後、`GetBranch` の直前に外部 token を確認する。取消済みなら利用者 callback を開始しない。条件・selector が `OperationCanceledException` を投げ、外部 token も取消済みの場合は既存の `STEP_CANCELED` trace/log/result 変換を使う。外部 token が未取消の `OperationCanceledException` と通常例外は、従来の If / Switch 診断を維持する。timeout 用 token、同期 Step の timeout 判定、Build 契約は変更していない。
+
+共通 Engine の回帰は、If / Switch の分岐開始ログを同期点にして直前取消を行い、callback が呼ばれないことを確認する。別の If / Switch 検査で、callback 内の `OperationCanceledException` と外部 token の状態に応じた `STEP_CANCELED` または従来診断を確認し、既存の通常例外試験も含める。公開 `.cs` Run では If / Switch の各々について、分岐前取消、評価中の取消例外、通常例外を通し、callback の副作用印、trace code、診断 session の保持を確認する。
+
+- 追加した12件（共通 Engine 6件と公開 `.cs` Run 6件）: 成功。
+- 関連する If / Switch、timeout、file-based executor / lifecycle 検査: 75件成功、1件既存 skip。
+- T31: 1件成功。`net8.0` build: 成功、警告0、エラー0。solution format check と `git diff --check`: 成功。
+- 標準 .NET 8 runtime の test 実行、全件ローカル試験、新候補の自動 CI は未確認。

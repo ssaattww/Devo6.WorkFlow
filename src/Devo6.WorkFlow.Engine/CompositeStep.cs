@@ -1255,7 +1255,46 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
         try
         {
             SetStepConfig(input.Context, options.StepConfigs, stepIndex);
+            cancellationToken.ThrowIfCancellationRequested();
             branchPlan = step.GetBranch(input, currentValue);
+        }
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+
+            return WorkflowSequenceExecutionResult.Failed(ToCancellationWorkflowResult(
+                traceSteps,
+                step,
+                stopwatch.Elapsed,
+                1,
+                StepCancellationFailure.Canceled(exception.Message),
+                engineLogger));
+        }
+        catch (StepSwitchSelectorException exception)
+            when (cancellationToken.IsCancellationRequested && exception.InnerException is OperationCanceledException)
+        {
+            stopwatch.Stop();
+
+            return WorkflowSequenceExecutionResult.Failed(ToCancellationWorkflowResult(
+                traceSteps,
+                step,
+                stopwatch.Elapsed,
+                1,
+                StepCancellationFailure.Canceled(exception.InnerException.Message),
+                engineLogger));
+        }
+        catch (StepConditionEvaluationException exception)
+            when (cancellationToken.IsCancellationRequested && exception.InnerException is OperationCanceledException)
+        {
+            stopwatch.Stop();
+
+            return WorkflowSequenceExecutionResult.Failed(ToCancellationWorkflowResult(
+                traceSteps,
+                step,
+                stopwatch.Elapsed,
+                1,
+                StepCancellationFailure.Canceled(exception.InnerException.Message),
+                engineLogger));
         }
         catch (StepSwitchSelectorException exception)
         {

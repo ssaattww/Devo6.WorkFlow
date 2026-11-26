@@ -348,6 +348,99 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     }
 
     /// <summary>
+    /// 公開 Run の If と Switch で、選択前取消と評価中の取消例外を区別し、通常例外の診断を維持します。
+    /// </summary>
+    /// <param name="registration">条件または selector を選択します。</param>
+    /// <param name="behavior">分岐前取消、評価中取消例外、通常評価例外のいずれかです。</param>
+    [Theory]
+    [InlineData("If", "before", WorkflowErrorCodes.StepCanceled, false)]
+    [InlineData("Switch", "before", WorkflowErrorCodes.StepCanceled, false)]
+    [InlineData("If", "cancel-oce", WorkflowErrorCodes.StepCanceled, true)]
+    [InlineData("Switch", "cancel-oce", WorkflowErrorCodes.StepCanceled, true)]
+    [InlineData("If", "normal-error", WorkflowErrorCodes.ConditionEvaluationFailed, true)]
+    [InlineData("Switch", "normal-error", WorkflowErrorCodes.SwitchSelectorFailed, true)]
+    public void RunBranchSelectionCancellationAndFailuresKeepTheirDiagnostics(
+        string registration,
+        string behavior,
+        string expectedErrorCode,
+        bool callbackExpected)
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-branch-selection-cancel", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string callbackPath = Path.Combine(markerRoot, "callback-started");
+        string isIf = registration == "If" ? "true" : "false";
+        using var cancellation = new CancellationTokenSource();
+        var loggerFactory = new CancellationTriggerLoggerFactory(message =>
+        {
+            if ((behavior == "before" && message == "If condition started")
+                || (behavior == "cancel-oce" && message == "user callback cancellation"))
+            {
+                cancellation.Cancel();
+            }
+        });
+        string source = $$"""
+            using System.IO;
+            using Microsoft.Extensions.Logging;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public IWorkflowEntry Create()
+                {
+                    var workflow = CompositeStep.Define("Main").Run<int>("seed", _ => 0);
+                    if ({{isIf}})
+                    {
+                        return workflow.If("branch-selection", (current, input) =>
+                        {
+                            File.WriteAllText({{JsonSerializer.Serialize(callbackPath)}}, "called");
+                            if ({{JsonSerializer.Serialize(behavior)}} == "cancel-oce")
+                            {
+                                input.Context.Logger.LogInformation("user callback cancellation");
+                                throw new System.OperationCanceledException("If evaluation canceled.");
+                            }
+                            if ({{JsonSerializer.Serialize(behavior)}} == "normal-error")
+                            {
+                                throw new System.InvalidOperationException("If evaluation failed.");
+                            }
+                            return true;
+                        }, thenBranch => thenBranch.Run<int>("then", _ => 1), elseBranch => elseBranch.Run<int>("else", _ => 0));
+                    }
+                    return workflow.Switch<string, int>("branch-selection", (current, input) =>
+                    {
+                        File.WriteAllText({{JsonSerializer.Serialize(callbackPath)}}, "called");
+                        if ({{JsonSerializer.Serialize(behavior)}} == "cancel-oce")
+                        {
+                            input.Context.Logger.LogInformation("user callback cancellation");
+                            throw new System.OperationCanceledException("Switch evaluation canceled.");
+                        }
+                        if ({{JsonSerializer.Serialize(behavior)}} == "normal-error")
+                        {
+                            throw new System.InvalidOperationException("Switch evaluation failed.");
+                        }
+                        return "selected";
+                    }, cases => cases.Case("selected", branch => branch.Run<int>("selected", _ => 1))
+                        .Default(branch => branch.Run<int>("default", _ => 0)));
+                }
+            }
+            """;
+        using var fixture = new BuilderFixture(source);
+
+        WorkflowResult result = fixture.Builder.Run(
+            fixture.EntryPath,
+            "0.1.0",
+            options: new WorkflowExecutionOptions(loggerFactory),
+            cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        Assert.Equal(callbackExpected, File.Exists(callbackPath));
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps.Where(step => step.StepName == "branch-selection"));
+        Assert.Equal(expectedErrorCode, traceStep.ErrorCode);
+    }
+
+    /// <summary>
     /// 公開 Run で条件評価または Step 生成中に外部取消された場合は同期本体を開始しません。
     /// </summary>
     /// <param name="registration">取消を発生させる RunIf、TapIf、または型付き Step の登録形態。</param>

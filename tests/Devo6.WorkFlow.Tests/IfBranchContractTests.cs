@@ -216,6 +216,110 @@ public sealed class IfBranchContractTests
     }
 
     /// <summary>
+    /// If と Switch の分岐選択直前に外部取消された場合は利用者の条件と selector を呼びません。
+    /// </summary>
+    /// <param name="registration">選択する If または Switch の分岐形態。</param>
+    [Theory(DisplayName = "branch selection cancellation skips its condition or selector")]
+    [InlineData("If")]
+    [InlineData("Switch")]
+    public async Task BranchSelectionCancellationSkipsConditionOrSelector(string registration)
+    {
+        IfBranchState.Reset();
+        int selectorAttempts = 0;
+        using var cancellation = new CancellationTokenSource();
+        CompositeStep<string> step = CompositeStep
+            .Define("Main")
+            .Run("seed", _ => "seed");
+        if (registration == "If")
+        {
+            step = step.If(
+                "cancel-before-condition",
+                current =>
+                {
+                    IfBranchState.IncrementConditionAttempts();
+
+                    return true;
+                },
+                thenBranch => thenBranch.Run("then", current => current),
+                elseBranch => elseBranch.Run("else", current => current));
+        }
+        else
+        {
+            step = step.Switch<string, string>(
+                "cancel-before-selector",
+                current =>
+                {
+                    selectorAttempts++;
+
+                    return "selected";
+                },
+                cases => cases
+                    .Case("selected", branch => branch.Run("case", current => current))
+                    .Default(branch => branch.Run("default", current => current)));
+        }
+        var loggerFactory = new CancellationTriggerLoggerFactory(message =>
+        {
+            if (message == "If condition started")
+            {
+                cancellation.Cancel();
+            }
+        });
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(
+            new WorkflowExecutionOptions(loggerFactory), cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Equal(0, IfBranchState.ConditionAttempts);
+        Assert.Equal(0, selectorAttempts);
+        string expectedStepName = registration == "If" ? "cancel-before-condition" : "cancel-before-selector";
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps.Where(candidate => candidate.StepName == expectedStepName));
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, traceStep.ErrorCode);
+    }
+
+    /// <summary>
+    /// If 条件が OperationCanceledException を送出した場合だけ外部取消状態に応じて診断を選びます。
+    /// </summary>
+    /// <param name="cancelExternalToken">条件評価中に外部 token を取り消す場合は true。</param>
+    /// <param name="expectedErrorCode">期待する workflow error code。</param>
+    [Theory]
+    [InlineData(true, WorkflowErrorCodes.StepCanceled)]
+    [InlineData(false, WorkflowErrorCodes.ConditionEvaluationFailed)]
+    public async Task IfConditionCancellationExceptionUsesExternalTokenState(
+        bool cancelExternalToken,
+        string expectedErrorCode)
+    {
+        IfBranchState.Reset();
+        using var cancellation = new CancellationTokenSource();
+        CompositeStep<string> step = CompositeStep
+            .Define("Main")
+            .Run("seed", _ => new BranchValue("seed"))
+            .If(
+                "throwing-cancel-condition",
+                current =>
+                {
+                    IfBranchState.IncrementConditionAttempts();
+                    if (cancelExternalToken)
+                    {
+                        cancellation.Cancel();
+                    }
+
+                    throw new OperationCanceledException("If condition canceled.");
+                },
+                thenBranch => thenBranch.Run<ThenStep, string>(),
+                elseBranch => elseBranch.Run<ElseStep, string>());
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        Assert.Equal(1, IfBranchState.ConditionAttempts);
+        Assert.Contains("If condition canceled.", result.ErrorMessage, StringComparison.Ordinal);
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps.Where(candidate => candidate.StepName == "throwing-cancel-condition"));
+        Assert.Equal(expectedErrorCode, traceStep.ErrorCode);
+    }
+
+    /// <summary>
     /// 空 branch が定義時に失敗し、明示 passthrough を要求する契約であることを確認します。
     /// </summary>
     [Fact(DisplayName = "If rejects empty branches and requires explicit passthrough")]
