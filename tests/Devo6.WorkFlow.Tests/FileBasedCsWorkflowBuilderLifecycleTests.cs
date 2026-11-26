@@ -107,44 +107,45 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     }
 
     /// <summary>
-    /// 登録ラッパーの取消確認後に取消された場合、型付き同期 Step 本体を開始しません。
+    /// 登録境界で取消された場合に同期・非同期登録の利用者コードを開始しません。
     /// </summary>
-    [Fact(DisplayName = "Run cancellation after registration check stops before typed synchronous Step body")]
-    public void RunCancellationAfterRegistrationCheckStopsBeforeTypedSynchronousStep()
+    /// <param name="registrationKind">検査する Step 登録形態。</param>
+    /// <param name="cancelAtRegistration">取消を発生させる登録順。</param>
+    [Theory(DisplayName = "Run cancellation at the registration boundary blocks user callbacks")]
+    [InlineData("sync-lambda", 1)]
+    [InlineData("async-lambda", 1)]
+    [InlineData("typed-sync", 1)]
+    [InlineData("typed-async", 1)]
+    [InlineData("run-if", 2)]
+    [InlineData("run-if-async", 2)]
+    [InlineData("tap-if", 2)]
+    [InlineData("tap-if-async", 2)]
+    public void RunCancellationAtRegistrationBoundaryBlocksUserCallbacks(string registrationKind, int cancelAtRegistration)
     {
         string markerRoot = Path.Combine(Path.GetTempPath(), $"devo6-registration-cancel-{Guid.NewGuid():N}");
         Directory.CreateDirectory(markerRoot);
         using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string conditionMarkerPath = Path.Combine(markerRoot, "condition-started");
+        string constructorMarkerPath = Path.Combine(markerRoot, "constructor-started");
         string stepMarkerPath = Path.Combine(markerRoot, "step-started");
         using var cancellation = new CancellationTokenSource();
-        int cancellationCount = 0;
+        int registrationCount = 0;
         var options = new WorkflowExecutionOptions
         {
             BeforeStepRegistrationExecutionObserver = () =>
             {
-                if (Interlocked.Exchange(ref cancellationCount, 1) == 0)
+                if (Interlocked.Increment(ref registrationCount) == cancelAtRegistration)
                 {
                     cancellation.Cancel();
                 }
             },
         };
-        using var fixture = new BuilderFixture($$"""
-            using System.IO;
-            using Devo6.WorkFlow.Abstractions;
-            using Devo6.WorkFlow.Engine;
-            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
-            {
-                public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<MarkerStep, int>();
-            }
-            public sealed class MarkerStep : IStep<int>
-            {
-                public int Execute(StepInput input)
-                {
-                    File.WriteAllText({{JsonSerializer.Serialize(stepMarkerPath)}}, "started");
-                    return 1;
-                }
-            }
-            """);
+        string workflow = CreateRegistrationBoundaryWorkflow(
+            registrationKind,
+            conditionMarkerPath,
+            constructorMarkerPath,
+            stepMarkerPath);
+        using var fixture = new BuilderFixture(workflow);
 
         WorkflowResult result = fixture.Builder.Run(
             fixture.EntryPath,
@@ -152,9 +153,11 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
             options: options,
             cancellationToken: cancellation.Token);
 
-        Assert.Equal(1, cancellationCount);
+        Assert.Equal(cancelAtRegistration, registrationCount);
         Assert.False(result.Succeeded);
         Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.False(File.Exists(conditionMarkerPath));
+        Assert.False(File.Exists(constructorMarkerPath));
         Assert.False(File.Exists(stepMarkerPath));
     }
 
@@ -1064,6 +1067,86 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         Assert.Equal(1, fixture.Runner.RestoreCallCount);
         Assert.Equal(phase == "restore" ? 3 : 5, fixture.Runner.SdkVersionCallCount);
         Assert.DoesNotContain("provider-created", result.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 指定した registration factory を使う公開 `.cs` Provider source を作成します。
+    /// </summary>
+    /// <param name="registrationKind">生成する registration factory の種類。</param>
+    /// <param name="conditionMarkerPath">条件関数が実行された場合の marker path。</param>
+    /// <param name="constructorMarkerPath">型付き Step constructor が実行された場合の marker path。</param>
+    /// <param name="stepMarkerPath">Step 本体が実行された場合の marker path。</param>
+    /// <returns>指定した registration factory を持つ Provider source。</returns>
+    private static string CreateRegistrationBoundaryWorkflow(
+        string registrationKind,
+        string conditionMarkerPath,
+        string constructorMarkerPath,
+        string stepMarkerPath)
+    {
+        string conditionMarker = JsonSerializer.Serialize(conditionMarkerPath);
+        string constructorMarker = JsonSerializer.Serialize(constructorMarkerPath);
+        string stepMarker = JsonSerializer.Serialize(stepMarkerPath);
+        string conditionBody = $"File.WriteAllText({conditionMarker}, \"started\"); return true;";
+        string workflow = registrationKind switch
+        {
+            "sync-lambda" => $"CompositeStep.Define(\"Main\").Run<int>(\"sync\", _ => {{ File.WriteAllText({stepMarker}, \"started\"); return 1; }})",
+            "async-lambda" => $"CompositeStep.Define(\"Main\").RunAsync<int>(\"async\", (_, _) => {{ File.WriteAllText({stepMarker}, \"started\"); return Task.FromResult(1); }})",
+            "typed-sync" => "CompositeStep.Define(\"Main\").Run<MarkerSyncStep, int>()",
+            "typed-async" => "CompositeStep.Define(\"Main\").RunAsync<MarkerAsyncStep, int>()",
+            "run-if" => $"CompositeStep.Define(\"Main\").Run(\"seed\", _ => 1).RunIf<MarkerSyncStep, int>((_, _) => {{ {conditionBody} }}, (_, _) => 0)",
+            "run-if-async" => $"CompositeStep.Define(\"Main\").Run(\"seed\", _ => 1).RunIfAsync<MarkerAsyncStep, int>((_, _) => {{ {conditionBody} }}, (_, _, _) => Task.FromResult(0))",
+            "tap-if" => $"CompositeStep.Define(\"Main\").Run(\"seed\", _ => 1).TapIf<MarkerUnitStep>((_, _) => {{ {conditionBody} }})",
+            "tap-if-async" => $"CompositeStep.Define(\"Main\").Run(\"seed\", _ => 1).TapIfAsync<MarkerAsyncUnitStep>((_, _) => {{ {conditionBody} }})",
+            _ => throw new ArgumentOutOfRangeException(nameof(registrationKind), registrationKind, "Unknown registration kind."),
+        };
+
+        return $$"""
+            using System.IO;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public IWorkflowEntry Create() => {{workflow}};
+            }
+            public sealed class MarkerSyncStep : IStep<int>
+            {
+                public MarkerSyncStep() => File.WriteAllText({{constructorMarker}}, "constructed");
+                public int Execute(StepInput input)
+                {
+                    File.WriteAllText({{stepMarker}}, "started");
+                    return 1;
+                }
+            }
+            public sealed class MarkerAsyncStep : IAsyncStep<int>
+            {
+                public MarkerAsyncStep() => File.WriteAllText({{constructorMarker}}, "constructed");
+                public Task<int> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
+                {
+                    File.WriteAllText({{stepMarker}}, "started");
+                    return Task.FromResult(1);
+                }
+            }
+            public sealed class MarkerUnitStep : IStep<Unit>
+            {
+                public MarkerUnitStep() => File.WriteAllText({{constructorMarker}}, "constructed");
+                public Unit Execute(StepInput input)
+                {
+                    File.WriteAllText({{stepMarker}}, "started");
+                    return Unit.Value;
+                }
+            }
+            public sealed class MarkerAsyncUnitStep : IAsyncStep<Unit>
+            {
+                public MarkerAsyncUnitStep() => File.WriteAllText({{constructorMarker}}, "constructed");
+                public Task<Unit> ExecuteAsync(StepInput input, CancellationToken cancellationToken)
+                {
+                    File.WriteAllText({{stepMarker}}, "started");
+                    return Task.FromResult(Unit.Value);
+                }
+            }
+            """;
     }
 
     /// <summary>

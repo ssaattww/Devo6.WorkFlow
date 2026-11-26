@@ -2680,6 +2680,11 @@ internal sealed class StepRegistration
             typeof(TStep),
             (input, currentValue, cancellationToken, workflowCancellationToken, allowPreCancelledExecution) =>
             {
+                if (!allowPreCancelledExecution)
+                {
+                    workflowCancellationToken.ThrowIfCancellationRequested();
+                }
+
                 TStep step = new();
                 if (!allowPreCancelledExecution)
                 {
@@ -2706,6 +2711,7 @@ internal sealed class StepRegistration
             typeof(TStep),
             async (input, currentValue, cancellationToken, workflowCancellationToken) =>
             {
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TStep step = new();
                 workflowCancellationToken.ThrowIfCancellationRequested();
 
@@ -2729,8 +2735,13 @@ internal sealed class StepRegistration
         return new StepRegistration(
             name,
             typeof(LambdaStepRegistrationMarker),
-            (input, currentValue, cancellationToken, workflowCancellationToken) =>
+            (input, currentValue, cancellationToken, workflowCancellationToken, allowPreCancelledExecution) =>
             {
+                if (!allowPreCancelledExecution)
+                {
+                    workflowCancellationToken.ThrowIfCancellationRequested();
+                }
+
                 return Task.FromResult(StepExecutionResult.Succeeded(body(input)));
             },
             [],
@@ -2753,8 +2764,13 @@ internal sealed class StepRegistration
         return new StepRegistration(
             name,
             typeof(LambdaStepRegistrationMarker),
-            (input, currentValue, cancellationToken, workflowCancellationToken) =>
+            (input, currentValue, cancellationToken, workflowCancellationToken, allowPreCancelledExecution) =>
             {
+                if (!allowPreCancelledExecution)
+                {
+                    workflowCancellationToken.ThrowIfCancellationRequested();
+                }
+
                 return Task.FromResult(StepExecutionResult.Succeeded(body((TCurrent)currentValue!, input)));
             },
             [],
@@ -2836,14 +2852,18 @@ internal sealed class StepRegistration
             typeof(TStep),
             (input, currentValue, cancellationToken, workflowCancellationToken) =>
             {
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TCurrent current = (TCurrent)currentValue!;
                 bool shouldRun = EvaluateCondition(() => when(current, input));
                 workflowCancellationToken.ThrowIfCancellationRequested();
                 if (!shouldRun)
                 {
+                    workflowCancellationToken.ThrowIfCancellationRequested();
+
                     return Task.FromResult(StepExecutionResult.Skipped(otherwise(current, input)));
                 }
 
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TStep step = new();
                 workflowCancellationToken.ThrowIfCancellationRequested();
 
@@ -2874,14 +2894,18 @@ internal sealed class StepRegistration
             typeof(TStep),
             async (input, currentValue, cancellationToken, workflowCancellationToken) =>
             {
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TCurrent current = (TCurrent)currentValue!;
                 bool shouldRun = EvaluateCondition(() => when(current, input));
                 workflowCancellationToken.ThrowIfCancellationRequested();
                 if (!shouldRun)
                 {
+                    workflowCancellationToken.ThrowIfCancellationRequested();
+
                     return StepExecutionResult.Skipped(await otherwiseAsync(current, input, cancellationToken).ConfigureAwait(false));
                 }
 
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TStep step = new();
                 workflowCancellationToken.ThrowIfCancellationRequested();
 
@@ -2907,6 +2931,7 @@ internal sealed class StepRegistration
             typeof(TStep),
             (input, currentValue, cancellationToken, workflowCancellationToken) =>
             {
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TCurrent current = (TCurrent)currentValue!;
                 bool shouldRun = EvaluateCondition(() => when(current, input));
                 workflowCancellationToken.ThrowIfCancellationRequested();
@@ -2915,6 +2940,7 @@ internal sealed class StepRegistration
                     return Task.FromResult(StepExecutionResult.Skipped(current));
                 }
 
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TStep step = new();
                 workflowCancellationToken.ThrowIfCancellationRequested();
                 step.Execute(input);
@@ -2941,6 +2967,7 @@ internal sealed class StepRegistration
             typeof(TStep),
             async (input, currentValue, cancellationToken, workflowCancellationToken) =>
             {
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TCurrent current = (TCurrent)currentValue!;
                 bool shouldRun = EvaluateCondition(() => when(current, input));
                 workflowCancellationToken.ThrowIfCancellationRequested();
@@ -2949,6 +2976,7 @@ internal sealed class StepRegistration
                     return StepExecutionResult.Skipped(current);
                 }
 
+                workflowCancellationToken.ThrowIfCancellationRequested();
                 TStep step = new();
                 workflowCancellationToken.ThrowIfCancellationRequested();
                 await step.ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
