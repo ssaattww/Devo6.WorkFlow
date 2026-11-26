@@ -348,6 +348,128 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     }
 
     /// <summary>
+    /// 公開 Run で条件評価または Step 生成中に外部取消された場合は同期本体を開始しません。
+    /// </summary>
+    /// <param name="registration">取消を発生させる RunIf、TapIf、または型付き Step の登録形態。</param>
+    [Theory]
+    [InlineData("run-if")]
+    [InlineData("tap-if")]
+    [InlineData("constructor")]
+    public async Task RunCancellationAfterRegistrationUserCodeStopsStepBody(string registration)
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-registration-cancel-marker", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string providerCreatedPath = Path.Combine(markerRoot, "provider-created-entry");
+        string conditionStartedPath = Path.Combine(markerRoot, "condition-started");
+        string constructorStartedPath = Path.Combine(markerRoot, "constructor-started");
+        string stepStartedPath = Path.Combine(markerRoot, "step-started");
+        string releasePath = Path.Combine(markerRoot, "release-registration");
+        string registrationSource = registration switch
+        {
+            "run-if" => $$"""
+                return CompositeStep.Define("Main")
+                    .Run<int>("seed", _ => 0)
+                    .RunIf<GateStep, int>((_, _) =>
+                    {
+                        File.WriteAllText({{JsonSerializer.Serialize(conditionStartedPath)}}, "started");
+                        FixtureWait.WaitForRelease({{JsonSerializer.Serialize(releasePath)}});
+                        return true;
+                    }, (current, _) => current);
+                """,
+            "tap-if" => $$"""
+                return CompositeStep.Define("Main")
+                    .Run<int>("seed", _ => 0)
+                    .TapIf<GateStep>((_, _) =>
+                    {
+                        File.WriteAllText({{JsonSerializer.Serialize(conditionStartedPath)}}, "started");
+                        FixtureWait.WaitForRelease({{JsonSerializer.Serialize(releasePath)}});
+                        return true;
+                    });
+                """,
+            "constructor" => "return CompositeStep.Define(\"Main\").Run<GateStep, int>();",
+            _ => throw new ArgumentOutOfRangeException(nameof(registration), registration, "Unknown registration fixture."),
+        };
+        string stepInterface = registration == "tap-if" ? "IStep<Unit>" : "IStep<int>";
+        string stepReturn = registration == "tap-if" ? "Unit.Value" : "1";
+        string constructorGate = registration == "constructor"
+            ? $"FixtureWait.WaitForRelease({JsonSerializer.Serialize(releasePath)});"
+            : string.Empty;
+        string source = $$"""
+            using System.IO;
+            using Devo6.WorkFlow.Abstractions;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public IWorkflowEntry Create()
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(providerCreatedPath)}}, "created");
+                    {{registrationSource}}
+                }
+            }
+            public sealed class GateStep : {{stepInterface}}
+            {
+                public GateStep()
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(constructorStartedPath)}}, "started");
+                    {{constructorGate}}
+                }
+                public {{(registration == "tap-if" ? "Unit" : "int")}} Execute(StepInput input)
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(stepStartedPath)}}, "started");
+                    return {{stepReturn}};
+                }
+            }
+            internal static class FixtureWait
+            {
+                public static void WaitForRelease(string path)
+                {
+                    long deadline = System.Environment.TickCount64 + 10000;
+                    while (!File.Exists(path) && System.Environment.TickCount64 < deadline)
+                    {
+                        System.Threading.Thread.Yield();
+                    }
+                    if (!File.Exists(path)) throw new System.TimeoutException("Registration gate was not released.");
+                }
+            }
+            """;
+        using var fixture = new BuilderFixture(source);
+        using var cancellation = new CancellationTokenSource();
+        string enteredPath = registration == "constructor" ? constructorStartedPath : conditionStartedPath;
+        WorkflowResult? result = null;
+        Task run = Task.Run(() => result = fixture.Builder.Run(
+            fixture.EntryPath,
+            "0.1.0",
+            cancellationToken: cancellation.Token));
+        markerCleanup.DeferCleanupUntil(run);
+        fixture.DeferCleanupUntil(run);
+
+        try
+        {
+            await WaitForFileAsync(enteredPath, run);
+            cancellation.Cancel();
+            File.WriteAllText(releasePath, "release");
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            cancellation.Cancel();
+            File.WriteAllText(releasePath, "release");
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.NotNull(result);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.True(File.Exists(providerCreatedPath));
+        Assert.Equal(registration == "constructor", File.Exists(constructorStartedPath));
+        Assert.Equal(registration != "constructor", File.Exists(conditionStartedPath));
+        Assert.False(File.Exists(stepStartedPath));
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
+    }
+
+    /// <summary>
     /// Provider constructor 中の取消を観測し、Create と Step を呼び出す前に停止します。
     /// </summary>
     [Fact(DisplayName = "cancellation during Provider construction stops before Create")]

@@ -126,6 +126,69 @@ public sealed class TimeoutCancellationContractTests
     }
 
     /// <summary>
+    /// RunIf と TapIf の条件評価中に外部取消された場合は Step を生成しません。
+    /// </summary>
+    [Theory]
+    [InlineData("RunIf")]
+    [InlineData("TapIf")]
+    public async Task ConditionalPredicateCancellationStopsBeforeStepConstruction(string registration)
+    {
+        ContractTestState.Reset();
+        using var cancellationTokenSource = new CancellationTokenSource();
+        CompositeStep<int> step = CompositeStep.Define("Main").Run<int>("seed", _ => 0);
+        if (registration == "RunIf")
+        {
+            step = step.RunIf<PredicateCancellationStep, int>(
+                (_, _) => CancelDuringCondition(cancellationTokenSource),
+                (current, _) => current);
+        }
+        else
+        {
+            step = step.TapIf<PredicateCancellationTapStep>(
+                (_, _) => CancelDuringCondition(cancellationTokenSource));
+        }
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(cancellationToken: cancellationTokenSource.Token)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Equal(["condition"], ContractTestState.Snapshot());
+    }
+
+    /// <summary>
+    /// 型付き Step のコンストラクター中に外部取消された場合は Execute を呼びません。
+    /// </summary>
+    [Fact(DisplayName = "external cancellation during typed step construction stops before execution")]
+    public async Task TypedStepConstructionCancellationStopsBeforeExecution()
+    {
+        ContractTestState.Reset();
+        using var cancellationTokenSource = new CancellationTokenSource();
+        ContractTestState.CancelWhenStepIsConstructed(cancellationTokenSource);
+        CompositeStep<int> step = CompositeStep.Define("Main").Run<CancelOnConstructionStep, int>();
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(cancellationToken: cancellationTokenSource.Token)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Equal(["constructor"], ContractTestState.Snapshot());
+    }
+
+    /// <summary>
+    /// RunIf 条件の評価中に外部取消を通知し、その評価結果を返します。
+    /// </summary>
+    /// <param name="cancellationTokenSource">取り消す workflow の token source。</param>
+    /// <returns>条件評価を成功扱いにしないための true。</returns>
+    private static bool CancelDuringCondition(CancellationTokenSource cancellationTokenSource)
+    {
+        ContractTestState.Add("condition");
+        cancellationTokenSource.Cancel();
+
+        return true;
+    }
+
+    /// <summary>
     /// sync Step 実行中の外部 cancel が完了後に STEP_CANCELED になり、Produce と後続 Step を止めることを確認します。
     /// </summary>
     [Fact(DisplayName = "external cancellation during sync step returns STEP_CANCELED after completion")]
@@ -497,6 +560,61 @@ public sealed class TimeoutCancellationContractTests
     }
 
     /// <summary>
+    /// RunIf の条件取消後に生成・実行されてはならない同期 Step です。
+    /// </summary>
+    private sealed class PredicateCancellationStep : IStep<int>
+    {
+        /// <summary>Step 型の生成を実行順へ記録します。</summary>
+        public PredicateCancellationStep() => ContractTestState.Add("constructor");
+
+        /// <summary>条件取消後に呼ばれてはならない本体です。</summary>
+        public int Execute(StepInput input)
+        {
+            ContractTestState.Add("execute");
+
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// TapIf の条件取消後に生成・実行されてはならない同期 Step です。
+    /// </summary>
+    private sealed class PredicateCancellationTapStep : IStep<Unit>
+    {
+        /// <summary>Step 型の生成を実行順へ記録します。</summary>
+        public PredicateCancellationTapStep() => ContractTestState.Add("constructor");
+
+        /// <summary>条件取消後に呼ばれてはならない本体です。</summary>
+        public Unit Execute(StepInput input)
+        {
+            ContractTestState.Add("execute");
+
+            return Unit.Value;
+        }
+    }
+
+    /// <summary>
+    /// 生成時の取消を観測し、本体呼出しを抑止する同期 Step です。
+    /// </summary>
+    private sealed class CancelOnConstructionStep : IStep<int>
+    {
+        /// <summary>生成時に外部 token を取り消します。</summary>
+        public CancelOnConstructionStep()
+        {
+            ContractTestState.Add("constructor");
+            ContractTestState.CancelDuringStepConstruction();
+        }
+
+        /// <summary>コンストラクターでの取消後は呼ばれてはならない本体です。</summary>
+        public int Execute(StepInput input)
+        {
+            ContractTestState.Add("execute");
+
+            return 1;
+        }
+    }
+
+    /// <summary>
     /// timeout/cancel 検査で共有する実行順序と token 観測結果を保持します。
     /// </summary>
     private static class ContractTestState
@@ -509,6 +627,23 @@ public sealed class TimeoutCancellationContractTests
         public static void Reset(CancellationToken timeoutToken = default)
         {
             Current.Value = new ExecutionState(timeoutToken);
+        }
+
+        /// <summary>
+        /// Step コンストラクター中に外部取消する通知を現在の実行状態へ登録します。
+        /// </summary>
+        /// <param name="cancellationTokenSource">コンストラクターから取り消す token source。</param>
+        public static void CancelWhenStepIsConstructed(CancellationTokenSource cancellationTokenSource)
+        {
+            State.StepConstructionCancellation = cancellationTokenSource.Cancel;
+        }
+
+        /// <summary>
+        /// 現在の実行用に登録された Step 生成時の取消を通知します。
+        /// </summary>
+        public static void CancelDuringStepConstruction()
+        {
+            State.StepConstructionCancellation?.Invoke();
         }
 
         /// <summary>
@@ -596,6 +731,9 @@ public sealed class TimeoutCancellationContractTests
             private readonly object gate = new();
             private readonly List<string> entries = new();
             private bool? observedTokenCanBeCanceled;
+
+            /// <summary>Step 生成時に実行する外部取消 callback を取得または設定します。</summary>
+            public Action? StepConstructionCancellation { get; set; }
 
             /// <summary>このテスト実行の全体期限を取得します。</summary>
             public CancellationToken TimeoutToken { get; } = timeoutToken;
