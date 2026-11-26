@@ -1023,6 +1023,7 @@ public sealed class CompositeStep<TOut> : IStep<TOut>, IAsyncStep<TOut>, IWorkfl
                 try
                 {
                     SetStepConfig(input.Context, options.StepConfigs, stepIndex);
+                    cancellationToken.ThrowIfCancellationRequested();
                     StepExecutionResult stepResult = await step.ExecuteAsync(input, currentValue, stepCancellation.Token).ConfigureAwait(false);
                     currentValue = stepResult.Value;
 

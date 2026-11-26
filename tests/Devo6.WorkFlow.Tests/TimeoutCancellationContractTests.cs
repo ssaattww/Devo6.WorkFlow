@@ -93,6 +93,39 @@ public sealed class TimeoutCancellationContractTests
     }
 
     /// <summary>
+    /// Step 初期化後、Step 本体の呼び出し直前に外部取消された場合は本体を開始しません。
+    /// </summary>
+    [Fact(DisplayName = "cancellation during step initialization stops before synchronous step body")]
+    public async Task CancellationDuringStepInitializationStopsBeforeSynchronousStepBody()
+    {
+        ContractTestState.Reset();
+        using var cancellationTokenSource = new CancellationTokenSource();
+        CompositeStep<int> step = CompositeStep
+            .Define("Main")
+            .Run<int>("sync", _ =>
+            {
+                ContractTestState.Add("sync-body");
+
+                return 1;
+            });
+        var options = new WorkflowExecutionOptions
+        {
+            StepTimeout = TimeSpan.FromMinutes(1),
+            StepTimeoutTokenObserver = _ => cancellationTokenSource.Cancel(),
+        };
+
+        WorkflowResult result = await step.ExecuteWorkflowAsync(options, cancellationTokenSource.Token)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Empty(ContractTestState.Snapshot());
+        ExecutionTraceStep traceStep = Assert.Single(result.Trace!.Steps);
+        Assert.Equal(ExecutionTraceStepStatus.Failed, traceStep.Status);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, traceStep.ErrorCode);
+    }
+
+    /// <summary>
     /// sync Step 実行中の外部 cancel が完了後に STEP_CANCELED になり、Produce と後続 Step を止めることを確認します。
     /// </summary>
     [Fact(DisplayName = "external cancellation during sync step returns STEP_CANCELED after completion")]

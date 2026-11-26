@@ -300,6 +300,54 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     }
 
     /// <summary>
+    /// 公開 Run で Create 後、同期 Step の呼び出し直前に取消された場合は Step 本体を開始しません。
+    /// </summary>
+    [Fact(DisplayName = "run cancellation during step initialization stops before synchronous step body")]
+    public void RunCancellationDuringStepInitializationStopsBeforeSynchronousStepBody()
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-step-init-cancel-marker", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string createMarkerPath = Path.Combine(markerRoot, "provider-created-entry");
+        string stepMarkerPath = Path.Combine(markerRoot, "step-body-started");
+        using var cancellation = new CancellationTokenSource();
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public IWorkflowEntry Create()
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(createMarkerPath)}}, "created");
+                    return CompositeStep.Define("Main").Run<int>("sync", _ =>
+                    {
+                        File.WriteAllText({{JsonSerializer.Serialize(stepMarkerPath)}}, "started");
+                        return 1;
+                    });
+                }
+            }
+            """);
+        var options = new WorkflowExecutionOptions
+        {
+            StepTimeout = TimeSpan.FromMinutes(1),
+            StepTimeoutTokenObserver = _ => cancellation.Cancel(),
+        };
+
+        WorkflowResult result = fixture.Builder.Run(
+            fixture.EntryPath,
+            "0.1.0",
+            options: options,
+            cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.True(File.Exists(createMarkerPath));
+        Assert.False(File.Exists(stepMarkerPath));
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
+    }
+
+    /// <summary>
     /// Provider constructor 中の取消を観測し、Create と Step を呼び出す前に停止します。
     /// </summary>
     [Fact(DisplayName = "cancellation during Provider construction stops before Create")]
