@@ -20,6 +20,11 @@ internal static class FileBasedWorkflowExecutor
         CancellationToken cancellationToken = default)
     {
         FileBasedWorkflowLoadContext? loadContext = null;
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Cancelled(expectedQualifiedEntryName);
+        }
+
         Assembly assembly;
         Type providerType;
         try
@@ -40,6 +45,11 @@ internal static class FileBasedWorkflowExecutor
 
         try
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Cancelled(expectedQualifiedEntryName);
+            }
+
             object? providerObject = Activator.CreateInstance(providerType);
             if (providerObject is not IWorkflowEntryProvider provider)
             {
@@ -47,6 +57,11 @@ internal static class FileBasedWorkflowExecutor
                     expectedQualifiedEntryName,
                     WorkflowErrorCodes.ScriptApiIdentityMismatch,
                     "The loaded Provider does not implement the host IWorkflowEntryProvider type.");
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Cancelled(expectedQualifiedEntryName);
             }
 
             MethodInfo[] createMethods = providerType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
@@ -63,7 +78,17 @@ internal static class FileBasedWorkflowExecutor
                     "The loaded Provider does not declare the public non-generic Create() method validated from metadata.");
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Cancelled(expectedQualifiedEntryName);
+            }
+
             IWorkflowEntry? entry = createMethods[0].Invoke(providerObject, null) as IWorkflowEntry;
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Cancelled(expectedQualifiedEntryName);
+            }
+
             if (entry is null || !IsHostCompositeStep(entry.GetType()))
             {
                 return Failure(
@@ -113,6 +138,11 @@ internal static class FileBasedWorkflowExecutor
         WorkflowExecutionOptions? options,
         CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Cancelled(((IWorkflowEntry)entry).QualifiedName);
+        }
+
         MethodInfo? method = entry.GetType().GetMethod(
             nameof(CompositeStep<Unit>.ExecuteWorkflowAsync),
             BindingFlags.Instance | BindingFlags.Public,
@@ -159,5 +189,13 @@ internal static class FileBasedWorkflowExecutor
             ErrorMessage = errorMessage,
         };
     }
+
+    /// <summary>
+    /// Provider 構築または Step 開始前に要求された取消を結果へ変換します。
+    /// </summary>
+    private static WorkflowResult Cancelled(string entryName) => Failure(
+        entryName,
+        WorkflowErrorCodes.StepCanceled,
+        "Workflow execution was cancelled before the next execution boundary.");
 }
 #endif

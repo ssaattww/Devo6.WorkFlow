@@ -130,6 +130,240 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         Assert.False(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
     }
 
+    /// <summary>
+    /// build 完了時に取消された場合、Provider を生成せず診断 session を返します。
+    /// </summary>
+    [Fact(DisplayName = "run cancellation after SDK build retains diagnostics before Provider creation")]
+    public void RunCancellationAfterBuildDoesNotCreateProvider()
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-provider-cancel-marker", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string providerMarker = Path.Combine(markerRoot, "provider-created");
+        using var cancellation = new CancellationTokenSource();
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider() => File.WriteAllText({{JsonSerializer.Serialize(providerMarker)}}, "created");
+                public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<int>("ok", _ => 1);
+            }
+            """, afterBuild: _ => cancellation.Cancel());
+
+        WorkflowResult result = fixture.Builder.Run(fixture.EntryPath, "0.1.0", cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.False(File.Exists(providerMarker));
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
+    }
+
+    /// <summary>
+    /// SDK が取消を返した場合も専用 session の保存先を Run 診断へ含めます。
+    /// </summary>
+    [Fact(DisplayName = "SDK cancellation returns a retained diagnostic session through Run")]
+    public void RunSdkCancellationRetainsSessionPath()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var fixture = new BuilderFixture("public sealed class NoEntry { }",
+            afterRestore: _ =>
+            {
+                cancellation.Cancel();
+                throw new OperationCanceledException(cancellation.Token);
+            });
+
+        WorkflowResult result = fixture.Builder.Run(
+            fixture.EntryPath, "0.1.0", cancellationToken: cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
+    }
+
+    /// <summary>
+    /// Provider.Create 中の取消を観測し、Step 開始前に実行を止めます。
+    /// </summary>
+    [Fact(DisplayName = "cancellation during Provider.Create stops before the first Step")]
+    public async Task RunCancellationDuringProviderCreateStopsBeforeStep()
+    {
+        string gateRoot = Path.Combine(Path.GetTempPath(), "devo6-provider-create-gate", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(gateRoot);
+        using var gateCleanup = new TemporaryDirectory(gateRoot);
+        string createStartedPath = Path.Combine(gateRoot, "create-started");
+        string releasePath = Path.Combine(gateRoot, "release-create");
+        string stepStartedPath = Path.Combine(gateRoot, "step-started");
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using System.Threading;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public IWorkflowEntry Create()
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(createStartedPath)}}, "started");
+                    while (!File.Exists({{JsonSerializer.Serialize(releasePath)}})) Thread.Yield();
+                    return CompositeStep.Define("Main").Run<int>("marker", _ =>
+                    {
+                        File.WriteAllText({{JsonSerializer.Serialize(stepStartedPath)}}, "started");
+                        return 1;
+                    });
+                }
+            }
+            """);
+        using var cancellation = new CancellationTokenSource();
+        WorkflowResult? result = null;
+        Task run = Task.Run(() => result = fixture.Builder.Run(
+            fixture.EntryPath, "0.1.0", cancellationToken: cancellation.Token));
+        try
+        {
+            await WaitForFileAsync(createStartedPath, run);
+            cancellation.Cancel();
+            File.WriteAllText(releasePath, "release");
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            File.WriteAllText(releasePath, "release");
+        }
+
+        Assert.NotNull(result);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.False(File.Exists(stepStartedPath));
+    }
+
+    /// <summary>
+    /// Provider constructor 中の取消を観測し、Create と Step を呼び出す前に停止します。
+    /// </summary>
+    [Fact(DisplayName = "cancellation during Provider construction stops before Create")]
+    public async Task RunCancellationDuringProviderConstructionStopsBeforeCreate()
+    {
+        string gateRoot = Path.Combine(Path.GetTempPath(), "devo6-provider-constructor-gate", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(gateRoot);
+        using var gateCleanup = new TemporaryDirectory(gateRoot);
+        string constructorStartedPath = Path.Combine(gateRoot, "constructor-started");
+        string releasePath = Path.Combine(gateRoot, "release-constructor");
+        string createPath = Path.Combine(gateRoot, "create-called");
+        string stepStartedPath = Path.Combine(gateRoot, "step-started");
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using System.Threading;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider()
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(constructorStartedPath)}}, "started");
+                    while (!File.Exists({{JsonSerializer.Serialize(releasePath)}})) Thread.Yield();
+                }
+                public IWorkflowEntry Create()
+                {
+                    File.WriteAllText({{JsonSerializer.Serialize(createPath)}}, "called");
+                    return CompositeStep.Define("Main").Run<int>("marker", _ =>
+                    {
+                        File.WriteAllText({{JsonSerializer.Serialize(stepStartedPath)}}, "started");
+                        return 1;
+                    });
+                }
+            }
+            """);
+        using var cancellation = new CancellationTokenSource();
+        WorkflowResult? result = null;
+        Task run = Task.Run(() => result = fixture.Builder.Run(
+            fixture.EntryPath, "0.1.0", cancellationToken: cancellation.Token));
+        try
+        {
+            await WaitForFileAsync(constructorStartedPath, run);
+            cancellation.Cancel();
+            File.WriteAllText(releasePath, "release");
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            File.WriteAllText(releasePath, "release");
+        }
+
+        Assert.NotNull(result);
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.StepCanceled, result.ErrorCode);
+        Assert.False(File.Exists(createPath));
+        Assert.False(File.Exists(stepStartedPath));
+    }
+
+    /// <summary>
+    /// restore 中に固定入力が変更された場合は build 前に拒否します。
+    /// </summary>
+    [Fact(DisplayName = "run rejects SDK configuration changes between restore and build")]
+    public void RunRejectsConfigurationChangedDuringRestore()
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-restore-config-marker", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string providerMarker = Path.Combine(markerRoot, "provider-created");
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider() => File.WriteAllText({{JsonSerializer.Serialize(providerMarker)}}, "created");
+                public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<int>("ok", _ => 1);
+            }
+            """, afterRestore: owner => File.AppendAllText(Path.Combine(owner.Root, "global.json"), " "));
+
+        WorkflowResult result = fixture.Builder.Run(fixture.EntryPath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
+        Assert.Null(fixture.Runner.GeneratedAssemblyPath);
+        Assert.False(File.Exists(providerMarker));
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    private static async Task WaitForFileAsync(string path, Task run)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!File.Exists(path))
+        {
+            Assert.False(run.IsCompleted, "Run completed before its marker was created.");
+            await Task.Delay(10, timeout.Token);
+        }
+    }
+
+    /// <summary>
+    /// SDK 処理中の固定入力変更後に Provider を実行せず、SDK session を返します。
+    /// </summary>
+    [Theory]
+    [InlineData("global.json")]
+    [InlineData("NuGet.Config")]
+    [InlineData("devo6.nuget.lock.yaml")]
+    public void RunRejectsFixedInputChangedDuringBuild(string fileName)
+    {
+        string markerRoot = Path.Combine(Path.GetTempPath(), "devo6-provider-change-marker", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(markerRoot);
+        using var markerCleanup = new TemporaryDirectory(markerRoot);
+        string providerMarker = Path.Combine(markerRoot, "provider-created");
+        using var fixture = new BuilderFixture($$"""
+            using System.IO;
+            using Devo6.WorkFlow.Engine;
+            [WorkflowEntry("Main")] public sealed class MainProvider : IWorkflowEntryProvider
+            {
+                public MainProvider() => File.WriteAllText({{JsonSerializer.Serialize(providerMarker)}}, "created");
+                public IWorkflowEntry Create() => CompositeStep.Define("Main").Run<int>("ok", _ => 1);
+            }
+            """, afterBuild: fixture => File.AppendAllText(Path.Combine(fixture.Root, fileName), " "));
+
+        WorkflowResult result = fixture.Builder.Run(fixture.EntryPath, "0.1.0");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, result.ErrorCode);
+        Assert.False(File.Exists(providerMarker));
+        Assert.Contains(fixture.Runner.RunContext!.SessionDirectory, result.ErrorMessage, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(fixture.Runner.RunContext.SessionDirectory));
+    }
+
     private sealed class BuilderFixture : IDisposable
     {
         private const string SdkInfo = ".NET SDK:\n Version: 10.0.404\n Base Path: /usr/share/dotnet/sdk/10.0.404/";
@@ -138,7 +372,10 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
         /// 指定した Provider ソースを使い、session の保持と回収を検証する fixture を作成します。
         /// </summary>
         /// <param name="providerSource">fixture の生成物へコンパイルする Provider ソース。</param>
-        public BuilderFixture(string providerSource)
+        public BuilderFixture(
+            string providerSource,
+            Action<BuilderFixture>? afterBuild = null,
+            Action<BuilderFixture>? afterRestore = null)
         {
             Root = Path.Combine(Path.GetTempPath(), "devo6-file-based-lifecycle", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Root);
@@ -157,6 +394,7 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
             ]));
             File.WriteAllText(Path.Combine(Root, "NuGet.Config"),
                 $"<configuration><packageSources><clear/><add key=\"fixture\" value=\"{SecurityElement.Escape(feed)}\" /></packageSources></configuration>");
+            File.WriteAllText(Path.Combine(Root, "global.json"), "{\"sdk\":{\"version\":\"10.0.404\",\"rollForward\":\"latestPatch\"}}\n");
             File.WriteAllText(Path.Combine(Root, "devo6.nuget.lock.yaml"), $$"""
                 version: 1
                 targetFramework: net10.0
@@ -175,7 +413,8 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
 
             string fixtureAssembly = Path.Combine(Root, "sdk-fixture.dll");
             CompileFixture(providerSource, fixtureAssembly);
-            Runner = new LifecycleSdkRunner(EntryPath, feed, fixtureAssembly);
+            Runner = new LifecycleSdkRunner(
+                EntryPath, feed, fixtureAssembly, () => afterBuild?.Invoke(this), () => afterRestore?.Invoke(this));
             Builder = new FileBasedCsWorkflowBuilder(
                 Runner,
                 () => Path.Combine(Root, "runfile"),
@@ -252,7 +491,12 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
     /// <param name="entryPath">builder が処理する workflow 入力の path。</param>
     /// <param name="feedPath">fixture の NuGet source の path。</param>
     /// <param name="fixtureAssemblyPath">build 時に配置するメタデータ fixture assembly の path。</param>
-    private sealed class LifecycleSdkRunner(string entryPath, string feedPath, string fixtureAssemblyPath) : IFileBasedSdkRunner
+    private sealed class LifecycleSdkRunner(
+        string entryPath,
+        string feedPath,
+        string fixtureAssemblyPath,
+        Action? afterBuild,
+        Action? afterRestore) : IFileBasedSdkRunner
     {
         /// <summary>直近の SDK 呼び出しに渡された session context を取得します。</summary>
         public FileBasedSdkRunContext? RunContext { get; private set; }
@@ -318,6 +562,7 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
                         },
                     },
                 }));
+                afterRestore?.Invoke();
                 return new FileBasedSdkProcessResult(0, "", "");
             }
 
@@ -327,6 +572,10 @@ public sealed class FileBasedCsWorkflowBuilderLifecycleTests
                 GeneratedAssemblyPath = assemblyPath;
                 Directory.CreateDirectory(Path.GetDirectoryName(assemblyPath)!);
                 File.Copy(fixtureAssemblyPath, assemblyPath, overwrite: true);
+                if (!arguments.Any(argument => argument.StartsWith("-getProperty:", StringComparison.Ordinal)))
+                {
+                    afterBuild?.Invoke();
+                }
                 return new FileBasedSdkProcessResult(0, "", "");
             }
 

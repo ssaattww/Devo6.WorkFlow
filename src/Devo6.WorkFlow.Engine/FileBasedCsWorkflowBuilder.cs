@@ -275,6 +275,18 @@ public sealed class FileBasedCsWorkflowBuilder
             FileBasedCsBuildResult.Failure(code, message, sdkRunContext?.SessionDirectory);
 
         string fullEntryPath = Path.GetFullPath(entryPath);
+        string lockPath = Path.Combine(Path.GetDirectoryName(fullEntryPath)!, "devo6.nuget.lock.yaml");
+        Dictionary<string, string?>? preflightSdkSettings = null;
+        string settingsCaptureError = "";
+        try
+        {
+            preflightSdkSettings = CaptureSdkSettings(fullEntryPath, lockPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+        {
+            settingsCaptureError = exception.Message;
+        }
+
         CsFileInputPreflight.PreflightResult preflight = CsFileInputPreflight.Validate(
             fullEntryPath,
             CsFileInputPreflight.CurrentHostTargetFramework,
@@ -282,6 +294,17 @@ public sealed class FileBasedCsWorkflowBuilder
         if (!preflight.Succeeded)
         {
             return Failure(preflight.ErrorCode, preflight.ErrorMessage);
+        }
+
+        if (preflightSdkSettings is null)
+        {
+            return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported,
+                $"The SDK and NuGet configuration could not be fingerprinted: {settingsCaptureError}");
+        }
+
+        if (!SdkSettingsMatch(preflightSdkSettings, fullEntryPath, lockPath, out string preflightSettingsError))
+        {
+            return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, preflightSettingsError);
         }
 
         if (!IsExactPackageVersion(hostPackageVersion))
@@ -302,6 +325,11 @@ public sealed class FileBasedCsWorkflowBuilder
         if (!TryReadAndValidateLock(preflight, fullEntryPath, out FileBasedNuGetLock? lockFile, out string lockError))
         {
             return Failure(WorkflowErrorCodes.ScriptNugetLockMismatch, lockError);
+        }
+
+        if (!SdkSettingsMatch(preflightSdkSettings, fullEntryPath, preflight.LockFilePath, out string lockSettingsError))
+        {
+            return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, lockSettingsError);
         }
 
         string sourceHash = ComputeFileHash(fullEntryPath);
@@ -332,6 +360,8 @@ public sealed class FileBasedCsWorkflowBuilder
         {
             try
             {
+            try
+            {
                 string sdkSessionRoot = sdkSessionRootProvider?.Invoke()
                     ?? (sessionRootUsesRunFileRoot ? runFileRoot : Path.GetTempPath());
                 sdkRunContext = FileBasedSdkRunContext.Create(sdkSessionRoot);
@@ -343,6 +373,11 @@ public sealed class FileBasedCsWorkflowBuilder
                     $"Could not create an isolated SDK output directory: {exception.Message}");
             }
 
+            if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string sdkVersionSettingsError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, sdkVersionSettingsError);
+            }
+
             FileBasedSdkProcessResult sdkVersionResult;
             try
             {
@@ -352,12 +387,18 @@ public sealed class FileBasedCsWorkflowBuilder
             {
                 return Failure(WorkflowErrorCodes.ScriptSdkUnavailable, exception.Message);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             string selectedSdkVersion = sdkVersionResult.StandardOutput.Trim();
             if (!sdkVersionResult.Succeeded || !IsSupportedSdkVersion(selectedSdkVersion))
             {
                 return Failure(
                     WorkflowErrorCodes.ScriptSdkUnavailable,
                     $".NET SDK 10.0.404 or later in feature band 10.0.4xx is required. Selected SDK: {selectedSdkVersion}. {FormatProcessFailure(sdkVersionResult)}");
+            }
+
+            if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string selectedSdkSettingsError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, selectedSdkSettingsError);
             }
 
             FileBasedSdkProcessResult sdkInfoResult;
@@ -369,6 +410,7 @@ public sealed class FileBasedCsWorkflowBuilder
             {
                 return Failure(WorkflowErrorCodes.ScriptSdkUnavailable, exception.Message);
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (!sdkInfoResult.Succeeded
                 || !TryGetSdkSdksPath(sdkInfoResult.StandardOutput, selectedSdkVersion, out string expectedSdkSdksPath))
@@ -376,6 +418,11 @@ public sealed class FileBasedCsWorkflowBuilder
                 return Failure(
                     WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported,
                     "The selected SDK installation path could not be verified before restore.");
+            }
+
+            if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string sdkInfoSettingsError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, sdkInfoSettingsError);
             }
 
             FileBasedSdkProcessResult evaluationResult;
@@ -391,6 +438,7 @@ public sealed class FileBasedCsWorkflowBuilder
             {
                 return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, exception.Message);
             }
+            cancellationToken.ThrowIfCancellationRequested();
 
             string evaluationError = "";
             if (!evaluationResult.Succeeded
@@ -412,6 +460,11 @@ public sealed class FileBasedCsWorkflowBuilder
                     $"The effective file-based project could not be verified before restore: {detail}");
             }
 
+            if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string evaluationSettingsError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, evaluationSettingsError);
+            }
+
             FileBasedSdkProcessResult restoreResult;
             try
             {
@@ -425,11 +478,17 @@ public sealed class FileBasedCsWorkflowBuilder
             {
                 return Failure(WorkflowErrorCodes.ScriptNugetRestoreFailed, exception.Message);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (!restoreResult.Succeeded)
             {
                 return Failure(
                     WorkflowErrorCodes.ScriptNugetRestoreFailed,
                     FormatProcessFailure(restoreResult));
+            }
+
+            if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string restoreSettingsError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, restoreSettingsError);
             }
 
             string? assetsPath = FindAssetsFile(fullEntryPath, sdkRunContext.RunFileRoot);
@@ -465,6 +524,11 @@ public sealed class FileBasedCsWorkflowBuilder
                     "The workflow source changed during restore; the restored assets were discarded.");
             }
 
+            if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string beforeBuildSettingsError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, beforeBuildSettingsError);
+            }
+
             FileBasedSdkProcessResult buildResult;
             try
             {
@@ -478,11 +542,17 @@ public sealed class FileBasedCsWorkflowBuilder
             {
                 return Failure(WorkflowErrorCodes.ScriptBuildFailed, exception.Message);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             if (!buildResult.Succeeded)
             {
                 return Failure(
                     ClassifyBuildFailure(buildResult),
                     FormatProcessFailure(buildResult));
+            }
+
+            if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string buildSettingsError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, buildSettingsError);
             }
 
             string postBuildSourceHash;
@@ -512,9 +582,22 @@ public sealed class FileBasedCsWorkflowBuilder
                     "The SDK output was missing or was not isolated from the workflow source directory.");
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!SdkSettingsMatch(preflightSdkSettings!, fullEntryPath, preflight.LockFilePath, out string finalSettingsError))
+            {
+                return Failure(WorkflowErrorCodes.ScriptBuildEnvironmentUnsupported, finalSettingsError);
+            }
+
             afterBuild?.Invoke(assemblyPath);
             return FileBasedCsBuildResult.Success(assemblyPath, assetsPath, selectedSdkVersion, sdkRunContext);
         }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return Failure(
+                    WorkflowErrorCodes.StepCanceled,
+                    "The file-based SDK request was cancelled before its generated assembly could be used.");
+            }
+            }
     }
 
     /// <summary>
@@ -1220,6 +1303,73 @@ public sealed class FileBasedCsWorkflowBuilder
     {
         using FileStream stream = File.OpenRead(path);
         return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    /// <summary>
+    /// SDK 選択、NuGet 設定、固定 lock と継承される MSBuild 設定の内容を記録します。
+    /// </summary>
+    private static Dictionary<string, string?> CaptureSdkSettings(string entryPath, string lockPath)
+    {
+        StringComparer pathComparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        HashSet<string> paths = new(pathComparer) { Path.GetFullPath(lockPath) };
+        string[] inheritedFileNames =
+        [
+            "global.json", "NuGet.Config", "nuget.config", "Directory.Build.rsp", "MSBuild.rsp",
+            "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props",
+        ];
+        for (DirectoryInfo? directory = new(Path.GetDirectoryName(Path.GetFullPath(entryPath))!);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            foreach (string fileName in inheritedFileNames)
+            {
+                paths.Add(Path.Combine(directory.FullName, fileName));
+            }
+        }
+
+        ISettings settings = NuGet.Configuration.Settings.LoadDefaultSettings(Path.GetDirectoryName(Path.GetFullPath(entryPath))!);
+        foreach (string path in settings.GetConfigFilePaths())
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                paths.Add(Path.GetFullPath(path));
+            }
+        }
+
+        return paths.ToDictionary(
+            path => path,
+            path => File.Exists(path) ? ComputeFileHash(path) : null,
+            pathComparer);
+    }
+
+    /// <summary>
+    /// 初回前提検査時と SDK 各工程後の設定・lock 内容が一致するか確認します。
+    /// </summary>
+    private static bool SdkSettingsMatch(
+        IReadOnlyDictionary<string, string?> expected,
+        string entryPath,
+        string lockPath,
+        out string error)
+    {
+        try
+        {
+            Dictionary<string, string?> current = CaptureSdkSettings(entryPath, lockPath);
+            if (expected.Count == current.Count
+                && expected.All(pair => current.TryGetValue(pair.Key, out string? hash)
+                    && string.Equals(pair.Value, hash, StringComparison.Ordinal)))
+            {
+                error = "";
+                return true;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or NotSupportedException)
+        {
+            error = $"The SDK and NuGet configuration could not be re-read: {exception.Message}";
+            return false;
+        }
+
+        error = "SDK selection, NuGet configuration, or fixed package inputs changed during the SDK request.";
+        return false;
     }
 
     /// <summary>
