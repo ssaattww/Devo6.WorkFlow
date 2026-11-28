@@ -356,6 +356,7 @@ public sealed class ProjectSkeletonTests
                 "-p:PackageVersion=0.0.0-test"
             },
             RedirectStandardError = true,
+            Environment = { ["MSBUILDDISABLENODEREUSE"] = "1" },
             RedirectStandardOutput = true
         }) ?? throw new InvalidOperationException("Engine package の作成に失敗しました。");
 
